@@ -3970,6 +3970,8 @@ if ($page === 'reset') {
 // "Forgot password" can ever recover this account later.
 $signupErrors = [];
 $signupSuccess = false;
+$signupFlash = !empty($_SESSION['signup_success']);
+unset($_SESSION['signup_success']);
 if ($page === 'signup' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     $fullName = trim($_POST['full_name'] ?? '');
     $username = trim($_POST['username'] ?? '');
@@ -4020,7 +4022,9 @@ if ($page === 'signup' && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 $db->prepare("INSERT INTO categories (store_id,name,sort_order) VALUES (?,'Food',0),(?,'Drinks',1),(?,'Snacks',2),(?,'Desserts',3),(?,'Others',4) ON CONFLICT (store_id,name) DO NOTHING")
                     ->execute([$newStoreId, $newStoreId, $newStoreId, $newStoreId, $newStoreId]);
                 $db->commit();
-                $signupSuccess = true;
+                $_SESSION['signup_success'] = true;
+                header('Location: ?page=login&signup=success');
+                exit;
             } catch (Exception $e) {
                 if ($db->inTransaction()) $db->rollBack();
                 $signupErrors[] = 'Something went wrong creating your account. Please try again.';
@@ -9433,10 +9437,7 @@ if ($isCashierRole && $page !== 'login') {
         <div class="lp">
             <nav class="lp-nav">
                 <div class="lp-logo">POS <span>SYSTEM</span></div>
-                <div class="lp-nav-actions">
-                    <a href="?page=login" class="lp-btn lp-btn-ghost">Log In</a>
-                    <a href="?page=signup" class="lp-btn lp-btn-primary">Sign Up</a>
-                </div>
+                <div class="lp-nav-actions"></div>
             </nav>
 
             <section class="lp-hero">
@@ -9814,6 +9815,9 @@ if ($isCashierRole && $page !== 'login') {
                 </div>
                 <div class="login-card">
                     <h2 style="font-size:1.05rem;font-weight:600;margin-bottom:18px;">Welcome back 👋</h2>
+                    <?php if ($signupFlash): ?>
+                        <div class="error-box" style="background:rgba(45,122,58,.08);border-color:rgba(45,122,58,.25);color:var(--green);">✅ Congratulations! Your account was created successfully. You can now log in.</div>
+                    <?php endif; ?>
                     <?php if ($loginError): ?>
                         <div class="error-box">⚠️ <?= htmlspecialchars($loginError) ?></div>
                     <?php endif; ?>
@@ -9856,6 +9860,9 @@ if ($isCashierRole && $page !== 'login') {
                 const i = document.getElementById('pw-input');
                 i.type = i.type === 'password' ? 'text' : 'password';
             }
+            <?php if ($signupFlash): ?>
+                alert('Congratulations! Your account was created successfully. Please log in.');
+            <?php endif; ?>
         </script>
     <?php endif; ?>
 
