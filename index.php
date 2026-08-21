@@ -9080,7 +9080,7 @@ if ($isCashierRole && $page !== 'login') {
                 position: absolute;
                 z-index: 0;
                 inset: -24px;
-                background: linear-gradient(rgba(5, 15, 30, .58), rgba(5, 15, 30, .58)), url('uploads/shop/pos-background.png') center/cover;
+                background: linear-gradient(rgba(5, 15, 30, .58), rgba(5, 15, 30, .58)), url('assets/pos-background.png') center/cover;
                 filter: blur(8px);
                 opacity: .9;
             }

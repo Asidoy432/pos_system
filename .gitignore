@@ -8,6 +8,7 @@ uploads/shop/*
 !uploads/shop/.htaccess
 !uploads/shop/index.html
 !uploads/shop/pos-background.png
+!assets/pos-background.png
 
 # Local/editor/runtime files
 .phpunit.result.cache
