@@ -175,17 +175,32 @@ function db(): PDO
     static $pdo;
     if (!$pdo) {
         if (DATABASE_URL !== '') {
-            $parts = parse_url(DATABASE_URL);
-            if ($parts === false || empty($parts['host']) || empty($parts['user']) || empty($parts['path'])) {
+            $connectionUrl = trim(DATABASE_URL);
+            $parts = parse_url($connectionUrl);
+            if (
+                $parts === false
+                || !in_array(strtolower($parts['scheme'] ?? ''), ['postgres', 'postgresql'], true)
+                || empty($parts['host'])
+                || empty($parts['user'])
+                || empty($parts['path'])
+                || str_contains($connectionUrl, '[YOUR-')
+                || str_contains($connectionUrl, '[blocked]')
+            ) {
                 throw new RuntimeException('DATABASE_URL is invalid.');
             }
-            $dsn = 'pgsql:host=' . $parts['host'] . ';port=' . ($parts['port'] ?? 5432)
-                . ';dbname=' . ltrim($parts['path'], '/');
             $query = [];
             if (!empty($parts['query'])) parse_str($parts['query'], $query);
-            $dsn .= ';sslmode=' . (($query['sslmode'] ?? 'require') === 'disable' ? 'disable' : 'require');
+            $sslMode = strtolower((string)($query['sslmode'] ?? 'require'));
+            if (!in_array($sslMode, ['disable', 'allow', 'prefer', 'require', 'verify-ca', 'verify-full'], true)) {
+                throw new RuntimeException('DATABASE_URL has an invalid sslmode.');
+            }
+            $dsn = 'pgsql:host=' . $parts['host'] . ';port=' . ($parts['port'] ?? 5432)
+                . ';dbname=' . ltrim($parts['path'], '/') . ';sslmode=' . $sslMode;
             $user = rawurldecode($parts['user']);
             $pass = rawurldecode($parts['pass'] ?? '');
+            if ($pass === '' || $pass === '[blocked]' || str_contains($pass, '[YOUR-')) {
+                throw new RuntimeException('DATABASE_URL must contain the real Supabase password, without square brackets.');
+            }
         } else {
             if (DB_HOST === '' || DB_NAME === '' || DB_USER === '') {
                 throw new RuntimeException('Set DATABASE_URL or DB_HOST, DB_NAME, DB_USER, and DB_PASS.');
