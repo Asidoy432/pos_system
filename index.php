@@ -9068,10 +9068,26 @@ if ($isCashierRole && $page !== 'login') {
         <style>
             .lp {
                 font-family: 'Poppins', -apple-system, sans-serif;
-                background: linear-gradient(rgba(5, 15, 30, .68), rgba(5, 15, 30, .68)), url('uploads/shop/pos-background.png') center/cover fixed;
+                position: relative;
+                background: #0a1628;
                 color: #e8eef7;
                 min-height: 100vh;
                 overflow-x: hidden;
+            }
+
+            .lp::before {
+                content: '';
+                position: absolute;
+                z-index: 0;
+                inset: -24px;
+                background: linear-gradient(rgba(5, 15, 30, .58), rgba(5, 15, 30, .58)), url('uploads/shop/pos-background.png') center/cover;
+                filter: blur(8px);
+                opacity: .9;
+            }
+
+            .lp > * {
+                position: relative;
+                z-index: 1;
             }
 
             .lp * {
