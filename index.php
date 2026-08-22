@@ -8472,10 +8472,12 @@ if ($isCashierRole && $page !== 'login') {
         /* ── LOGIN ── */
         .public-auth-bg {
             /* Points at the background image committed in the repo at
-               pos_system/assets/pos-background.png — index.php sits at the
+               pos_system/assets/pos-background.webp — index.php sits at the
                project root alongside /assets, so a plain relative path
-               works both locally and once deployed. */
-            background-image: linear-gradient(rgba(5, 15, 30, .72), rgba(5, 15, 30, .72)), url('assets/pos-background.png') !important;
+               works both locally and once deployed. WebP instead of the
+               original PNG: same image, ~95% smaller (1.5MB -> ~80KB),
+               since this loads on the pre-login screens every visit. */
+            background-image: linear-gradient(rgba(5, 15, 30, .72), rgba(5, 15, 30, .72)), url('assets/pos-background.webp') !important;
             background-size: cover !important;
             background-position: center !important;
             background-attachment: fixed !important;
@@ -9170,7 +9172,7 @@ if ($isCashierRole && $page !== 'login') {
                 position: absolute;
                 z-index: 0;
                 inset: 0;
-                background: linear-gradient(rgba(5, 15, 30, .58), rgba(5, 15, 30, .58)), url('assets/pos-background.png') center/cover;
+                background: linear-gradient(rgba(5, 15, 30, .58), rgba(5, 15, 30, .58)), url('assets/pos-background.webp') center/cover;
                 opacity: .9;
             }
 
