@@ -7352,6 +7352,25 @@ if ($isCashierRole && $page !== 'login') {
             pointer-events: all;
         }
 
+        /* Anchors near the top of the viewport instead of dead-center, so on
+           short/zoomed viewports the bottom of the popup (e.g. its Next
+           button) never gets cropped off-screen. The modal itself already
+           has max-height:90vh + overflow-y:auto, so tall content scrolls
+           internally rather than overflowing past the viewport. */
+        .modal-overlay.modal-top {
+            align-items: flex-start;
+        }
+
+        .modal-overlay.modal-top .modal {
+            margin-top: 5vh;
+        }
+
+        @media(max-width:520px) {
+            .modal-overlay.modal-top .modal {
+                margin-top: 16px;
+            }
+        }
+
         .modal {
             background: var(--surface);
             border-radius: 20px;
@@ -9556,7 +9575,7 @@ if ($isCashierRole && $page !== 'login') {
             </section>
 
             <!-- ── STEP GUIDE MODAL — populated by openStepGuide() below ── -->
-            <div class="modal-overlay" id="step-guide-modal">
+            <div class="modal-overlay modal-top" id="step-guide-modal">
                 <div class="modal" style="max-width:560px;" role="dialog" aria-modal="true" aria-labelledby="step-guide-title">
                     <div class="modal-header">
                         <span class="modal-title" id="step-guide-title" style="font-style:normal;display:flex;align-items:center;gap:10px;">
@@ -9619,7 +9638,7 @@ if ($isCashierRole && $page !== 'login') {
             </section>
 
             <!-- ── FEATURE GUIDE MODAL — populated by openFeatureGuide() below ── -->
-            <div class="modal-overlay" id="feature-guide-modal">
+            <div class="modal-overlay modal-top" id="feature-guide-modal">
                 <div class="modal" style="max-width:580px;" role="dialog" aria-modal="true" aria-labelledby="feature-guide-title">
                     <div class="modal-header">
                         <span class="modal-title" id="feature-guide-title" style="font-style:normal;display:flex;align-items:center;gap:10px;">
