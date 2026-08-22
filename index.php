@@ -220,6 +220,13 @@ function db(): PDO
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
             PDO::ATTR_EMULATE_PREPARES => false,
+            // PERFORMANCE FIX: every page click was paying for a brand-new
+            // TCP+SSL handshake to Supabase (that's real network latency,
+            // Iloilo/Render -> Supabase, on top of the query itself, on
+            // EVERY single request). PDO::ATTR_PERSISTENT lets Apache's
+            // worker processes reuse an already-open connection instead of
+            // renegotiating SSL from scratch each time.
+            PDO::ATTR_PERSISTENT => true,
         ]);
     }
     return $pdo;
@@ -2439,6 +2446,7 @@ if (isset($_GET['api'])) {
                 // same generic settings table, no schema change, no existing key touched.
                 $ssSid = currentStoreId();
                 foreach (['shop_name', 'currency', 'vat_rate', 'tax_rate', 'shop_address', 'shop_tin', 'terminal_id', 'qz_drawer_enabled', 'qz_drawer_printer'] as $k) if (isset($body[$k])) $st->execute([$ssSid, $k, $body[$k]]);
+                unset($_SESSION['store_settings_' . $ssSid]); // bust the per-session settings cache so the change shows up immediately
                 json(true, ['ok' => true]);
                 break;
 
@@ -2460,6 +2468,7 @@ if (isset($_GET['api'])) {
                 $oldRow = $oldLogoStmt->fetchColumn();
                 $db->prepare("INSERT INTO settings(store_id,key,value) VALUES(?,'shop_logo',?) ON CONFLICT (store_id,key) DO UPDATE SET value=EXCLUDED.value")->execute([$logoSid, $newPath]);
                 if ($oldRow) deleteShopLogoFile($oldRow);
+                unset($_SESSION['store_settings_' . $logoSid]); // bust the per-session settings cache
                 json(true, ['logo_url' => $newPath]);
                 break;
 
@@ -2470,6 +2479,7 @@ if (isset($_GET['api'])) {
                 $oldRow = $oldLogoStmt2->fetchColumn();
                 $db->prepare("INSERT INTO settings(store_id,key,value) VALUES(?,'shop_logo','') ON CONFLICT (store_id,key) DO UPDATE SET value=EXCLUDED.value")->execute([$rmSid]);
                 if ($oldRow) deleteShopLogoFile($oldRow);
+                unset($_SESSION['store_settings_' . $rmSid]); // bust the per-session settings cache
                 json(true, ['ok' => true]);
                 break;
 
@@ -3826,19 +3836,27 @@ $loginError = '';
 // once ever on a fresh database, and once again right after any future
 // deploy that bumps SCHEMA_VERSION. Every other request just does one
 // cheap read instead of a hundred writes.
-try {
-    $db = db();
-    $installedVersion = null;
+// PERFORMANCE FIX: this schema check was a full DB round-trip on every
+// single page click (nav, dashboard, products, everything). The schema
+// only ever changes right after a deploy, so once we've confirmed it's
+// current for THIS session, remember that in $_SESSION and skip the
+// query entirely until the version number changes or the session ends.
+if (($_SESSION['schema_ok_version'] ?? null) !== SCHEMA_VERSION) {
     try {
-        $installedVersion = $db->query("SELECT version FROM schema_meta WHERE id = 1")->fetchColumn();
-    } catch (Exception $e) {
-        // schema_meta doesn't exist yet — this is a brand-new database.
+        $db = db();
         $installedVersion = null;
+        try {
+            $installedVersion = $db->query("SELECT version FROM schema_meta WHERE id = 1")->fetchColumn();
+        } catch (Exception $e) {
+            // schema_meta doesn't exist yet — this is a brand-new database.
+            $installedVersion = null;
+        }
+        if ($installedVersion === null || (int)$installedVersion !== SCHEMA_VERSION) {
+            installDB();
+        }
+        $_SESSION['schema_ok_version'] = SCHEMA_VERSION;
+    } catch (Exception $e) { /* silent — will show on login page if DB is broken */
     }
-    if ($installedVersion === null || (int)$installedVersion !== SCHEMA_VERSION) {
-        installDB();
-    }
-} catch (Exception $e) { /* silent — will show on login page if DB is broken */
 }
 
 // Fetch shop settings ONCE per page load, server-side, so the shop name is
@@ -3858,13 +3876,24 @@ $storeSettings = [
     'shop_logo' => ''
 ];
 if (loggedIn()) {
-    try {
-        $stmt = db()->prepare("SELECT key,value FROM settings WHERE store_id=?");
-        $stmt->execute([currentStoreId()]);
-        foreach ($stmt as $row) {
-            $storeSettings[$row['key']] = $row['value'];
+    // PERFORMANCE FIX: settings barely ever change, but were being
+    // re-fetched from Supabase on every single nav click. Cache them in
+    // the session per store, and only hit the DB again once per session
+    // (or right after save_settings/upload_shop_logo/remove_shop_logo,
+    // which explicitly clear this cache below).
+    $settingsCacheKey = 'store_settings_' . currentStoreId();
+    if (isset($_SESSION[$settingsCacheKey])) {
+        $storeSettings = $_SESSION[$settingsCacheKey];
+    } else {
+        try {
+            $stmt = db()->prepare("SELECT key,value FROM settings WHERE store_id=?");
+            $stmt->execute([currentStoreId()]);
+            foreach ($stmt as $row) {
+                $storeSettings[$row['key']] = $row['value'];
+            }
+            $_SESSION[$settingsCacheKey] = $storeSettings;
+        } catch (Exception $e) { /* DB not ready yet on a very first load — defaults above are fine */
         }
-    } catch (Exception $e) { /* DB not ready yet on a very first load — defaults above are fine */
     }
 }
 
