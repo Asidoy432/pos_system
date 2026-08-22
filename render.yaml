@@ -17,4 +17,4 @@ services:
       - key: BREVO_SENDER_EMAIL
         sync: false
       - key: BREVO_SENDER_NAME
-        value: Pangga Store
+        value: Pos_System
