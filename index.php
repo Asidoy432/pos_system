@@ -9145,7 +9145,7 @@ if ($isCashierRole && $page !== 'login') {
                 opacity: .9;
             }
 
-            .lp > * {
+            .lp > *:not(.modal-overlay) {
                 position: relative;
                 z-index: 1;
             }
