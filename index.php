@@ -8385,7 +8385,11 @@ if ($isCashierRole && $page !== 'login') {
 
         /* ── LOGIN ── */
         .public-auth-bg {
-            background-image: linear-gradient(rgba(5, 15, 30, .72), rgba(5, 15, 30, .72)), url('uploads/shop/pos-background.png') !important;
+            /* Points at the background image committed in the repo at
+               pos_system/assets/pos-background.png — index.php sits at the
+               project root alongside /assets, so a plain relative path
+               works both locally and once deployed. */
+            background-image: linear-gradient(rgba(5, 15, 30, .72), rgba(5, 15, 30, .72)), url('assets/pos-background.png') !important;
             background-size: cover !important;
             background-position: center !important;
             background-attachment: fixed !important;
