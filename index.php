@@ -1554,7 +1554,9 @@ if (isset($_GET['api'])) {
                 if (!$name) json(false, null, 'Name required');
                 $expiry = $body['expiry_date'] ?? null ?: null;
                 $deliveryDate = $body['delivery_date'] ?? null ?: null;
-                $barcode = trim($body['barcode'] ?? '') ?: 'BC-' . strtoupper(substr(md5(uniqid()), 0, 10));
+                $barcode = trim($body['barcode'] ?? '');
+                $barcodeWasProvided = $barcode !== '';
+                if (!$barcodeWasProvided) $barcode = 'BC-' . strtoupper(substr(md5(uniqid('', true)), 0, 10));
                 $storeQty = (int)($body['store_quantity'] ?? $body['quantity'] ?? 0);
                 $whQty    = (int)($body['warehouse_quantity'] ?? 0);
                 // Multi-unit packaging (Bundle/Case) — each is optional; null means
@@ -1595,9 +1597,31 @@ if (isset($_GET['api'])) {
                 try {
                     // New uploads go to disk (image_path) rather than the DB (image_data) —
                     // see saveProductImageFile(). image_data is intentionally left NULL here.
-                    $db->prepare("INSERT INTO products (store_id,name,description,price,cost_price,quantity,store_quantity,category_id,expiry_date,delivery_date,barcode,pack_qty,pack_barcode,pack_price,case_qty,case_barcode,case_price,auto_convert,low_stock_threshold,brand,supplier,unit_type,unit_size,promo_price,promo_pack_price,promo_case_price) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
-                        ->execute([currentStoreId(), $name, $body['description'] ?? null, $price, $costPrice, $storeQty, $storeQty, $body['category_id'] ?: null, $expiry, $deliveryDate, $barcode, $packQty, $packBarcode, $packPrice, $caseQty, $caseBarcode, $casePrice, $autoConvert, $lowStockThreshold, $brand, $supplier, $unitType, $unitSize, $promoPrice, $promoPackPrice, $promoCasePrice]);
-                    $newId = lastInsertedId($db);
+                    //
+                    // SELF-HEALING BARCODE: if the client didn't supply a barcode (blank/
+                    // auto-generate flow), a random collision with an existing code is
+                    // possible though rare. Rather than surfacing that as an error, just
+                    // mint a fresh code and retry the insert a few times. A barcode the
+                    // user explicitly typed or scanned is left alone — colliding with a
+                    // REAL duplicate should still be reported, not silently changed.
+                    $insertSql = "INSERT INTO products (store_id,name,description,price,cost_price,quantity,store_quantity,category_id,expiry_date,delivery_date,barcode,pack_qty,pack_barcode,pack_price,case_qty,case_barcode,case_price,auto_convert,low_stock_threshold,brand,supplier,unit_type,unit_size,promo_price,promo_pack_price,promo_case_price) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+                    $maxBarcodeAttempts = $barcodeWasProvided ? 1 : 5;
+                    $newId = null;
+                    for ($attempt = 1; $attempt <= $maxBarcodeAttempts; $attempt++) {
+                        try {
+                            $db->prepare($insertSql)->execute([currentStoreId(), $name, $body['description'] ?? null, $price, $costPrice, $storeQty, $storeQty, $body['category_id'] ?: null, $expiry, $deliveryDate, $barcode, $packQty, $packBarcode, $packPrice, $caseQty, $caseBarcode, $casePrice, $autoConvert, $lowStockThreshold, $brand, $supplier, $unitType, $unitSize, $promoPrice, $promoPackPrice, $promoCasePrice]);
+                            $newId = lastInsertedId($db);
+                            break;
+                        } catch (PDOException $e) {
+                            $isDupeBarcode = $e->getCode() === '23505' && str_contains($e->getMessage(), 'uniq_product_store_barcode');
+                            if (!$isDupeBarcode) throw $e; // some other DB error — don't mask it, let the outer catch report it
+                            if ($barcodeWasProvided || $attempt >= $maxBarcodeAttempts) {
+                                json(false, null, 'Barcode already exists — try a different one');
+                            }
+                            $barcode = 'BC-' . strtoupper(substr(md5(uniqid('', true)), 0, 10));
+                            // loop again with the fresh code
+                        }
+                    }
                     if ($validatedImg) {
                         $imgPath = saveProductImageFile($validatedImg, (int)$newId);
                         if ($imgPath) {
@@ -1622,7 +1646,10 @@ if (isset($_GET['api'])) {
                     }
                     json(true, ['id' => $newId, 'barcode' => $barcode]);
                 } catch (PDOException $e) {
-                    json(false, null, 'Barcode already exists — try a different one');
+                    // The barcode-collision case already exits earlier (with retry) via
+                    // json(false, ...) above — anything landing here is a genuine, different
+                    // DB error, so it's reported as such instead of being mislabeled.
+                    json(false, null, 'Could not save product — please try again.');
                 }
                 break;
 
@@ -1719,7 +1746,8 @@ if (isset($_GET['api'])) {
                     }
                     json(true, ['ok' => true]);
                 } catch (PDOException $e) {
-                    json(false, null, 'Barcode already exists');
+                    $isDupeBarcode = $e->getCode() === '23505' && str_contains($e->getMessage(), 'uniq_product_store_barcode');
+                    json(false, null, $isDupeBarcode ? 'Barcode already exists — try a different one' : 'Could not save product — please try again.');
                 }
                 break;
 
@@ -10670,7 +10698,7 @@ if ($isCashierRole && $page !== 'login') {
                             <span style="font-size:.78rem;color:var(--text3);">Base (1 Pc)</span>
                         </div>
                         <div style="display:flex;gap:5px;margin-bottom:4px;">
-                            <input type="text" class="form-input" id="p-barcode" placeholder="Auto-generated" style="flex:1;min-width:0;" oninput="const b=document.getElementById('show-qr-btn');if(b)b.style.display=this.value.trim()?'':'none';onBarcodeFieldChange();" />
+                            <input type="text" class="form-input" id="p-barcode" placeholder="Auto-generated" style="flex:1;min-width:0;" oninput="_barcodeAutoGenerated=false;const b=document.getElementById('show-qr-btn');if(b)b.style.display=this.value.trim()?'':'none';onBarcodeFieldChange();" />
                             <button type="button" class="btn btn-secondary btn-sm" onclick="openProductBarcodeScan('p-barcode')" title="Scan a real-world barcode with the camera">📷</button>
                             <button type="button" class="btn btn-secondary btn-sm" onclick="genBarcode('p-barcode')" title="Generate new barcode">↺</button>
                         </div>
@@ -14049,6 +14077,7 @@ if ($isCashierRole && $page !== 'login') {
                 setExpiryFromIso('');
                 setDeliveryFromIso('');
                 document.getElementById('p-barcode').value = '';
+                _barcodeAutoGenerated = false;
                 const pBcCheck = document.getElementById('p-barcode-check');
                 if (pBcCheck) pBcCheck.textContent = '';
                 ['p-qty-cases', 'p-qty-bundles', 'p-qty-loose', 'p-wh-qty-cases', 'p-wh-qty-bundles', 'p-wh-qty-loose'].forEach(fid => {
@@ -14168,6 +14197,7 @@ if ($isCashierRole && $page !== 'login') {
                 setExpiryFromIso(p.expiry_date || '');
                 setDeliveryFromIso(p.delivery_date || '');
                 document.getElementById('p-barcode').value = p.barcode || '';
+                _barcodeAutoGenerated = false; // editing an existing real barcode — never silently swap it
                 const pBcCheck2 = document.getElementById('p-barcode-check');
                 if (pBcCheck2) pBcCheck2.textContent = '';
                 // Decompose the saved totals back into Cases/Bundles/Loose Pcs using this
@@ -14387,22 +14417,35 @@ if ($isCashierRole && $page !== 'login') {
                 } else {
                     req = apiPost('add_product', payload);
                 }
-                req.then(r => {
-                    setLoading(btn, false);
-                    if (!r?.success) {
-                        toast(r?.error || 'Error saving product', 'error');
-                        return;
-                    }
-                    // If new product, show the generated barcode
-                    if (!id && r.data?.barcode) {
-                        document.getElementById('p-barcode').value = r.data.barcode;
-                        const showQrBtn = document.getElementById('show-qr-btn');
-                        if (showQrBtn) showQrBtn.style.display = '';
-                    }
-                    toast(id ? 'Product updated!' : 'Product added!', 'success');
-                    closeModal('prod-modal');
-                    loadInvProds();
-                });
+                let r = await req;
+                // SELF-HEALING BARCODE RETRY: if the code currently in the field came
+                // from the Auto-Generate button and it happened to collide with an
+                // existing one, silently mint a fresh code and retry — the user never
+                // typed or scanned this value on purpose, so there's nothing for them
+                // to "fix" manually. A real typed/scanned duplicate still surfaces the
+                // error below, since that's a genuine conflict they need to resolve.
+                let barcodeRetries = 0;
+                while (!r?.success && _barcodeAutoGenerated && /barcode already exists/i.test(r?.error || '') && barcodeRetries < 5) {
+                    barcodeRetries++;
+                    const freshBarcode = 'BC-' + generateBarcodeSuffix();
+                    payload.barcode = freshBarcode;
+                    document.getElementById('p-barcode').value = freshBarcode;
+                    r = id ? await apiPost('update_product', payload) : await apiPost('add_product', payload);
+                }
+                setLoading(btn, false);
+                if (!r?.success) {
+                    toast(r?.error || 'Error saving product', 'error');
+                    return;
+                }
+                // If new product, show the generated barcode
+                if (!id && r.data?.barcode) {
+                    document.getElementById('p-barcode').value = r.data.barcode;
+                    const showQrBtn = document.getElementById('show-qr-btn');
+                    if (showQrBtn) showQrBtn.style.display = '';
+                }
+                toast(id ? 'Product updated!' : 'Product added!', 'success');
+                closeModal('prod-modal');
+                loadInvProds();
             }
 
             function deleteProduct() {
@@ -16489,13 +16532,33 @@ if ($isCashierRole && $page !== 'login') {
                 generateBarcode(barcode, 'barcode-svg');
             }
 
+            // Tracks whether the current p-barcode value came from the Auto-Generate
+            // button (vs typed or scanned from a real physical label). Only an
+            // auto-generated code is safe to silently replace on a collision —
+            // a real scanned/typed barcode colliding means something else already
+            // legitimately owns that code, so that case must still show the error.
+            let _barcodeAutoGenerated = false;
+
+            // High-entropy suffix: crypto-random bytes instead of Math.random(),
+            // and always exactly 10 chars (Math.random().toString(36) can silently
+            // produce FEWER characters when the random float has trailing zeros,
+            // shrinking the effective entropy right when you need it most).
+            function generateBarcodeSuffix() {
+                const bytes = new Uint8Array(8);
+                (window.crypto || window.msCrypto).getRandomValues(bytes);
+                let s = '';
+                for (const b of bytes) s += b.toString(36).padStart(2, '0');
+                return s.slice(0, 10).toUpperCase();
+            }
+
             function genBarcode(targetId) {
                 targetId = targetId || 'p-barcode';
-                const bc = 'BC-' + Math.random().toString(36).substr(2, 8).toUpperCase();
+                const bc = 'BC-' + generateBarcodeSuffix();
                 const inp = document.getElementById(targetId);
                 if (inp) {
                     inp.value = bc;
                     if (targetId === 'p-barcode') {
+                        _barcodeAutoGenerated = true;
                         const showQrBtn = document.getElementById('show-qr-btn');
                         if (showQrBtn) showQrBtn.style.display = '';
                         generateBarcode(bc, 'barcode-svg');
