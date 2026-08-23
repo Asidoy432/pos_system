@@ -10499,7 +10499,7 @@ if ($isCashierRole && $page !== 'login') {
                         🏷️ Give a Discount on a Product
                     </button>
                     <button class="btn btn-primary btn-full btn-lg" style="margin-top:10px;" onclick="processPayment()" id="pay-btn" disabled>
-                        ✔ Process Payment <span class="kbd-hint-inline">Enter</span>
+                        ✔ Process Payment
                     </button>
                     <div style="display:flex;gap:7px;margin-top:8px;">
                         <button type="button" class="btn cart-hold-btn" style="flex:1;" onclick="holdCurrentCart()">
@@ -10901,10 +10901,10 @@ if ($isCashierRole && $page !== 'login') {
                         </div>
                     </div>
                     <div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap;">
-                        <button type="button" class="btn btn-primary" style="flex:2;" onclick="saveProduct()" id="save-prod-btn">Save Product <span class="kbd-hint-inline">Ctrl+Enter</span></button>
+                        <button type="button" class="btn btn-primary" style="flex:2;" onclick="saveProduct()" id="save-prod-btn">Save Product</button>
                         <button type="button" class="btn btn-secondary btn-sm" id="show-qr-btn" onclick="showQRPreview()" style="display:none;">🏷️ Barcode</button>
                         <button type="button" class="btn btn-danger btn-sm" id="delete-prod-btn" onclick="deleteProduct()" style="display:none;">🗑️</button>
-                        <button type="button" class="btn btn-secondary btn-sm" onclick="closeModal('prod-modal')">Cancel <span class="kbd-hint-inline" style="background:var(--surface2);border-color:var(--border);color:var(--text2);">Esc</span></button>
+                        <button type="button" class="btn btn-secondary btn-sm" onclick="closeModal('prod-modal')">Cancel</button>
                     </div>
                 </div>
             </div>
