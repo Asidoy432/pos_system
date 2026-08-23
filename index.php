@@ -10680,8 +10680,11 @@ if ($isCashierRole && $page !== 'login') {
                     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
                         <div class="form-group">
                             <label class="form-label">Category</label>
-                            <input type="text" class="form-input" id="p-cat-input" list="p-cat-datalist" placeholder="Type or select…" autocomplete="off" oninput="syncCatFromInput()" />
-                            <datalist id="p-cat-datalist"></datalist>
+                            <div style="position:relative;">
+                                <input type="text" class="form-input" id="p-cat-input" placeholder="Type or click to select…" autocomplete="off"
+                                    oninput="syncCatFromInput();filterCatSuggestions();" onfocus="filterCatSuggestions()" onblur="hideCatSuggestSoon()" />
+                                <div id="p-cat-suggest" style="display:none;position:absolute;z-index:50;left:0;right:0;top:100%;margin-top:2px;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:var(--shadow-lg);max-height:220px;overflow-y:auto;"></div>
+                            </div>
                             <input type="hidden" id="p-cat" />
                         </div>
                         <div class="form-group">
@@ -14159,7 +14162,6 @@ if ($isCashierRole && $page !== 'login') {
                 if (showQrBtn) showQrBtn.style.display = 'none';
                 const qrWrap = document.getElementById('qr-preview-wrap');
                 if (qrWrap) qrWrap.style.display = 'none';
-                document.getElementById('p-cat-datalist').innerHTML = invCats.map(c => '<option value="' + escapeHtml(c.name) + '">').join('');
                 document.getElementById('p-cat-input').value = '';
                 document.getElementById('p-cat').value = '';
                 const packQty = document.getElementById('p-pack-qty');
@@ -14294,12 +14296,9 @@ if ($isCashierRole && $page !== 'login') {
                 const showQrBtn = document.getElementById('show-qr-btn');
                 if (showQrBtn) showQrBtn.style.display = p.barcode ? '' : 'none';
                 // invCats may not be loaded yet if this modal was opened from a page other
-                // than Products (e.g. Warehouse) — fetch it on demand so the datalist
-                // still has suggestions to type against.
-                if (!invCats.length) loadInvCats().then(() => {
-                    document.getElementById('p-cat-datalist').innerHTML = invCats.map(c => '<option value="' + escapeHtml(c.name) + '">').join('');
-                });
-                document.getElementById('p-cat-datalist').innerHTML = invCats.map(c => '<option value="' + escapeHtml(c.name) + '">').join('');
+                // than Products (e.g. Warehouse) — fetch it on demand so the category
+                // dropdown still has suggestions to click on.
+                if (!invCats.length) loadInvCats();
                 // category_name is always returned by get_products, so use it directly
                 // rather than depending on invCats being loaded/matched.
                 document.getElementById('p-cat-input').value = p.category_name || '';
@@ -16795,6 +16794,56 @@ if ($isCashierRole && $page !== 'login') {
                 if (!hidden) return;
                 const match = invCats.find(c => c.name.toLowerCase() === typed.toLowerCase());
                 hidden.value = match ? match.id : '';
+            }
+
+            // Renders the clickable suggestion list under the Category field — shows
+            // every category immediately on focus/click (not just once typing starts,
+            // which is what made the old native <input list=datalist> combo fail to
+            // open on many mobile/Android browsers), and narrows as the user types.
+            // If invCats hasn't loaded yet (e.g. this modal was opened before the
+            // category list finished fetching), it's loaded on demand here too.
+            function filterCatSuggestions() {
+                const inp = document.getElementById('p-cat-input');
+                const listEl = document.getElementById('p-cat-suggest');
+                if (!inp || !listEl) return;
+                if (!invCats.length) {
+                    loadInvCats().then(filterCatSuggestions);
+                    listEl.innerHTML = '<div style="padding:8px 10px;font-size:.8rem;color:var(--text3);">Loading categories…</div>';
+                    listEl.style.display = 'block';
+                    return;
+                }
+                const q = inp.value.trim().toLowerCase();
+                const matches = q ? invCats.filter(c => c.name.toLowerCase().includes(q)) : invCats;
+                if (!matches.length) {
+                    listEl.innerHTML = '<div style="padding:8px 10px;font-size:.8rem;color:var(--text3);">No matching category — type a new name to create one</div>';
+                } else {
+                    listEl.innerHTML = matches.map(c =>
+                        '<div onmousedown="event.preventDefault();selectCatSuggestion(' + c.id + ')" ' +
+                        'style="padding:8px 10px;font-size:.85rem;cursor:pointer;border-bottom:1px solid var(--border);">' + escapeHtml(c.name) + '</div>'
+                    ).join('');
+                }
+                listEl.style.display = 'block';
+            }
+
+            // onmousedown+preventDefault on each row (above) fires the selection BEFORE
+            // this blur handler's timeout hides the list — same race-avoidance pattern
+            // already used by the New Delivery product search dropdown.
+            function hideCatSuggestSoon() {
+                const listEl = document.getElementById('p-cat-suggest');
+                setTimeout(() => {
+                    if (listEl) listEl.style.display = 'none';
+                }, 150);
+            }
+
+            function selectCatSuggestion(catId) {
+                const cat = invCats.find(c => c.id === catId);
+                if (!cat) return;
+                const inp = document.getElementById('p-cat-input');
+                const hidden = document.getElementById('p-cat');
+                if (inp) inp.value = cat.name;
+                if (hidden) hidden.value = cat.id;
+                const listEl = document.getElementById('p-cat-suggest');
+                if (listEl) listEl.style.display = 'none';
             }
 
             // Resolves the typed category name to an id, creating the category first if
