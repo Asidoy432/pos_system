@@ -22,7 +22,7 @@
  * old caches get cleaned up automatically on the next activate.
  */
 
-const CACHE_VERSION = 'pos-static-v2';
+const CACHE_VERSION = 'pos-static-v3';
 
 const STATIC_ASSET_PATTERNS = [
     /\/icons\/icon-.*\.png$/,
