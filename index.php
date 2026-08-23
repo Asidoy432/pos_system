@@ -4233,6 +4233,25 @@ if ($isCashierRole && $page !== 'login') {
     <?php if (!empty($storeSettings['shop_logo'])): ?>
         <link rel="icon" type="image/*" href="<?= htmlspecialchars($storeSettings['shop_logo']) ?>" />
     <?php endif; ?>
+    <!-- PWA: lets the app be installed to the home screen (Android/desktop
+     Chrome install prompt, iOS "Add to Home Screen"). Deliberately does
+     NOT change how data loads — see sw.js for exactly what is and isn't
+     cached. Icons/manifest are static branding, unrelated to store data. -->
+    <link rel="manifest" href="manifest.webmanifest" />
+    <meta name="theme-color" content="#0a1628" />
+    <link rel="apple-touch-icon" href="icons/icon-192.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="POS System" />
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', function() {
+                navigator.serviceWorker.register('sw.js').catch(function(err) {
+                    console.warn('Service worker registration failed:', err);
+                });
+            });
+        }
+    </script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Poppins:ital,wght@0,400;0,500;0,600;0,700;0,800;1,400&display=swap" rel="stylesheet" />
     <!-- JsBarcode - linear barcode generator -->
     <!-- JsBarcode v3.11.6, inlined (not loaded from CDN) so barcode
