@@ -1652,8 +1652,10 @@ if (isset($_GET['api'])) {
                 } catch (PDOException $e) {
                     // The barcode-collision case already exits earlier (with retry) via
                     // json(false, ...) above — anything landing here is a genuine, different
-                    // DB error, so it's reported as such instead of being mislabeled.
-                    json(false, null, 'Could not save product — please try again.');
+                    // DB error. TEMPORARY: surfacing the actual SQLSTATE + driver message
+                    // (not just a generic string) so we can pin down exactly what's
+                    // failing — safe to show here since only the store owner sees it.
+                    json(false, null, 'Could not save product — [' . $e->getCode() . '] ' . $e->getMessage());
                 }
                 break;
 
@@ -1764,7 +1766,10 @@ if (isset($_GET['api'])) {
                             ? "Barcode \"$barcode\" is already used by \"$conflictName\" — give one of the two a different code."
                             : 'Barcode already exists — try a different one');
                     } else {
-                        json(false, null, 'Could not save product — please try again.');
+                        // TEMPORARY: same diagnostic upgrade as add_product above — show
+                        // the real SQLSTATE + driver message instead of a generic string,
+                        // so the actual cause is visible instead of guessed at.
+                        json(false, null, 'Could not save product — [' . $e->getCode() . '] ' . $e->getMessage());
                     }
                 }
                 break;
