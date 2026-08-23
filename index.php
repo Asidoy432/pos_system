@@ -10320,7 +10320,7 @@ if ($isCashierRole && $page !== 'login') {
             <!-- STEP 2: order summary in the Payment Receipt style, revealed once verified -->
             <div id="vo-summary-wrap" style="display:none;margin-top:6px;">
                 <div style="border-top:1px dashed var(--border);margin:12px 0;"></div>
-                <div style="font-family:'SF Mono','Menlo','Consolas','Courier New',monospace;background:#fafafa;border:1px solid var(--border);border-radius:10px;padding:12px;font-size:.82rem;">
+                <div style="font-family:'SF Mono','Menlo','Consolas','Courier New',monospace;background:#fafafa;color:#1a1a1a;color-scheme:light;border:1px solid var(--border);border-radius:10px;padding:12px;font-size:.82rem;">
                     <div style="font-weight:800;text-align:center;margin-bottom:8px;letter-spacing:.04em;">ORDER SUMMARY</div>
                     <div style="display:flex;justify-content:space-between;margin:3px 0;"><span>Order #</span><strong id="vo-sum-ref">—</strong></div>
                     <div style="display:flex;justify-content:space-between;margin:3px 0;"><span>Cashier</span><strong id="vo-sum-cashier">—</strong></div>
