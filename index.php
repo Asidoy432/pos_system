@@ -1328,7 +1328,7 @@ function createDeliveryWithBatches(PDO $db, ?string $supplierRef, ?string $event
         $db->prepare("INSERT INTO batches (delivery_id,product_id,qty_received,qty_warehouse,qty_store,cost_price,expiry_date) VALUES (?,?,?,?,?,?,?)")
             ->execute([$deliveryId, $pid, $qWh + $qSt, $qWh, $qSt, $cost, $exp]);
         $batchId = (int)lastInsertedId($db);
-        $db->prepare("INSERT INTO warehouse_stock (product_id,quantity) VALUES (?,0)")->execute([$pid]);
+        $db->prepare("INSERT INTO warehouse_stock (product_id,quantity) VALUES (?,0) ON CONFLICT (product_id) DO NOTHING")->execute([$pid]);
         // Only tag [Warehouse]/[Store] when a single delivery line actually
         // splits across both locations at once (a multi-product delivery
         // where this one item is partly shelved, partly held back) — when
@@ -1639,7 +1639,7 @@ if (isset($_GET['api'])) {
                     // Ensure a warehouse_stock row always exists (even for a
                     // zero-stock product) — the real qty_warehouse then arrives via
                     // the batch below, so it's never double-counted.
-                    $db->prepare("INSERT INTO warehouse_stock (product_id,quantity) VALUES (?,0)")->execute([$newId]);
+                    $db->prepare("INSERT INTO warehouse_stock (product_id,quantity) VALUES (?,0) ON CONFLICT (product_id) DO NOTHING")->execute([$newId]);
                     // Log initial stock as a real FEFO batch (this product's Batch #1)
                     // instead of a bare aggregate bump, reusing the Cost Price/Expiry/
                     // Delivery Date/Supplier already collected on this same form.
@@ -1741,7 +1741,7 @@ if (isset($_GET['api'])) {
                             ->execute([$id, $newWhQty]);
                     }
                     // Ensure warehouse_stock row exists
-                    $db->prepare("INSERT INTO warehouse_stock (product_id,quantity) VALUES (?,0)")->execute([$id]);
+                    $db->prepare("INSERT INTO warehouse_stock (product_id,quantity) VALUES (?,0) ON CONFLICT (product_id) DO NOTHING")->execute([$id]);
                     // Log store quantity change
                     if ($diff > 0) {
                         $db->prepare("INSERT INTO warehouse (product_id,qty_in,note,created_by) VALUES (?,?,?,?)")
@@ -1821,7 +1821,7 @@ if (isset($_GET['api'])) {
                 $ownCheck->execute([$pid, currentStoreId()]);
                 if (!$ownCheck->fetch()) json(false, null, 'Product not found');
                 // Ensure warehouse_stock row exists
-                $db->prepare("INSERT INTO warehouse_stock (product_id,quantity) VALUES (?,0)")->execute([$pid]);
+                $db->prepare("INSERT INTO warehouse_stock (product_id,quantity) VALUES (?,0) ON CONFLICT (product_id) DO NOTHING")->execute([$pid]);
                 if ($target === 'store') {
                     // Movement affects store shelf stock
                     if ($type === 'in') {
@@ -1891,7 +1891,7 @@ if (isset($_GET['api'])) {
                 $ownCheck = $db->prepare("SELECT id FROM products WHERE id=? AND store_id=?");
                 $ownCheck->execute([$pid, currentStoreId()]);
                 if (!$ownCheck->fetch()) json(false, null, 'Product not found');
-                $db->prepare("INSERT INTO warehouse_stock (product_id,quantity) VALUES (?,0)")->execute([$pid]);
+                $db->prepare("INSERT INTO warehouse_stock (product_id,quantity) VALUES (?,0) ON CONFLICT (product_id) DO NOTHING")->execute([$pid]);
                 $whQty = (int)$db->query("SELECT quantity FROM warehouse_stock WHERE product_id=$pid")->fetchColumn();
                 if ($qty > $whQty) json(false, null, "Only $whQty units available in warehouse");
                 $db->prepare("UPDATE warehouse_stock SET quantity=GREATEST(0,quantity-?) WHERE product_id=?")->execute([$qty, $pid]);
@@ -2026,7 +2026,7 @@ if (isset($_GET['api'])) {
                 try {
                     if ($reasonCode === 'CUSTOMER_RETURN' && $returnAction === 'restock') {
                         if ($location === 'warehouse') {
-                            $db->prepare("INSERT INTO warehouse_stock (product_id,quantity) VALUES (?,0)")->execute([$pid]);
+                            $db->prepare("INSERT INTO warehouse_stock (product_id,quantity) VALUES (?,0) ON CONFLICT (product_id) DO NOTHING")->execute([$pid]);
                             $db->prepare("UPDATE warehouse_stock SET quantity=quantity+? WHERE product_id=?")->execute([$qty, $pid]);
                         } else {
                             $db->prepare("UPDATE products SET quantity=quantity+?,store_quantity=store_quantity+? WHERE id=?")->execute([$qty, $qty, $pid]);
@@ -2055,7 +2055,7 @@ if (isset($_GET['api'])) {
                         // Restock/New Delivery, not as a reversal of this record; this
                         // row just documents that the stock left the warehouse and why.
                         if ($location === 'warehouse') {
-                            $db->prepare("INSERT INTO warehouse_stock (product_id,quantity) VALUES (?,0)")->execute([$pid]);
+                            $db->prepare("INSERT INTO warehouse_stock (product_id,quantity) VALUES (?,0) ON CONFLICT (product_id) DO NOTHING")->execute([$pid]);
                             $db->prepare("UPDATE warehouse_stock SET quantity=GREATEST(0,quantity-?) WHERE product_id=?")->execute([$qty, $pid]);
                         } else {
                             $db->prepare("UPDATE products SET quantity=GREATEST(0,quantity-?),store_quantity=GREATEST(0,store_quantity-?) WHERE id=?")->execute([$qty, $qty, $pid]);
