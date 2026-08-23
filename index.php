@@ -10474,12 +10474,8 @@ if ($isCashierRole && $page !== 'login') {
                 <div class="modal-header">
                     <span class="modal-title">🛒 Cart</span>
                     <div style="display:flex;align-items:center;gap:10px;">
-                        <span class="kbd-hint-inline" style="background:var(--surface2);border-color:var(--border);color:var(--text2);">Exit <span class="kbd">X</span></span>
                         <button class="modal-close" onclick="closeModal('cart-modal')">✕</button>
                     </div>
-                </div>
-                <div class="kbd-nav-hint" id="cart-kbd-hint">
-                    <span class="kbd">↑</span><span class="kbd">↓</span> select row (↓ on last row → Cash Tendered) · <span class="kbd">←</span><span class="kbd">→</span> ±1 qty · type a number to set qty
                 </div>
                 <div class="cart-col-header" id="cart-col-header" style="display:none;">
                     <span></span><span>Product / Details</span><span>Unit / Qty</span><span>Price</span><span>Subtotal</span><span></span>
@@ -10507,16 +10503,16 @@ if ($isCashierRole && $page !== 'login') {
                     </button>
                     <div style="display:flex;gap:7px;margin-top:8px;">
                         <button type="button" class="btn cart-hold-btn" style="flex:1;" onclick="holdCurrentCart()">
-                            Hold <span class="kbd-hint-inline">H</span>
+                            Hold
                         </button>
                         <div style="flex:1;position:relative;">
                             <button type="button" class="btn cart-held-btn" style="width:100%;" id="held-carts-btn" onclick="toggleHeldCartsMenu()">
-                                Held Carts (<span id="held-carts-count">0</span>) <span class="kbd-hint-inline">E</span>
+                                Held Carts (<span id="held-carts-count">0</span>)
                             </button>
                             <div class="held-carts-dropdown" id="held-carts-menu" style="display:none;"></div>
                         </div>
                         <button type="button" class="btn cart-clear-btn" style="flex:1;" onclick="clearCart()">
-                            Clear Cart <span class="kbd-hint-inline">C</span>
+                            Clear Cart
                         </button>
                     </div>
                 </div>
@@ -13614,11 +13610,9 @@ if ($isCashierRole && $page !== 'login') {
                             imgEl +
                             '<div><div class="cart-line-name">' + escapeHtml(item.name) + '</div></div>' +
                             '<div class="cart-qty-box">' +
-                            '<button type="button" class="qty-btn" onclick="changeQty(' + item.product_id + ',-1)">−</button>' +
                             '<input type="number" class="cart-qty-input" id="cart-qty-' + item.product_id + '" value="' + item.qty + '" min="1" ' +
                             'onfocus="focusedCartIdx=' + idx + ';renderCartFocusHighlight();" ' +
                             'onchange="setQtyDirect(' + item.product_id + ',this.value)"/>' +
-                            '<button type="button" class="qty-btn" onclick="changeQty(' + item.product_id + ',1)">+</button>' +
                             '</div>' +
                             '<div class="cart-price-col">' + cartPriceColHTML(item, bd) + '</div>' +
                             '<div class="cart-sub-col">' + fmt(bd.subtotal) + '</div>' +
