@@ -1751,7 +1751,21 @@ if (isset($_GET['api'])) {
                     json(true, ['ok' => true]);
                 } catch (PDOException $e) {
                     $isDupeBarcode = $e->getCode() === '23505' && str_contains($e->getMessage(), 'uniq_product_store_barcode');
-                    json(false, null, $isDupeBarcode ? 'Barcode already exists — try a different one' : 'Could not save product — please try again.');
+                    if ($isDupeBarcode) {
+                        // Say WHICH product already holds that code instead of a dead-end
+                        // error — this also surfaces a genuine pre-existing duplicate in
+                        // the data (e.g. from before barcode collisions were made
+                        // self-healing) so it's something to actually go fix, not a
+                        // mystery that blocks saving forever.
+                        $conflictStmt = $db->prepare("SELECT name FROM products WHERE store_id=? AND barcode=? AND id != ?");
+                        $conflictStmt->execute([currentStoreId(), $barcode, $id]);
+                        $conflictName = $conflictStmt->fetchColumn();
+                        json(false, null, $conflictName
+                            ? "Barcode \"$barcode\" is already used by \"$conflictName\" — give one of the two a different code."
+                            : 'Barcode already exists — try a different one');
+                    } else {
+                        json(false, null, 'Could not save product — please try again.');
+                    }
                 }
                 break;
 
@@ -4190,6 +4204,13 @@ if ($isCashierRole && $page !== 'login') {
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+    <!-- Tells the browser this page manages its own light/dark colors, so
+         Android Chrome's "Force dark mode for web contents" (and similar
+         browser/OS-level auto-dark features) stops trying to auto-invert
+         our already-explicit colors — that auto-inversion was exactly why
+         the white payment receipt looked washed-out/low-contrast on some
+         phones even though its CSS colors were correct all along. -->
+    <meta name="color-scheme" content="dark light" />
     <title><?= htmlspecialchars($storeSettings['shop_name']) ?></title>
     <!-- Applies the saved Light/Dark app theme (see toggleTheme() further
      down) before first paint, so the page never flashes dark-then-light
@@ -6690,6 +6711,7 @@ if ($isCashierRole && $page !== 'login') {
     <script src="https://cdn.jsdelivr.net/npm/qz-tray@2.2.6/qz-tray.js"></script>
     <style>
         :root {
+            color-scheme: dark;
             --bg: #0a1628;
             --surface: #101f38;
             --surface2: #16294a;
@@ -6726,6 +6748,7 @@ if ($isCashierRole && $page !== 'login') {
            is also intentionally unaffected since it's already light with
            dedicated dark --nav-ink text in both modes. */
         html.theme-light {
+            color-scheme: light;
             --bg: #f3f6fb;
             --surface: #ffffff;
             --surface2: #eef2f9;
@@ -8204,6 +8227,10 @@ if ($isCashierRole && $page !== 'login') {
             font-family: 'Courier New', monospace;
             background: #fff;
             color: #1a1a1a;
+            /* Always an intentionally-light "printed paper" look, regardless of
+               the app's own dark/light theme — pins it so Chrome's forced-dark
+               heuristic (and similar) never re-inverts it into low-contrast text. */
+            color-scheme: light;
             border: 2px dashed var(--border);
             border-radius: var(--r-sm);
             padding: 16px;
