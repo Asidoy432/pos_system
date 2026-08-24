@@ -34,6 +34,11 @@ const STATIC_ASSET_PATTERNS = [
     // URL; a replaced photo always has a brand-new URL to fetch fresh.
     /\/uploads\/products\/.*\.(webp|png|jpe?g|gif)$/,
     /\/uploads\/shop\/.*\.(webp|png|jpe?g|gif)$/,
+    // Product photos + shop logo now live in Supabase Storage (survives
+    // Render redeploys, unlike local disk — see saveProductImageFile() in
+    // index.php). Same safety argument as above: every upload gets a new
+    // timestamped filename, so a cached copy can never go stale.
+    /^https:\/\/[a-z0-9-]+\.supabase\.co\/storage\/v1\/object\/public\//i,
     /^https:\/\/fonts\.googleapis\.com\//,
     /^https:\/\/fonts\.gstatic\.com\//,
 ];
