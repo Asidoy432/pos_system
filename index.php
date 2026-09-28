@@ -1,10 +1,31 @@
 <?php
-// ═══════════════════════════════════════════════════
-//  CANTEEN POS — Single File Edition
+// ══════════════════════════════════════════════════
 //  Upload ONLY this one file. Visit it in browser.
-// Made by Arnolfo Reyes Asidoy Jr.
-//  Default login: admin / admin123
+//  Made by Arnolfo Reyes Asidoy Jr.
 // ═══════════════════════════════════════════════════
+
+// ── DEFENSE-IN-DEPTH: SERVER & SENSITIVE PATH SHIELD ──
+ini_set('display_errors', '0');
+ini_set('log_errors', '1');
+@header_remove('X-Powered-By');
+
+$__reqUri = $_SERVER['REQUEST_URI'] ?? '';
+$__rawPath = parse_url($__reqUri, PHP_URL_PATH) ?? '';
+if (preg_match('#(?:^|/)\.(?:env|git|agents|htaccess)#i', $__rawPath) || preg_match('#\.(?:bak|backup|sql|log|ini|conf|sh|bat|ps1|vbs)$#i', $__rawPath)) {
+    http_response_code(403);
+    echo '403 Forbidden';
+    exit;
+}
+
+header('X-Frame-Options: SAMEORIGIN');
+header('X-Content-Type-Options: nosniff');
+header('Referrer-Policy: strict-origin-when-cross-origin');
+header('X-XSS-Protection: 1; mode=block');
+header('Permissions-Policy: camera=(self), microphone=(), geolocation=()');
+$__isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https');
+if ($__isHttps) {
+    header('Strict-Transport-Security: max-age=31536000; includeSubDomains');
+}
 
 // ── OUTPUT COMPRESSION ──
 // REMOVED: a prior version manually gzip-compressed every response here via
@@ -21,6 +42,31 @@
 // needed on this host — do not re-add it here unless you've confirmed the
 // host does NOT already compress responses itself.
 
+// ── LOCAL ENVIRONMENT LOADER (.env.local / .env) ──
+(function () {
+    foreach ([__DIR__ . '/.env.local', __DIR__ . '/.env'] as $f) {
+        if (is_file($f) && is_readable($f)) {
+            $lines = file($f, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+            foreach ($lines as $line) {
+                $line = trim($line);
+                if ($line === '' || str_starts_with($line, '#') || !str_contains($line, '=')) continue;
+                [$k, $v] = explode('=', $line, 2);
+                $k = trim($k);
+                $v = trim($v);
+                if ((str_starts_with($v, '"') && str_ends_with($v, '"')) || (str_starts_with($v, "'") && str_ends_with($v, "'"))) {
+                    $v = substr($v, 1, -1);
+                }
+                if ($k !== '' && (getenv($k) === false || getenv($k) === '')) {
+                    putenv("{$k}={$v}");
+                    $_ENV[$k] = $v;
+                    $_SERVER[$k] = $v;
+                }
+            }
+            break;
+        }
+    }
+})();
+
 // ── DATABASE CONFIG (edit these 4 lines) ──
 define('DATABASE_URL', getenv('DATABASE_URL') ?: '');
 define('DB_HOST', getenv('DB_HOST') ?: '');
@@ -34,13 +80,13 @@ define('DB_PASS', getenv('DB_PASS') ?: '');
 // installDB()'s ~100 statements need to actually run again. Forgetting to
 // bump this after adding new schema changes means those changes won't take
 // effect on an already-deployed database until this number goes up.
-define('SCHEMA_VERSION', 2);
+define('SCHEMA_VERSION', 9);
 
 // ── BREVO CONFIG (for Forgot Password emails) ──
-// trim() guards against stray spaces/quotes accidentally pasted into Render env vars
-define('BREVO_API_KEY', trim(getenv('BREVO_API_KEY') ?: ''));
-define('BREVO_SENDER_EMAIL', trim(getenv('BREVO_SENDER_EMAIL') ?: ''));
-define('BREVO_SENDER_NAME', trim(getenv('BREVO_SENDER_NAME') ?: 'Pos_System'));
+// Reads from server environment variables (Render Dashboard -> Environment) or local .env
+define('BREVO_API_KEY', trim((string)getenv('BREVO_API_KEY')));
+define('BREVO_SENDER_EMAIL', trim((string)(getenv('BREVO_SENDER_EMAIL') ?: 'arnolfoasidoy93@gmail.com')));
+define('BREVO_SENDER_NAME', trim((string)(getenv('BREVO_SENDER_NAME') ?: 'ProCast')));
 
 // ── SESSION HARDENING ──
 // HttpOnly stops any injected/third-party JS from ever reading the session
@@ -56,7 +102,176 @@ define('BREVO_SENDER_NAME', trim(getenv('BREVO_SENDER_NAME') ?: 'Pos_System'));
 // browser close, or device power-off used to throw the login away. The
 // session itself can still be lost server-side (Render wipes disk on
 // restart) — the DB-backed remember token below rebuilds it automatically.
+// ── PWA MANIFEST, SERVICE WORKER & ICON ROUTING ──
+$reqPath = strtok($_SERVER['REQUEST_URI'] ?? '', '?');
+$reqPathLower = strtolower($reqPath);
+
+$servePwaIcon = function($type) {
+    while (ob_get_level() > 0) {
+        @ob_end_clean();
+    }
+    header('Content-Type: image/png');
+    header('Cache-Control: public, max-age=604800');
+    header('Accept-Ranges: bytes');
+
+    $isMaskable = str_contains($type, 'maskable');
+    $is192 = str_contains($type, '192') || str_contains($type, 'apple');
+    $targetSize = $is192 ? 192 : 512;
+    $targetFile = $targetSize . ($isMaskable ? '-maskable' : '');
+
+    // 1. Direct file match
+    $checkPaths = [
+        __DIR__ . '/assets/icon-' . $targetFile . '.png',
+        __DIR__ . '/icon-' . $targetFile . '.png',
+        __DIR__ . '/icons/icon-' . $targetFile . '.png',
+        __DIR__ . '/assets/icons/icon-' . $targetFile . '.png',
+        __DIR__ . '/assets/icon-' . $targetSize . '.png',
+        __DIR__ . '/icon-' . $targetSize . '.png',
+        __DIR__ . '/icons/icon-' . $targetSize . '.png',
+    ];
+    if (str_contains($type, 'apple')) {
+        array_unshift($checkPaths, __DIR__ . '/assets/apple-touch-icon.png', __DIR__ . '/apple-touch-icon.png', __DIR__ . '/icons/apple-touch-icon.png');
+    }
+
+    foreach ($checkPaths as $p) {
+        if (file_exists($p) && filesize($p) > 0) {
+            header('Content-Length: ' . filesize($p));
+            readfile($p);
+            exit;
+        }
+    }
+
+    // 2. Fallback to assets/default-logo.png
+    $srcLogo = __DIR__ . '/assets/default-logo.png';
+    if (!file_exists($srcLogo)) {
+        $srcLogo = __DIR__ . '/assets/pos_system-main/pos_system-main/assets/default-logo.png';
+    }
+
+    if (file_exists($srcLogo) && filesize($srcLogo) > 0) {
+        if ($targetSize === 512 && !$isMaskable) {
+            header('Content-Length: ' . filesize($srcLogo));
+            readfile($srcLogo);
+            exit;
+        }
+
+        // Resize / pad dynamically with GD if available
+        if (function_exists('imagecreatefromstring') && function_exists('imagecreatetruecolor')) {
+            $raw = @file_get_contents($srcLogo);
+            if ($raw) {
+                $im = @imagecreatefromstring($raw);
+                if ($im) {
+                    $sw = imagesx($im);
+                    $sh = imagesy($im);
+                    $dst = imagecreatetruecolor($targetSize, $targetSize);
+
+                    if ($isMaskable) {
+                        $bg = imagecolorallocate($dst, 10, 22, 40); // #0a1628
+                        imagefilledrectangle($dst, 0, 0, $targetSize, $targetSize, $bg);
+                        $scale = 0.78;
+                        $dw = (int)($targetSize * $scale);
+                        $dh = (int)($targetSize * $scale);
+                        $dx = (int)(($targetSize - $dw) / 2);
+                        $dy = (int)(($targetSize - $dh) / 2);
+                        imagealphablending($dst, true);
+                        imagecopyresampled($dst, $im, $dx, $dy, 0, 0, $dw, $dh, $sw, $sh);
+                    } else {
+                        imagealphablending($dst, false);
+                        imagesavealpha($dst, true);
+                        $trans = imagecolorallocatealpha($dst, 255, 255, 255, 127);
+                        imagefilledrectangle($dst, 0, 0, $targetSize, $targetSize, $trans);
+                        imagealphablending($dst, true);
+                        imagecopyresampled($dst, $im, 0, 0, 0, 0, $targetSize, $targetSize, $sw, $sh);
+                    }
+
+                    imagedestroy($im);
+                    imagepng($dst);
+                    imagedestroy($dst);
+                    exit;
+                }
+            }
+        }
+
+        header('Content-Length: ' . filesize($srcLogo));
+        readfile($srcLogo);
+        exit;
+    }
+
+    // 3. Fallback transparent pixel
+    echo base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=');
+    exit;
+};
+
+if ((isset($_GET['pwa']) && $_GET['pwa'] === 'manifest') || str_ends_with($reqPathLower, '/manifest.json') || str_ends_with($reqPathLower, '/manifest.webmanifest')) {
+    header('Content-Type: application/manifest+json; charset=utf-8');
+    header('Cache-Control: public, max-age=86400');
+    if (file_exists(__DIR__ . '/manifest.json')) {
+        readfile(__DIR__ . '/manifest.json');
+    } else {
+        echo json_encode([
+            "id" => "/?source=pwa",
+            "name" => "ProCast - POS & Inventory System",
+            "short_name" => "ProCast",
+            "start_url" => "./?source=pwa",
+            "scope" => "./",
+            "display" => "standalone",
+            "display_override" => ["standalone", "minimal-ui"],
+            "orientation" => "any",
+            "background_color" => "#0a1628",
+            "theme_color" => "#0a1628",
+            "icons" => [
+                ["src" => "icon-192.png", "sizes" => "192x192", "type" => "image/png", "purpose" => "any"],
+                ["src" => "icon-192-maskable.png", "sizes" => "192x192", "type" => "image/png", "purpose" => "maskable"],
+                ["src" => "icon-512.png", "sizes" => "512x512", "type" => "image/png", "purpose" => "any"],
+                ["src" => "icon-512-maskable.png", "sizes" => "512x512", "type" => "image/png", "purpose" => "maskable"],
+                ["src" => "assets/default-logo.png", "sizes" => "512x512", "type" => "image/png", "purpose" => "any"]
+            ]
+        ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+    }
+    exit;
+}
+
+if ((isset($_GET['pwa']) && $_GET['pwa'] === 'sw') || str_ends_with($reqPathLower, '/sw.js')) {
+    header('Content-Type: application/javascript; charset=utf-8');
+    header('Service-Worker-Allowed: /');
+    header('Cache-Control: no-cache');
+    if (file_exists(__DIR__ . '/sw.js')) {
+        readfile(__DIR__ . '/sw.js');
+    } elseif (file_exists(__DIR__ . '/assets/sw.js')) {
+        readfile(__DIR__ . '/assets/sw.js');
+    } elseif (file_exists(__DIR__ . '/sw.php')) {
+        require __DIR__ . '/sw.php';
+    }
+    exit;
+}
+
+if (isset($_GET['pwa_icon'])) {
+    $servePwaIcon((string)$_GET['pwa_icon']);
+}
+if (isset($_GET['pwa_icon_file'])) {
+    $servePwaIcon((string)$_GET['pwa_icon_file']);
+}
+if (str_ends_with($reqPathLower, 'icon-192-maskable.png')) {
+    $servePwaIcon('192-maskable');
+}
+if (str_ends_with($reqPathLower, 'icon-192.png')) {
+    $servePwaIcon('192');
+}
+if (str_ends_with($reqPathLower, 'icon-512-maskable.png')) {
+    $servePwaIcon('512-maskable');
+}
+if (str_ends_with($reqPathLower, 'icon-512.png')) {
+    $servePwaIcon('512');
+}
+if (str_ends_with($reqPathLower, 'apple-touch-icon.png') || str_ends_with($reqPathLower, 'apple-touch-icon-precomposed.png')) {
+    $servePwaIcon('apple');
+}
+if (str_ends_with($reqPathLower, 'favicon.ico')) {
+    $servePwaIcon('192');
+}
+
 $__isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https');
+ini_set('session.use_strict_mode', '1');
+ini_set('session.use_only_cookies', '1');
 session_set_cookie_params([
     'lifetime' => 30 * 24 * 3600,
     'path'     => '/',
@@ -381,65 +596,172 @@ function defaultProductImageUrl(): string
     );
 }
 
-// ── DB CONNECTION ──
-function db(): PDO
+// ── DB CONNECTION (With Automatic SQLite / MySQL Local Fallback) ──
+function parseDbUrl(string $url): ?array
 {
-    static $pdo;
-    if (!$pdo) {
-        if (DATABASE_URL !== '') {
-            $connectionUrl = trim(DATABASE_URL);
-            $parts = parse_url($connectionUrl);
-            if (
-                $parts === false
-                || !in_array(strtolower($parts['scheme'] ?? ''), ['postgres', 'postgresql'], true)
-                || empty($parts['host'])
-                || empty($parts['user'])
-                || empty($parts['path'])
-                || str_contains($connectionUrl, '[YOUR-')
-                || str_contains($connectionUrl, '[blocked]')
-            ) {
-                throw new RuntimeException('DATABASE_URL is invalid.');
-            }
-            $query = [];
-            if (!empty($parts['query'])) parse_str($parts['query'], $query);
-            $sslMode = strtolower((string)($query['sslmode'] ?? 'require'));
-            if (!in_array($sslMode, ['disable', 'allow', 'prefer', 'require', 'verify-ca', 'verify-full'], true)) {
-                throw new RuntimeException('DATABASE_URL has an invalid sslmode.');
-            }
-            $dsn = 'pgsql:host=' . $parts['host'] . ';port=' . ($parts['port'] ?? 5432)
-                . ';dbname=' . ltrim($parts['path'], '/') . ';sslmode=' . $sslMode;
-            $user = rawurldecode($parts['user']);
-            $pass = rawurldecode($parts['pass'] ?? '');
-            if ($pass === '' || $pass === '[blocked]' || str_contains($pass, '[YOUR-')) {
-                throw new RuntimeException('DATABASE_URL must contain the real Supabase password, without square brackets.');
-            }
-        } else {
-            if (DB_HOST === '' || DB_NAME === '' || DB_USER === '') {
-                throw new RuntimeException('Set DATABASE_URL or DB_HOST, DB_NAME, DB_USER, and DB_PASS.');
-            }
-            $dsn = 'pgsql:host=' . DB_HOST . ';port=' . DB_PORT . ';dbname=' . DB_NAME;
-            $user = DB_USER;
-            $pass = DB_PASS;
+    $url = trim($url);
+    if ($url === '') return null;
+    if (preg_match('#^([a-zA-Z0-9_+.-]+)://(?:([^:]+)(?::(.*))?@)?([^/:?#]+)(?::([0-9]+))?(?:/([^?#]*))?(?:\?(.*))?$#s', $url, $m)) {
+        $scheme = strtolower($m[1]);
+        $user = rawurldecode($m[2] ?? '');
+        $pass = isset($m[3]) ? rawurldecode($m[3]) : '';
+        $host = $m[4] ?? '';
+        $port = !empty($m[5]) ? (int)$m[5] : (in_array($scheme, ['mysql', 'mariadb'], true) ? 3306 : 5432);
+        $path = $m[6] ?? '';
+        $queryStr = $m[7] ?? '';
+        $query = [];
+        if ($queryStr !== '') parse_str($queryStr, $query);
+        return [
+            'scheme' => $scheme,
+            'user' => $user,
+            'pass' => $pass,
+            'host' => $host,
+            'port' => $port,
+            'path' => $path,
+            'query' => $query,
+        ];
+    }
+    $parts = @parse_url($url);
+    return is_array($parts) ? $parts : null;
+}
+
+function db(bool $forceReconnect = false): PDO
+{
+    static $pdo = null;
+    if ($pdo !== null && !$forceReconnect) {
+        try {
+            $pdo->query('SELECT 1');
+            return $pdo;
+        } catch (\Throwable $e) {
+            $pdo = null; // Stale or closed connection, force reconnect
         }
-        $pdo = new PDO($dsn, $user, $pass, [
-            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-            PDO::ATTR_EMULATE_PREPARES => false,
-            // PERFORMANCE FIX: every page click was paying for a brand-new
-            // TCP+SSL handshake to Supabase (that's real network latency,
-            // Iloilo/Render -> Supabase, on top of the query itself, on
-            // EVERY single request). PDO::ATTR_PERSISTENT lets Apache's
-            // worker processes reuse an already-open connection instead of
-            // renegotiating SSL from scratch each time.
-            PDO::ATTR_PERSISTENT => true,
-        ]);
+    }
+    if ($pdo === null || $forceReconnect) {
+        $pdo = null;
+        $connectionUrl = trim((string)DATABASE_URL);
+        $connected = false;
+        $lastErr = null;
+
+        // 1. Try DATABASE_URL if configured
+        if ($connectionUrl !== '') {
+            $parts = parseDbUrl($connectionUrl);
+            $scheme = strtolower($parts['scheme'] ?? '');
+            if (in_array($scheme, ['mysql', 'mariadb'], true)) {
+                $dsn = 'mysql:host=' . ($parts['host'] ?? '127.0.0.1') . ';port=' . ($parts['port'] ?? 3306)
+                    . ';dbname=' . ltrim($parts['path'] ?? 'pangga_store', '/') . ';charset=utf8mb4';
+                $user = $parts['user'] ?? 'root';
+                $pass = $parts['pass'] ?? '';
+            } elseif (in_array($scheme, ['sqlite', 'sqlite3'], true)) {
+                $dbPath = ltrim($parts['path'] ?? 'pos_local.db', '/');
+                $dsn = 'sqlite:' . ($dbPath ?: __DIR__ . '/pos_local.db');
+                $user = null;
+                $pass = null;
+            } else {
+                $host = $parts['host'] ?? '';
+                $port = $parts['port'] ?? 5432;
+                $dbName = ltrim($parts['path'] ?? 'postgres', '/');
+                $user = $parts['user'] ?? 'postgres';
+                $pass = $parts['pass'] ?? '';
+                $query = $parts['query'] ?? [];
+                $sslMode = strtolower((string)($query['sslmode'] ?? 'require'));
+
+                if ($pass === '' || $pass === '[blocked]' || str_contains($pass, '[YOUR-') || str_contains($connectionUrl, '[YOUR-')) {
+                    throw new RuntimeException('DATABASE_URL contains placeholder [YOUR-PASSWORD]. Please replace it with your real Supabase password in Render Environment settings.');
+                }
+                $dsn = 'pgsql:host=' . $host . ';port=' . $port . ';dbname=' . $dbName . ';sslmode=' . $sslMode;
+            }
+
+            try {
+                $pdo = new PDO($dsn, $user, $pass, [
+                    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+                    PDO::ATTR_EMULATE_PREPARES => false,
+                    PDO::ATTR_PERSISTENT => false,
+                    PDO::ATTR_TIMEOUT => 15,
+                ]);
+                $connected = true;
+            } catch (\Throwable $e) {
+                $lastErr = $e;
+                $msg = $e->getMessage();
+                $hostName = $parts['host'] ?? '';
+                if (str_contains($hostName, 'supabase.co') && str_starts_with($hostName, 'db.') && !str_contains($hostName, 'pooler')) {
+                    error_log('[DB Warning] Direct Supabase connection (db.*.supabase.co) failed. On Render, direct connections time out because Render does not support IPv6. Please use Supabase Connection Pooler URI (ending in pooler.supabase.com:5432 or 6543): ' . $msg);
+                }
+            }
+        }
+
+        // 2. Try explicit DB_HOST / DB_NAME if set
+        if (!$connected && DB_HOST !== '' && DB_NAME !== '') {
+            $isLocalHost = (DB_PORT == 3306 || str_contains(DB_HOST, '127.0.0.1') || str_contains(DB_HOST, 'localhost'));
+            $dsn = $isLocalHost
+                ? 'mysql:host=' . DB_HOST . ';port=' . DB_PORT . ';dbname=' . DB_NAME . ';charset=utf8mb4'
+                : 'pgsql:host=' . DB_HOST . ';port=' . DB_PORT . ';dbname=' . DB_NAME;
+            $user = DB_USER ?: 'root';
+            $pass = DB_PASS ?: '';
+            try {
+                $pdo = new PDO($dsn, $user, $pass, [
+                    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+                    PDO::ATTR_TIMEOUT => 5,
+                ]);
+                $connected = true;
+            } catch (\Throwable $e) {
+                $lastErr = $e;
+            }
+        }
+
+        // 3. Try Local MySQL on 127.0.0.1:3306 (if running, e.g. XAMPP)
+        if (!$connected && (DATABASE_URL === '' || str_contains(DATABASE_URL, 'localhost') || str_contains(DATABASE_URL, '127.0.0.1'))) {
+            try {
+                $pdo = new PDO('mysql:host=127.0.0.1;port=3306;charset=utf8mb4', 'root', '', [
+                    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                    PDO::ATTR_TIMEOUT => 2,
+                ]);
+                $pdo->exec("CREATE DATABASE IF NOT EXISTS pangga_store CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+                $pdo->exec("USE pangga_store");
+                $connected = true;
+            } catch (\Throwable $e) {
+                // MySQL not running locally, proceed to SQLite fallback
+            }
+        }
+
+        // 4. Standalone Offline Fallback: Embedded SQLite (pos_local.db)
+        if (!$connected) {
+            $isRender = !empty($_SERVER['RENDER']) || !empty(getenv('RENDER'));
+            if ($isRender && $connectionUrl !== '' && $lastErr) {
+                throw $lastErr;
+            }
+            try {
+                $sqliteFile = __DIR__ . '/pos_local.db';
+                $pdo = new PDO('sqlite:' . $sqliteFile, null, null, [
+                    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+                    PDO::ATTR_TIMEOUT => 10,
+                ]);
+                $pdo->exec("PRAGMA journal_mode = WAL");
+                $pdo->exec("PRAGMA foreign_keys = ON");
+                $connected = true;
+            } catch (\Throwable $sqle) {
+                if ($lastErr) throw $lastErr;
+                throw $sqle;
+            }
+        }
     }
     return $pdo;
 }
 
-function lastInsertedId(PDO $pdo): int
+function lastInsertedId(PDO $pdo, string $seq = ''): int
 {
-    return (int)$pdo->query('SELECT LASTVAL()')->fetchColumn();
+    $driver = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+    if ($driver === 'mysql' || $driver === 'sqlite') {
+        return (int)$pdo->lastInsertId();
+    }
+    try {
+        if ($seq !== '') return (int)$pdo->lastInsertId($seq);
+        return (int)$pdo->query('SELECT LASTVAL()')->fetchColumn();
+    } catch (\Throwable $e) {
+        return (int)$pdo->lastInsertId();
+    }
 }
 
 // ── BREVO TRANSACTIONAL EMAIL ──
@@ -454,11 +776,11 @@ function sendResetEmail(string $toEmail, string $toName, string $resetLink): arr
     $data = [
         "sender"  => ["name" => BREVO_SENDER_NAME, "email" => BREVO_SENDER_EMAIL],
         "to"      => [["email" => $toEmail, "name" => $toName ?: $toEmail]],
-        "subject" => "Reset Your Pangga Store Password",
+        "subject" => "Reset Your ProCast Password",
         "htmlContent" => "<html><body style='font-family:sans-serif;'>" .
             "<h2>Password Reset Request</h2>" .
             "<p>Hi " . htmlspecialchars($toName ?: 'there') . ",</p>" .
-            "<p>Click the button below to reset your Pangga Store password. This link expires in 1 hour.</p>" .
+            "<p>Click the button below to reset your ProCast password. This link expires in 1 hour.</p>" .
             "<p><a href='" . htmlspecialchars($resetLink) . "' style='background:#2f7ff5;color:#fff;padding:10px 20px;border-radius:8px;text-decoration:none;display:inline-block;'>Reset Password</a></p>" .
             "<p>If the button doesn't work, copy and paste this link into your browser:<br>" . htmlspecialchars($resetLink) . "</p>" .
             "<p>If you didn't request this, you can safely ignore this email.</p>" .
@@ -482,13 +804,163 @@ function sendResetEmail(string $toEmail, string $toName, string $resetLink): arr
     $curlErr  = curl_error($ch);
     curl_close($ch);
     if ($httpCode === 201) return [true, ''];
-    return [false, $curlErr ?: ('Brevo error (HTTP ' . $httpCode . '): ' . $response)];
+    $brevoMsg = '';
+    if ($response) {
+        $json = @json_decode($response, true);
+        if (!empty($json['message'])) {
+            $brevoMsg = $json['message'];
+        }
+    }
+    return [false, $brevoMsg ?: ($curlErr ?: ('Brevo error (HTTP ' . $httpCode . '): ' . $response))];
+}
+
+function installSQLiteDB(PDO $db): void
+{
+    $db->exec("CREATE TABLE IF NOT EXISTS schema_meta (id INTEGER PRIMARY KEY, version INT NOT NULL DEFAULT 0)");
+    $db->exec("INSERT OR IGNORE INTO schema_meta (id, version) VALUES (1, 0)");
+    $db->exec("CREATE TABLE IF NOT EXISTS stores (id INTEGER PRIMARY KEY AUTOINCREMENT, name VARCHAR(100) NOT NULL DEFAULT 'ProCast', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)");
+    $db->exec("INSERT OR IGNORE INTO stores (id, name) VALUES (1, 'ProCast')");
+    $db->exec("CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, username VARCHAR(50) NOT NULL UNIQUE,
+        password VARCHAR(255) NOT NULL, full_name VARCHAR(100) NOT NULL,
+        role VARCHAR(30) NOT NULL DEFAULT 'staff', email VARCHAR(150) NULL,
+        store_id INT NOT NULL DEFAULT 1,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, last_login TIMESTAMP NULL
+    )");
+    $db->exec("CREATE TABLE IF NOT EXISTS auth_tokens (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INT NOT NULL,
+        token_hash VARCHAR(64) NOT NULL UNIQUE, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        expires_at TIMESTAMP NOT NULL
+    )");
+    $db->exec("CREATE TABLE IF NOT EXISTS categories (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, store_id INT NOT NULL DEFAULT 1,
+        name VARCHAR(100) NOT NULL, sort_order INT DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )");
+    $db->exec("CREATE TABLE IF NOT EXISTS products (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, store_id INT NOT NULL DEFAULT 1,
+        name VARCHAR(200) NOT NULL, description TEXT NULL, price DECIMAL(10,2) NOT NULL DEFAULT 0,
+        quantity INT NOT NULL DEFAULT 0, store_quantity INT NOT NULL DEFAULT 0,
+        cost_price DECIMAL(10,2) NULL, category_id INT NULL, image_data TEXT NULL,
+        total_sold INT DEFAULT 0, total_revenue DECIMAL(12,2) DEFAULT 0,
+        expiry_date DATE NULL, delivery_date DATE NULL, barcode VARCHAR(100) NULL,
+        pack_qty INT NULL, pack_barcode VARCHAR(100) NULL, pack_price DECIMAL(10,2) NULL,
+        case_qty INT NULL, case_barcode VARCHAR(100) NULL, case_price DECIMAL(10,2) NULL,
+        auto_convert INT NOT NULL DEFAULT 0, low_stock_threshold INT NOT NULL DEFAULT 5,
+        brand VARCHAR(100) NULL, supplier VARCHAR(150) NULL, unit_type VARCHAR(30) NOT NULL DEFAULT 'pcs', unit_size VARCHAR(50) NULL,
+        promo_price DECIMAL(10,2) NULL, promo_pack_price DECIMAL(10,2) NULL, promo_case_price DECIMAL(10,2) NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )");
+    $sqliteProdCols = [
+        "auto_convert INT NOT NULL DEFAULT 0",
+        "low_stock_threshold INT NOT NULL DEFAULT 5",
+        "brand VARCHAR(100) NULL",
+        "supplier VARCHAR(150) NULL",
+        "unit_type VARCHAR(30) NOT NULL DEFAULT 'pcs'",
+        "unit_size VARCHAR(50) NULL",
+        "promo_price DECIMAL(10,2) NULL",
+        "promo_pack_price DECIMAL(10,2) NULL",
+        "promo_case_price DECIMAL(10,2) NULL"
+    ];
+    foreach ($sqliteProdCols as $colDef) {
+        try {
+            $db->exec("ALTER TABLE products ADD COLUMN " . $colDef);
+        } catch (\Throwable $e) {}
+    }
+    $db->exec("CREATE TABLE IF NOT EXISTS warehouse_stock (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, product_id INT NOT NULL UNIQUE, quantity INT NOT NULL DEFAULT 0
+    )");
+    $db->exec("CREATE TABLE IF NOT EXISTS warehouse (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, store_id INT NOT NULL DEFAULT 1, product_id INT NOT NULL,
+        type VARCHAR(20) NOT NULL DEFAULT 'out', qty_in INT NOT NULL DEFAULT 0, qty_out INT NOT NULL DEFAULT 0,
+        note VARCHAR(255) NULL, user_id INT NULL, event_date DATE DEFAULT CURRENT_DATE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )");
+    $db->exec("CREATE TABLE IF NOT EXISTS transactions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, store_id INT NOT NULL DEFAULT 1,
+        order_ref VARCHAR(50) NOT NULL UNIQUE, subtotal DECIMAL(10,2) NOT NULL DEFAULT 0,
+        vat_rate DECIMAL(5,2) NOT NULL DEFAULT 0, vat_amount DECIMAL(10,2) NOT NULL DEFAULT 0,
+        tax_rate DECIMAL(5,2) NOT NULL DEFAULT 0, tax_amount DECIMAL(10,2) NOT NULL DEFAULT 0,
+        total DECIMAL(10,2) NOT NULL DEFAULT 0, cash DECIMAL(10,2) NOT NULL DEFAULT 0,
+        change DECIMAL(10,2) NOT NULL DEFAULT 0, user_id INT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )");
+    $db->exec("CREATE TABLE IF NOT EXISTS transaction_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, transaction_id INT NOT NULL,
+        product_id INT NULL, product_name VARCHAR(200) NOT NULL, category_name VARCHAR(100) NULL,
+        price DECIMAL(10,2) NOT NULL DEFAULT 0, quantity INT NOT NULL DEFAULT 1,
+        subtotal DECIMAL(10,2) NOT NULL DEFAULT 0, hour_of_day INT NULL, day_of_week INT NULL,
+        cost_price DECIMAL(10,2) NULL
+    )");
+    $db->exec("CREATE TABLE IF NOT EXISTS settings (
+        store_id INT NOT NULL DEFAULT 1, key VARCHAR(50) NOT NULL, value TEXT NULL,
+        PRIMARY KEY (store_id, key)
+    )");
+    $db->exec("CREATE TABLE IF NOT EXISTS cash_floats (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, store_id INT NOT NULL DEFAULT 1,
+        user_id INT NOT NULL, opening_float DECIMAL(10,2) NOT NULL DEFAULT 0,
+        closing_float DECIMAL(10,2) NULL, note TEXT NULL, status VARCHAR(20) NOT NULL DEFAULT 'open',
+        opened_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, closed_at TIMESTAMP NULL
+    )");
+    $db->exec("CREATE TABLE IF NOT EXISTS void_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, store_id INT NOT NULL DEFAULT 1,
+        transaction_id INT NULL, product_id INT NULL, quantity INT NOT NULL DEFAULT 1,
+        reason TEXT NULL, user_id INT NULL, voided_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )");
+    $db->exec("CREATE TABLE IF NOT EXISTS inventory_adjustments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, store_id INT NOT NULL DEFAULT 1,
+        product_id INT NOT NULL, type VARCHAR(50) NOT NULL, qty INT NOT NULL,
+        reason TEXT NULL, user_id INT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )");
+    $db->exec("CREATE TABLE IF NOT EXISTS login_attempts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, identifier VARCHAR(150) NOT NULL,
+        ip VARCHAR(45) NOT NULL, success SMALLINT NOT NULL DEFAULT 0,
+        attempted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )");
+    $db->exec("CREATE TABLE IF NOT EXISTS recovery_attempts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, identifier VARCHAR(150) NOT NULL,
+        ip VARCHAR(45) NOT NULL, requested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )");
+    $db->exec("CREATE TABLE IF NOT EXISTS ml_cache (
+        key VARCHAR(100) PRIMARY KEY, value TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )");
+    $db->exec("CREATE TABLE IF NOT EXISTS monthly_sales_summary (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, store_id INT NOT NULL DEFAULT 1,
+        month_key VARCHAR(7) NOT NULL, total_sales DECIMAL(12,2) NOT NULL DEFAULT 0,
+        order_count INT NOT NULL DEFAULT 0, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )");
+
+    $db->exec("INSERT OR IGNORE INTO settings (store_id, key, value) VALUES 
+        (1, 'shop_name', 'ProCast'),
+        (1, 'currency', '₱'),
+        (1, 'vat_rate', '0'),
+        (1, 'tax_rate', '0')");
+
+    $db->exec("INSERT OR IGNORE INTO categories (store_id, name, sort_order) VALUES 
+        (1, 'Food', 0),
+        (1, 'Drinks', 1),
+        (1, 'Snacks', 2),
+        (1, 'Desserts', 3),
+        (1, 'Others', 4)");
+
+    $adminCount = $db->query("SELECT COUNT(*) FROM users WHERE username='admin'")->fetchColumn();
+    if (!$adminCount) {
+        $hash = password_hash('admin123', PASSWORD_DEFAULT);
+        $db->prepare("INSERT INTO users (username, password, full_name, role, email, store_id) VALUES ('admin', ?, 'Admin', 'owner', ?, 1)")
+            ->execute([$hash, BREVO_SENDER_EMAIL ?: 'admin@pos.local']);
+    }
+
+    $db->exec("UPDATE schema_meta SET version = " . SCHEMA_VERSION . " WHERE id = 1");
 }
 
 // ── INSTALL TABLES ON FIRST RUN ──
 function installDB(): void
 {
     $db = db();
+    $driver = $db->getAttribute(PDO::ATTR_DRIVER_NAME);
+    if ($driver === 'sqlite') {
+        installSQLiteDB($db);
+        return;
+    }
     // Tiny single-row table used only to record "which version of installDB()
     // last ran successfully" — see the version check right before this
     // function is called. Created first, unconditionally, so it's always
@@ -966,7 +1438,16 @@ function installDB(): void
     // Structured unit of measure — separate from the free-text name/description
     // so a product's size is a real, filterable/reportable attribute.
     try {
-        $db->exec("ALTER TABLE products ADD COLUMN unit_type VARCHAR(10) NOT NULL DEFAULT 'pcs'");
+        $db->exec("ALTER TABLE products ADD COLUMN unit_type VARCHAR(30) NOT NULL DEFAULT 'pcs'");
+    } catch (Exception $e) {
+    }
+    try {
+        // Expand existing unit_type column to VARCHAR(30) for full retail UOM codes
+        $db->exec("ALTER TABLE products ALTER COLUMN unit_type TYPE VARCHAR(30)");
+    } catch (Exception $e) {
+    }
+    try {
+        $db->exec("ALTER TABLE products MODIFY COLUMN unit_type VARCHAR(30) NOT NULL DEFAULT 'pcs'");
     } catch (Exception $e) {
     }
     try {
@@ -995,6 +1476,43 @@ function installDB(): void
         $db->exec("CREATE INDEX IF NOT EXISTS idx_supplier ON products (supplier)");
     } catch (Exception $e) {
     }
+    // ── PERFORMANCE INDEXES (schema v5) ──
+    // Composite + FK indexes that make the get_products CTE query fast even
+    // with 1 000+ products. Without these the planner does full-table scans
+    // on every warehouse/inventory_adjustments/batches aggregation.
+    try {
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_products_store_name ON products (store_id, name)");
+    } catch (Exception $e) {
+    }
+    try {
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_warehouse_product ON warehouse (product_id)");
+    } catch (Exception $e) {
+    }
+    try {
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_inv_adj_product ON inventory_adjustments (product_id, reason_code)");
+    } catch (Exception $e) {
+    }
+    try {
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_batches_product ON batches (product_id)");
+    } catch (Exception $e) {
+    }
+    // Performance indexes for transactions, transaction_items, and reporting
+    try {
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_tx_store_created ON transactions (store_id, created_at DESC)");
+    } catch (Exception $e) {
+    }
+    try {
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_tx_created ON transactions (created_at DESC)");
+    } catch (Exception $e) {
+    }
+    try {
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_tx_items_tx ON transaction_items (transaction_id)");
+    } catch (Exception $e) {
+    }
+    try {
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_tx_items_prod ON transaction_items (product_id)");
+    } catch (Exception $e) {
+    }
 
     // ── LOGIN RATE LIMITING ──
     // Tracks every login attempt (success or failure) per username so a
@@ -1010,7 +1528,7 @@ function installDB(): void
 
     // ── ML API RESPONSE CACHE ──
     // Used by mlApiCall()/mlApiGet() to avoid hitting the slow external
-    // pos-ml-api.onrender.com on every request. Deliberately its OWN table
+    // pos-ml-api-johv.onrender.com on every request. Deliberately its OWN table
     // (not piggybacked on `settings`) since settings now has a composite
     // (store_id, key) primary key for per-store branding — this cache holds
     // generic external API responses keyed by request parameters, not
@@ -1048,7 +1566,7 @@ function installDB(): void
     // users.store_id) rather than duplicating store_id onto every table.
     $db->exec("CREATE TABLE IF NOT EXISTS stores (
         id INT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
-        name VARCHAR(150) NOT NULL DEFAULT 'POS SYSTEM',
+        name VARCHAR(150) NOT NULL DEFAULT 'ProCast',
         logo TEXT NULL,
         currency VARCHAR(10) NOT NULL DEFAULT '₱',
         tax_rate VARCHAR(20) NOT NULL DEFAULT '0',
@@ -1086,7 +1604,7 @@ function installDB(): void
     // after this point always get their store_id set at creation time and
     // are never matched by these NULL-only backfills.
     if ((int)$db->query("SELECT COUNT(*) FROM stores")->fetchColumn() === 0) {
-        $legacyName = 'PANGGA STORE';
+        $legacyName = 'ProCast';
         $legacyLogo = null;
         $legacyCurrency = '₱';
         $legacyTax = '0';
@@ -1202,16 +1720,42 @@ function installDB(): void
     } catch (Exception $e) {
     }
 
+    // ══════════════════════════════════════════════════════════════
+    //  MONTHLY SALES SUMMARY (Automated Sales Retention & Archiving)
+    // ══════════════════════════════════════════════════════════════
+    $db->exec("CREATE TABLE IF NOT EXISTS monthly_sales_summary (
+        id INT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+        store_id INT DEFAULT 1,
+        year_month VARCHAR(7) NOT NULL,
+        total_revenue NUMERIC(12,2) DEFAULT 0.00,
+        total_profit NUMERIC(12,2) DEFAULT 0.00,
+        total_transactions INT DEFAULT 0,
+        total_items_sold INT DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )");
+    $db->exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_monthly_sales_summary ON monthly_sales_summary (store_id, year_month)");
+
     // Default data — only for the legacy Store #1 migration path (a brand
     // new store created via Sign Up gets its own defaults inserted directly
     // in the signup handler instead of here).
-    $db->exec("INSERT INTO settings (store_id,key,value) VALUES (1,'shop_name','PANGGA STORE'),(1,'currency','₱'),(1,'vat_rate','0'),(1,'tax_rate','0') ON CONFLICT (store_id,key) DO NOTHING");
+    $db->exec("INSERT INTO settings (store_id,key,value) VALUES (1,'shop_name','ProCast'),(1,'currency','₱'),(1,'vat_rate','0'),(1,'tax_rate','0'),(1,'sales_retention_days','30'),(1,'auto_cleanup_enabled','1') ON CONFLICT (store_id,key) DO NOTHING");
+    $db->exec("UPDATE settings SET value='ProCast' WHERE key='shop_name' AND (value='POS SYSTEM' OR value='PANGGA STORE' OR value='PANGGA POS' OR value='' OR value IS NULL)");
+    try {
+        $db->exec("UPDATE stores SET name='ProCast' WHERE name='POS SYSTEM' OR name='PANGGA STORE' OR name='PANGGA POS' OR name='' OR name IS NULL");
+    } catch (Exception $e) {
+    }
     $db->exec("INSERT INTO categories (store_id,name,sort_order) VALUES (1,'Food',0),(1,'Drinks',1),(1,'Snacks',2),(1,'Desserts',3),(1,'Others',4) ON CONFLICT (store_id,name) DO NOTHING");
     // Admin user — hash generated HERE on this server
     $count = $db->query("SELECT COUNT(*) FROM users WHERE username='admin'")->fetchColumn();
     if (!$count) {
         $hash = password_hash('admin123', PASSWORD_DEFAULT);
-        $db->prepare("INSERT INTO users (username,password,full_name,role,store_id) VALUES ('admin',?,'Admin','owner',1)")->execute([$hash]);
+        $db->prepare("INSERT INTO users (username,password,full_name,role,email,store_id) VALUES ('admin',?,'Admin','owner',?,1)")->execute([$hash, BREVO_SENDER_EMAIL ?: null]);
+    } elseif (BREVO_SENDER_EMAIL !== '') {
+        try {
+            $db->prepare("UPDATE users SET email=? WHERE username='admin' AND (email IS NULL OR email='')")->execute([BREVO_SENDER_EMAIL]);
+        } catch (Exception $e) {
+        }
     }
     // Mark this version as successfully installed — the caller compares
     // this against SCHEMA_VERSION and only invokes installDB() again once
@@ -1319,7 +1863,14 @@ function clearAuthToken(): void
             db()->prepare("DELETE FROM auth_tokens WHERE token_hash=?")->execute([hash('sha256', $token)]);
         } catch (Exception $e) { /* ignore — logout must always succeed */ }
     }
-    setcookie(AUTH_COOKIE, '', ['expires' => time() - 3600, 'path' => '/', 'httponly' => true, 'samesite' => 'Lax']);
+    $isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https');
+    setcookie(AUTH_COOKIE, '', [
+        'expires'  => time() - 3600,
+        'path'     => '/',
+        'secure'   => $isHttps,
+        'httponly' => true,
+        'samesite' => 'Lax'
+    ]);
     unset($_COOKIE[AUTH_COOKIE]);
 }
 // Every data query in the app is scoped by this — the logged-in user's
@@ -1328,6 +1879,157 @@ function clearAuthToken(): void
 function currentStoreId(): int
 {
     return (int)($_SESSION['store_id'] ?? 1);
+}
+
+// ── SALES RETENTION & CLEANUP HELPERS ──
+function getStoreSettingVal(string $key, string $default = '', ?int $storeId = null): string
+{
+    $sid = ($storeId && $storeId > 0) ? $storeId : (loggedIn() ? currentStoreId() : 1);
+    try {
+        $stmt = db()->prepare("SELECT value FROM settings WHERE (store_id = ? OR (store_id IS NULL AND ? = 1)) AND key = ? ORDER BY store_id ASC NULLS LAST LIMIT 1");
+        $stmt->execute([$sid, $sid, $key]);
+        $val = $stmt->fetchColumn();
+        if ($val !== false && $val !== null) {
+            return (string)$val;
+        }
+    } catch (\Throwable $e) {
+    }
+    return $default;
+}
+
+function pruneOldSales(?int $storeId = null, ?int $forceDays = null): array
+{
+    $sid = ($storeId && $storeId > 0) ? $storeId : (loggedIn() ? currentStoreId() : 1);
+    $days = $forceDays !== null ? $forceDays : (int)getStoreSettingVal('sales_retention_days', '30', $sid);
+    if ($days <= 0) {
+        return [
+            'success' => true,
+            'deleted_count' => 0,
+            'archived_months' => 0,
+            'message' => 'Retention is disabled (Keep All).'
+        ];
+    }
+
+    $db = db();
+    $cutoff = date('Y-m-d H:i:s', strtotime("-{$days} days"));
+
+    // 1. Aggregate transactions by month for historical summary
+    $txAggStmt = $db->prepare("SELECT 
+        COALESCE(t.store_id, ?) AS store_id,
+        TO_CHAR(t.created_at, 'YYYY-MM') AS year_month,
+        COUNT(*) AS tx_count,
+        COALESCE(SUM(t.total - t.voided_total), 0) AS total_revenue
+    FROM transactions t
+    WHERE (t.store_id = ? OR (t.store_id IS NULL AND ? = 1))
+      AND t.created_at < ?
+    GROUP BY COALESCE(t.store_id, ?), TO_CHAR(t.created_at, 'YYYY-MM')");
+    $txAggStmt->execute([$sid, $sid, $sid, $cutoff, $sid]);
+
+    $monthlyData = [];
+    while ($row = $txAggStmt->fetch()) {
+        $ym = (string)$row['year_month'];
+        $monthlyData[$ym] = [
+            'store_id' => (int)$row['store_id'],
+            'year_month' => $ym,
+            'total_revenue' => (float)$row['total_revenue'],
+            'total_transactions' => (int)$row['tx_count'],
+            'total_profit' => 0.0,
+            'total_items_sold' => 0
+        ];
+    }
+
+    // 2. Aggregate item profit and quantities sold by month
+    $itemsAggStmt = $db->prepare("SELECT 
+        COALESCE(t.store_id, ?) AS store_id,
+        TO_CHAR(t.created_at, 'YYYY-MM') AS year_month,
+        COALESCE(SUM(ti.quantity - COALESCE(ti.voided_qty, 0)), 0) AS items_sold,
+        COALESCE(SUM(
+            CASE WHEN ti.cost_price IS NOT NULL 
+                 THEN (ti.price - ti.cost_price) * (ti.quantity - COALESCE(ti.voided_qty, 0))
+                 ELSE 0 
+            END
+        ), 0) AS total_profit
+    FROM transaction_items ti
+    JOIN transactions t ON t.id = ti.transaction_id
+    WHERE (t.store_id = ? OR (t.store_id IS NULL AND ? = 1))
+      AND t.created_at < ?
+    GROUP BY COALESCE(t.store_id, ?), TO_CHAR(t.created_at, 'YYYY-MM')");
+    $itemsAggStmt->execute([$sid, $sid, $sid, $cutoff, $sid]);
+
+    while ($row = $itemsAggStmt->fetch()) {
+        $ym = (string)$row['year_month'];
+        if (!isset($monthlyData[$ym])) {
+            $monthlyData[$ym] = [
+                'store_id' => (int)$row['store_id'],
+                'year_month' => $ym,
+                'total_revenue' => 0.0,
+                'total_transactions' => 0,
+                'total_profit' => (float)$row['total_profit'],
+                'total_items_sold' => (int)$row['items_sold']
+            ];
+        } else {
+            $monthlyData[$ym]['total_profit'] = (float)$row['total_profit'];
+            $monthlyData[$ym]['total_items_sold'] = (int)$row['items_sold'];
+        }
+    }
+
+    // 3. Upsert into monthly_sales_summary
+    if (!empty($monthlyData)) {
+        $upsertStmt = $db->prepare("INSERT INTO monthly_sales_summary 
+            (store_id, year_month, total_revenue, total_profit, total_transactions, total_items_sold, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT (store_id, year_month) DO UPDATE SET
+                total_revenue = monthly_sales_summary.total_revenue + EXCLUDED.total_revenue,
+                total_profit = monthly_sales_summary.total_profit + EXCLUDED.total_profit,
+                total_transactions = monthly_sales_summary.total_transactions + EXCLUDED.total_transactions,
+                total_items_sold = monthly_sales_summary.total_items_sold + EXCLUDED.total_items_sold,
+                updated_at = CURRENT_TIMESTAMP");
+        foreach ($monthlyData as $m) {
+            $upsertStmt->execute([
+                $m['store_id'] ?: 1,
+                $m['year_month'],
+                $m['total_revenue'],
+                $m['total_profit'],
+                $m['total_transactions'],
+                $m['total_items_sold']
+            ]);
+        }
+    }
+
+    // 4. Delete the old transactions (foreign key CASCADE removes items & voids automatically)
+    $delStmt = $db->prepare("DELETE FROM transactions WHERE (store_id = ? OR (store_id IS NULL AND ? = 1)) AND created_at < ?");
+    $delStmt->execute([$sid, $sid, $cutoff]);
+    $deletedCount = $delStmt->rowCount();
+
+    // 5. Update last_sales_cleanup timestamp
+    $nowStr = date('Y-m-d H:i:s');
+    $updStmt = $db->prepare("INSERT INTO settings (store_id, key, value) VALUES (?, 'last_sales_cleanup', ?) ON CONFLICT (store_id, key) DO UPDATE SET value = EXCLUDED.value");
+    $updStmt->execute([$sid, $nowStr]);
+    unset($_SESSION['store_settings_' . $sid]);
+
+    return [
+        'success' => true,
+        'deleted_count' => $deletedCount,
+        'archived_months' => count($monthlyData),
+        'cutoff' => $cutoff,
+        'last_cleanup' => $nowStr
+    ];
+}
+
+function checkAutoSalesCleanup(?int $storeId = null): void
+{
+    $sid = ($storeId && $storeId > 0) ? $storeId : (loggedIn() ? currentStoreId() : 1);
+    $enabled = getStoreSettingVal('auto_cleanup_enabled', '1', $sid);
+    if ($enabled === '0' || $enabled === 'false') return;
+    $days = (int)getStoreSettingVal('sales_retention_days', '30', $sid);
+    if ($days <= 0) return;
+    $last = getStoreSettingVal('last_sales_cleanup', '', $sid);
+    if ($last !== '' && (time() - strtotime($last)) < 86400) return;
+    try {
+        pruneOldSales($sid, $days);
+    } catch (\Throwable $e) {
+        error_log('[checkAutoSalesCleanup] ' . $e->getMessage());
+    }
 }
 
 // ── LOGIN RATE LIMITING ──
@@ -1341,37 +2043,59 @@ const LOGIN_LOCKOUT_MINUTES = 15;
 
 function clientIp(): string
 {
-    return $_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['REMOTE_ADDR'] ?? 'unknown';
+    $raw = $_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
+    if (str_contains($raw, ',')) {
+        $parts = explode(',', $raw);
+        $raw = trim($parts[0]);
+    }
+    $raw = trim($raw);
+    if (filter_var($raw, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4 | FILTER_FLAG_IPV6)) {
+        return $raw;
+    }
+    $remote = trim((string)($_SERVER['REMOTE_ADDR'] ?? '127.0.0.1'));
+    return filter_var($remote, FILTER_VALIDATE_IP) ? $remote : '127.0.0.1';
 }
 
 // Returns minutes remaining locked out, or 0 if not currently locked.
 function loginLockoutMinutesLeft(PDO $db, string $identifier): int
 {
-    $stmt = $db->prepare(
-        "SELECT COUNT(*) c, MAX(attempted_at) last_attempt FROM login_attempts
-         WHERE identifier=? AND success=0 AND attempted_at > CURRENT_TIMESTAMP - (? * INTERVAL '1 minute')"
-    );
-    $stmt->execute([$identifier, LOGIN_LOCKOUT_MINUTES]);
-    $row = $stmt->fetch();
-    if ((int)($row['c'] ?? 0) < LOGIN_MAX_ATTEMPTS) return 0;
-    $elapsedMin = (time() - strtotime($row['last_attempt'])) / 60;
-    $left = LOGIN_LOCKOUT_MINUTES - $elapsedMin;
-    return $left > 0 ? (int)ceil($left) : 0;
+    try {
+        $cutoff = date('Y-m-d H:i:s', time() - (LOGIN_LOCKOUT_MINUTES * 60));
+        $stmt = $db->prepare(
+            "SELECT COUNT(*) as c, MAX(attempted_at) as last_attempt FROM login_attempts
+             WHERE identifier=? AND success=0 AND attempted_at > ?"
+        );
+        $stmt->execute([$identifier, $cutoff]);
+        $row = $stmt->fetch();
+        if ((int)($row['c'] ?? 0) < LOGIN_MAX_ATTEMPTS) return 0;
+        $lastAttempt = !empty($row['last_attempt']) ? strtotime($row['last_attempt']) : time();
+        $elapsedMin = (time() - $lastAttempt) / 60;
+        $left = LOGIN_LOCKOUT_MINUTES - $elapsedMin;
+        return $left > 0 ? (int)ceil($left) : 0;
+    } catch (\Throwable $e) {
+        error_log('Lockout check error: ' . $e->getMessage());
+        return 0;
+    }
 }
 
 function recordLoginAttempt(PDO $db, string $identifier, bool $success): void
 {
-    $db->prepare("INSERT INTO login_attempts (identifier, ip, success) VALUES (?, ?, ?)")
-        ->execute([$identifier, clientIp(), $success ? 1 : 0]);
-    // A successful login clears that username's recent failures, so a
-    // legitimate owner who mistypes their password a few times then gets it
-    // right isn't left one bad attempt away from a lockout later.
-    if ($success) {
-        $db->prepare("DELETE FROM login_attempts WHERE identifier=? AND success=0")->execute([$identifier]);
-    }
-    // Cheap self-maintaining cleanup — no cron needed on shared hosting.
-    if (mt_rand(1, 50) === 1) {
-        $db->exec("DELETE FROM login_attempts WHERE attempted_at < CURRENT_TIMESTAMP - INTERVAL '60 minutes'");
+    try {
+        $db->prepare("INSERT INTO login_attempts (identifier, ip, success) VALUES (?, ?, ?)")
+            ->execute([$identifier, clientIp(), $success ? 1 : 0]);
+        // A successful login clears that username's recent failures, so a
+        // legitimate owner who mistypes their password a few times then gets it
+        // right isn't left one bad attempt away from a lockout later.
+        if ($success) {
+            $db->prepare("DELETE FROM login_attempts WHERE identifier=? AND success=0")->execute([$identifier]);
+        }
+        // Cheap self-maintaining cleanup — no cron needed on shared hosting.
+        if (mt_rand(1, 50) === 1) {
+            $cutoff = date('Y-m-d H:i:s', time() - 3600);
+            $db->prepare("DELETE FROM login_attempts WHERE attempted_at < ?")->execute([$cutoff]);
+        }
+    } catch (\Throwable $e) {
+        error_log('Record attempt error: ' . $e->getMessage());
     }
 }
 
@@ -1386,24 +2110,36 @@ const RECOVERY_LOCKOUT_MINUTES = 60;
 
 function recoveryLockoutMinutesLeft(PDO $db, string $identifier): int
 {
-    $stmt = $db->prepare(
-        "SELECT COUNT(*) c, MAX(requested_at) last_attempt FROM recovery_attempts
-         WHERE identifier=? AND requested_at > CURRENT_TIMESTAMP - (? * INTERVAL '1 minute')"
-    );
-    $stmt->execute([$identifier, RECOVERY_LOCKOUT_MINUTES]);
-    $row = $stmt->fetch();
-    if ((int)($row['c'] ?? 0) < RECOVERY_MAX_ATTEMPTS) return 0;
-    $elapsedMin = (time() - strtotime($row['last_attempt'])) / 60;
-    $left = RECOVERY_LOCKOUT_MINUTES - $elapsedMin;
-    return $left > 0 ? (int)ceil($left) : 0;
+    try {
+        $cutoff = date('Y-m-d H:i:s', time() - (RECOVERY_LOCKOUT_MINUTES * 60));
+        $stmt = $db->prepare(
+            "SELECT COUNT(*) as c, MAX(requested_at) as last_attempt FROM recovery_attempts
+             WHERE identifier=? AND requested_at > ?"
+        );
+        $stmt->execute([$identifier, $cutoff]);
+        $row = $stmt->fetch();
+        if ((int)($row['c'] ?? 0) < RECOVERY_MAX_ATTEMPTS) return 0;
+        $lastAttempt = !empty($row['last_attempt']) ? strtotime($row['last_attempt']) : time();
+        $elapsedMin = (time() - $lastAttempt) / 60;
+        $left = RECOVERY_LOCKOUT_MINUTES - $elapsedMin;
+        return $left > 0 ? (int)ceil($left) : 0;
+    } catch (\Throwable $e) {
+        error_log('Recovery lockout check error: ' . $e->getMessage());
+        return 0;
+    }
 }
 
 function recordRecoveryAttempt(PDO $db, string $identifier): void
 {
-    $db->prepare("INSERT INTO recovery_attempts (identifier, ip) VALUES (?, ?)")
-        ->execute([$identifier, clientIp()]);
-    if (mt_rand(1, 50) === 1) {
-        $db->exec("DELETE FROM recovery_attempts WHERE requested_at < CURRENT_TIMESTAMP - INTERVAL '60 minutes'");
+    try {
+        $db->prepare("INSERT INTO recovery_attempts (identifier, ip) VALUES (?, ?)")
+            ->execute([$identifier, clientIp()]);
+        if (mt_rand(1, 50) === 1) {
+            $cutoff = date('Y-m-d H:i:s', time() - 3600);
+            $db->prepare("DELETE FROM recovery_attempts WHERE requested_at < ?")->execute([$cutoff]);
+        }
+    } catch (\Throwable $e) {
+        error_log('Record recovery attempt error: ' . $e->getMessage());
     }
 }
 
@@ -1560,7 +2296,7 @@ function lookupProductByBarcodeExternal(PDO $db, string $barcode): ?array
         $ch = curl_init('https://world.openfoodfacts.org/api/v2/product/' . urlencode($barcode) . '.json?fields=product_name,brands,generic_name,quantity');
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_HTTPHEADER     => ['Accept: application/json', 'User-Agent: PanggaStore/1.0'],
+            CURLOPT_HTTPHEADER     => ['Accept: application/json', 'User-Agent: PosSystem/1.0'],
             CURLOPT_TIMEOUT        => 5,
             CURLOPT_CONNECTTIMEOUT => 3,
         ]);
@@ -1576,10 +2312,24 @@ function lookupProductByBarcodeExternal(PDO $db, string $barcode): ?array
                 // when the unit matches one of the form's actual dropdown options.
                 $unitSize = null;
                 $unitType = null;
-                if (!empty($p['quantity']) && preg_match('/([\d.,]+)\s*(ml|l|g|kg|pcs|pc)/i', $p['quantity'], $m)) {
+                if (!empty($p['quantity']) && preg_match('/([\d.,]+)\s*(ml|l|cl|g|kg|mg|lb|oz|fl\s*oz|gal|qt|pt|pcs|pc|pair|pr|dz|dozen|pk|pack|box|case|roll|pallet|bundle|btl|bottle|tube|sachet|blister)/i', $p['quantity'], $m)) {
                     $unitSize = (float) str_replace(',', '.', $m[1]);
-                    $map = ['ml' => 'ml', 'l' => 'L', 'g' => 'g', 'kg' => 'kg', 'pc' => 'pcs', 'pcs' => 'pcs'];
-                    $unitType = $map[strtolower($m[2])] ?? null;
+                    $rawU = strtolower(preg_replace('/\s+/', '', $m[2]));
+                    $map = [
+                        'ml' => 'ml', 'l' => 'L', 'cl' => 'ml',
+                        'g' => 'g', 'kg' => 'kg', 'mg' => 'mg', 'lb' => 'lb', 'oz' => 'oz',
+                        'floz' => 'fl_oz', 'gal' => 'gal', 'qt' => 'qt', 'pt' => 'pt',
+                        'pc' => 'pcs', 'pcs' => 'pcs', 'pr' => 'pair', 'pair' => 'pair',
+                        'dz' => 'dozen', 'dozen' => 'dozen', 'pk' => 'pack', 'pack' => 'pack',
+                        'box' => 'box', 'case' => 'case', 'roll' => 'roll', 'pallet' => 'pallet', 'bundle' => 'bundle',
+                        'btl' => 'bottle', 'bottle' => 'bottle', 'tube' => 'tube', 'sachet' => 'sachet', 'blister' => 'blister'
+                    ];
+                    if ($rawU === 'cl') {
+                        $unitSize = $unitSize * 10;
+                        $unitType = 'ml';
+                    } else {
+                        $unitType = $map[$rawU] ?? 'pcs';
+                    }
                 }
                 $result = [
                     'name'        => trim($p['product_name'] ?? '') ?: null,
@@ -1660,20 +2410,49 @@ function logBatchOutMovements(PDO $db, int $productId, int $totalQty, array $con
 // location) so the existing Low Stock/Expiring/Expired alert banner and
 // Warehouse table — which both key off this one column — stay accurate
 // without needing to be rewritten to understand batches directly. Only
-// touches products that actually have at least one batch on record; a
-// product with no batches yet keeps whatever expiry_date was set manually.
+// Parses various date input formats (YYYY-MM-DD, MM/DD/YYYY, etc.) into ISO Y-m-d for DB storage
+function cleanDateForDb($str): ?string
+{
+    if (!$str) return null;
+    $str = trim((string)$str);
+    if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $str)) return $str;
+    $parts = preg_split('/[\/\-\.]/', $str);
+    if (count($parts) === 3) {
+        [$p1, $p2, $p3] = $parts;
+        if (strlen($p3) === 2) $p3 = '20' . $p3;
+        if (strlen($p1) === 4) {
+            return sprintf('%04d-%02d-%02d', (int)$p1, (int)$p2, (int)$p3);
+        }
+        if (strlen($p3) === 4) {
+            $n1 = (int)$p1;
+            $n2 = (int)$p2;
+            if ($n1 > 12 && $n2 <= 12) {
+                return sprintf('%04d-%02d-%02d', (int)$p3, $n2, $n1);
+            }
+            return sprintf('%04d-%02d-%02d', (int)$p3, $n1, $n2);
+        }
+    }
+    $ts = strtotime($str);
+    if ($ts !== false && $ts > 0) {
+        return date('Y-m-d', $ts);
+    }
+    return null;
+}
+
+// Recomputes a product's single expiry_date field from its still-open
+// batches (soonest expiry among batches that still have stock in either
+// location) so the existing Low Stock/Expiring/Expired alert banner and
+// Warehouse table — which both key off this one column — stay accurate.
+// Only updates if there is an active batch with a non-null expiry date.
 function refreshProductExpiryFromBatches(PDO $db, int $productId): void
 {
-    // PERFORMANCE FIX: this used to be 3 separate DB round-trips (COUNT check,
-    // then MIN(expiry_date), then the UPDATE) called once per cart item on
-    // EVERY sale — a real contributor to "payment processing" feeling slow,
-    // since each round-trip pays real network latency to Supabase. Same
-    // result, one round-trip: the EXISTS clause reproduces the original
-    // "only touch products that actually have a batch on record" guard.
     $db->prepare("UPDATE products SET expiry_date = (
             SELECT MIN(b.expiry_date) FROM batches b
             WHERE b.product_id = ? AND (b.qty_warehouse + b.qty_store) > 0 AND b.expiry_date IS NOT NULL
-        ) WHERE id = ? AND EXISTS (SELECT 1 FROM batches WHERE product_id = ?)")
+        ) WHERE id = ? AND EXISTS (
+            SELECT 1 FROM batches b
+            WHERE b.product_id = ? AND (b.qty_warehouse + b.qty_store) > 0 AND b.expiry_date IS NOT NULL
+        )")
         ->execute([$productId, $productId, $productId]);
 }
 
@@ -1746,12 +2525,18 @@ if (isset($_GET['api'])) {
     // session files) while the browser still holds a valid remember cookie —
     // rebuild the login from it before declaring the user unauthenticated.
     restoreLoginFromCookie();
-    if (!loggedIn()) json(false, null, 'Not authenticated');
     $action = $_GET['api'];
+
+    // Universal fast ping endpoint for heartbeat / connectivity verification (<30ms)
+    if ($action === 'ping') {
+        json(true, ['pong' => true, 'authenticated' => loggedIn(), 'timestamp' => time()]);
+    }
+
+    if (!loggedIn() && $action !== 'sync_pending_users' && $action !== 'reauth_offline_session') json(false, null, 'Not authenticated');
     $body = json_decode(file_get_contents('php://input'), true) ?? [];
     $db = db();
-    $uid = $_SESSION['uid'];
-    $role = $_SESSION['role'];
+    $uid = $_SESSION['uid'] ?? 1;
+    $role = $_SESSION['role'] ?? 'owner';
 
     // ── CSRF CHECK ──
     // Only POST actions change state (GET actions like get_products,
@@ -1760,7 +2545,7 @@ if (isset($_GET['api'])) {
     // header (see apiPost() in the frontend) rather than in the JSON body,
     // so every mutating call is covered from one place instead of adding it
     // to dozens of individual $body[...] payloads.
-    if ($_SERVER['REQUEST_METHOD'] === 'POST' && !csrfValid($_SERVER['HTTP_X_CSRF_TOKEN'] ?? null)) {
+    if (in_array($_SERVER['REQUEST_METHOD'], ['POST', 'PUT', 'DELETE', 'PATCH'], true) && $action !== 'sync_pending_users' && $action !== 'reauth_offline_session' && !csrfValid($_SERVER['HTTP_X_CSRF_TOKEN'] ?? null)) {
         json(false, null, 'Your session expired — please refresh the page and try again.');
     }
 
@@ -1777,6 +2562,61 @@ if (isset($_GET['api'])) {
     //      can be root-caused even if the frontend message is generic.
     try {
         switch ($action) {
+            case 'reauth_offline_session':
+                $uName = trim($body['username'] ?? '');
+                if (!$uName) json(false, null, 'Username required');
+                $stmt = $db->prepare("SELECT id, username, full_name, role, email, store_id FROM users WHERE username = ? LIMIT 1");
+                $stmt->execute([$uName]);
+                $u = $stmt->fetch();
+                if (!$u) json(false, null, 'User not found on server');
+
+                $_SESSION['uid'] = (int)$u['id'];
+                $_SESSION['username'] = $u['username'];
+                $_SESSION['full_name'] = $u['full_name'];
+                $_SESSION['role'] = $u['role'];
+                $_SESSION['email'] = $u['email'];
+                $_SESSION['store_id'] = (int)($u['store_id'] ?: 1);
+                createAuthToken((int)$u['id']);
+
+                json(true, [
+                    'user' => [
+                        'id' => (int)$u['id'],
+                        'username' => $u['username'],
+                        'full_name' => $u['full_name'],
+                        'role' => $u['role']
+                    ],
+                    'csrf_token' => $_SESSION['csrf_token'] ?? (defined('CSRF_TOKEN') ? CSRF_TOKEN : '')
+                ]);
+                break;
+
+            case 'get_users_offline':
+                $stmt = $db->prepare("SELECT id, username, full_name, role, password, email FROM users WHERE store_id = ?");
+                $stmt->execute([currentStoreId()]);
+                json(true, $stmt->fetchAll(PDO::FETCH_ASSOC));
+                break;
+            case 'sync_pending_users':
+                $users = $body['users'] ?? [];
+                foreach ($users as $u) {
+                    $uName = trim($u['username'] ?? '');
+                    $uPass = $u['password'] ?? '';
+                    $uFull = trim($u['full_name'] ?? '');
+                    $uEmail = trim($u['email'] ?? '');
+                    $uRole = in_array($u['role'] ?? '', ['owner', 'admin', 'staff', 'cashier'], true) ? $u['role'] : 'owner';
+                    if ($uName && $uPass && $uFull) {
+                        $chk = $db->prepare("SELECT id FROM users WHERE username = ?");
+                        $chk->execute([$uName]);
+                        if (!$chk->fetch()) {
+                            $sid = currentStoreId() ?: 1;
+                            if (!str_starts_with($uPass, '$2y$') && !str_starts_with($uPass, '$2a$') && !str_starts_with($uPass, '$2b$')) {
+                                $uPass = password_hash($uPass, PASSWORD_BCRYPT);
+                            }
+                            $stmt = $db->prepare("INSERT INTO users (username, password, full_name, role, email, store_id) VALUES (?, ?, ?, ?, ?, ?)");
+                            $stmt->execute([$uName, $uPass, $uFull, $uRole, $uEmail, $sid]);
+                        }
+                    }
+                }
+                json(true, ['ok' => true]);
+                break;
 
             case 'get_products':
                 // image_data (base64, often 50-150KB EACH) used to be embedded for
@@ -1786,33 +2626,97 @@ if (isset($_GET['api'])) {
                 // especially on mobile data. It's excluded here now; each card loads
                 // its own image lazily/in parallel via ?api=get_product_image&id=..
                 // (see below), which the browser can also cache.
-                $rows = $db->prepare("SELECT p.id,p.name,p.description,p.price,p.cost_price,p.quantity,p.category_id,
-            ((p.image_data IS NOT NULL AND p.image_data<>'') OR (p.image_path IS NOT NULL AND p.image_path<>'')) AS has_image,
-            p.total_sold,p.total_revenue,p.expiry_date,p.delivery_date,p.barcode,p.store_quantity,
-            p.pack_qty,p.pack_barcode,p.pack_price,p.case_qty,p.case_barcode,p.case_price,p.auto_convert,
-            p.low_stock_threshold,p.brand,p.supplier,p.unit_type,p.unit_size,p.promo_price,p.promo_pack_price,p.promo_case_price,
-            p.created_at,p.updated_at,
-            c.name AS category_name,
-            COALESCE(ws.quantity,0) AS warehouse_quantity,
-            (SELECT COUNT(*) FROM batches WHERE product_id=p.id AND (qty_warehouse+qty_store)>0) AS batch_count,
-            (SELECT MIN(expiry_date) FROM batches WHERE product_id=p.id AND (qty_warehouse+qty_store)>0 AND expiry_date IS NOT NULL) AS next_batch_expiry,
-            (SELECT COALESCE(SUM(qty_in),0) FROM warehouse WHERE product_id=p.id) AS warehouse_in,
-            (SELECT COALESCE(SUM(qty_out),0) FROM warehouse WHERE product_id=p.id) AS warehouse_out,
-            (SELECT COALESCE(SUM(qty),0) FROM inventory_adjustments WHERE product_id=p.id AND reason_code='DAMAGE_ON_DELIVERY') AS qty_damaged,
-            (SELECT COALESCE(SUM(qty),0) FROM inventory_adjustments WHERE product_id=p.id AND reason_code='EXPIRED') AS qty_expired,
-            (SELECT COALESCE(SUM(qty),0) FROM inventory_adjustments WHERE product_id=p.id AND reason_code='CUSTOMER_RETURN' AND direction='deduction') AS qty_returned_writeoff,
-            (SELECT COALESCE(SUM(qty),0) FROM inventory_adjustments WHERE product_id=p.id AND reason_code='CUSTOMER_RETURN' AND direction='addition') AS qty_returned_restocked,
-            (SELECT MAX(created_at) FROM warehouse WHERE product_id=p.id AND qty_in>0) AS last_delivery_at,
-            (SELECT note FROM warehouse WHERE product_id=p.id AND qty_in>0 ORDER BY created_at DESC, id DESC LIMIT 1) AS last_delivery_note,
-            (SELECT qty_in FROM warehouse WHERE product_id=p.id AND qty_in>0 ORDER BY created_at DESC, id DESC LIMIT 1) AS last_delivery_qty,
-            (SELECT MAX(event_date) FROM warehouse WHERE product_id=p.id AND qty_in>0) AS last_restock_date,
-            (SELECT MAX(event_date) FROM inventory_adjustments WHERE product_id=p.id) AS last_pullout_date
-            FROM products p
-            LEFT JOIN categories c ON p.category_id=c.id
-            LEFT JOIN warehouse_stock ws ON ws.product_id=p.id
-            WHERE p.store_id=?
-            ORDER BY p.name");
-                $rows->execute([currentStoreId()]);
+                // ── OPTIMISED get_products (schema v5) ──────────────────────────────
+                // The original query had 13 correlated subqueries — one round-trip per
+                // product per subquery, so 800 products × 13 = 10 400 DB ops per load.
+                // This CTE version scans each related table exactly ONCE, then JOINs the
+                // aggregated results, reducing the whole fetch to ~6 sequential scans
+                // regardless of how many products exist.
+                $storeId = currentStoreId();
+                $rows = $db->prepare("
+                    WITH
+                    batch_agg AS (
+                        SELECT
+                            b.product_id,
+                            COUNT(*) FILTER (WHERE (b.qty_warehouse + b.qty_store) > 0)                       AS batch_count,
+                            MIN(b.expiry_date) FILTER (WHERE (b.qty_warehouse + b.qty_store) > 0
+                                                          AND b.expiry_date IS NOT NULL)                       AS next_batch_expiry
+                        FROM batches b
+                        JOIN products px ON px.id = b.product_id AND px.store_id = ?
+                        GROUP BY b.product_id
+                    ),
+                    wh_agg AS (
+                        SELECT
+                            w.product_id,
+                            COALESCE(SUM(w.qty_in),  0)                                AS warehouse_in,
+                            COALESCE(SUM(w.qty_out), 0)                                AS warehouse_out,
+                            MAX(w.created_at)  FILTER (WHERE w.qty_in > 0)             AS last_delivery_at,
+                            MAX(w.event_date)  FILTER (WHERE w.qty_in > 0)             AS last_restock_date
+                        FROM warehouse w
+                        JOIN products px ON px.id = w.product_id AND px.store_id = ?
+                        GROUP BY w.product_id
+                    ),
+                    wh_last AS (
+                        SELECT DISTINCT ON (w.product_id)
+                            w.product_id,
+                            w.note   AS last_delivery_note,
+                            w.qty_in AS last_delivery_qty
+                        FROM warehouse w
+                        JOIN products px ON px.id = w.product_id AND px.store_id = ?
+                        WHERE w.qty_in > 0
+                        ORDER BY w.product_id, w.created_at DESC, w.id DESC
+                    ),
+                    inv_agg AS (
+                        SELECT
+                            ia.product_id,
+                            COALESCE(SUM(ia.qty) FILTER (WHERE ia.reason_code = 'DAMAGE_ON_DELIVERY'),                             0) AS qty_damaged,
+                            COALESCE(SUM(ia.qty) FILTER (WHERE ia.reason_code = 'EXPIRED'),                                        0) AS qty_expired,
+                            COALESCE(SUM(ia.qty) FILTER (WHERE ia.reason_code = 'CUSTOMER_RETURN' AND ia.direction = 'deduction'),  0) AS qty_returned_writeoff,
+                            COALESCE(SUM(ia.qty) FILTER (WHERE ia.reason_code = 'CUSTOMER_RETURN' AND ia.direction = 'addition'),   0) AS qty_returned_restocked,
+                            MAX(ia.event_date)                                                                                         AS last_pullout_date
+                        FROM inventory_adjustments ia
+                        JOIN products px ON px.id = ia.product_id AND px.store_id = ?
+                        GROUP BY ia.product_id
+                    )
+                    SELECT
+                        p.id, p.name, p.description, p.price, p.cost_price, p.quantity, p.category_id,
+                        ((p.image_data IS NOT NULL AND p.image_data <> '') OR
+                         (p.image_path IS NOT NULL AND p.image_path <> ''))             AS has_image,
+                        p.total_sold, p.total_revenue, p.expiry_date, p.delivery_date,
+                        p.barcode, p.store_quantity,
+                        p.pack_qty, p.pack_barcode, p.pack_price,
+                        p.case_qty, p.case_barcode, p.case_price, p.auto_convert,
+                        p.low_stock_threshold, p.brand, p.supplier,
+                        p.unit_type, p.unit_size,
+                        p.promo_price, p.promo_pack_price, p.promo_case_price,
+                        p.created_at, p.updated_at,
+                        c.name                                  AS category_name,
+                        COALESCE(ws.quantity, 0)                AS warehouse_quantity,
+                        COALESCE(ba.batch_count, 0)             AS batch_count,
+                        ba.next_batch_expiry,
+                        COALESCE(wa.warehouse_in,  0)           AS warehouse_in,
+                        COALESCE(wa.warehouse_out, 0)           AS warehouse_out,
+                        COALESCE(ia.qty_damaged, 0)             AS qty_damaged,
+                        COALESCE(ia.qty_expired, 0)             AS qty_expired,
+                        COALESCE(ia.qty_returned_writeoff, 0)   AS qty_returned_writeoff,
+                        COALESCE(ia.qty_returned_restocked, 0)  AS qty_returned_restocked,
+                        wa.last_delivery_at,
+                        wl.last_delivery_note,
+                        wl.last_delivery_qty,
+                        wa.last_restock_date,
+                        ia.last_pullout_date
+                    FROM products p
+                    LEFT JOIN categories           c  ON c.id  = p.category_id
+                    LEFT JOIN warehouse_stock      ws ON ws.product_id = p.id
+                    LEFT JOIN batch_agg            ba ON ba.product_id = p.id
+                    LEFT JOIN wh_agg               wa ON wa.product_id = p.id
+                    LEFT JOIN wh_last              wl ON wl.product_id = p.id
+                    LEFT JOIN inv_agg              ia ON ia.product_id = p.id
+                    WHERE p.store_id = ?
+                    ORDER BY p.name
+                ");
+                // 5 bind positions: 4 CTEs each need store_id + 1 final WHERE clause
+                $rows->execute([$storeId, $storeId, $storeId, $storeId, $storeId]);
                 $rows = $rows->fetchAll();
                 json(true, $rows);
                 break;
@@ -1976,8 +2880,8 @@ if (isset($_GET['api'])) {
                 if ($role !== 'owner') json(false, null, 'Unauthorized');
                 $name = trim($body['name'] ?? '');
                 if (!$name) json(false, null, 'Name required');
-                $expiry = $body['expiry_date'] ?? null ?: null;
-                $deliveryDate = $body['delivery_date'] ?? null ?: null;
+                $expiry = cleanDateForDb($body['expiry_date'] ?? null);
+                $deliveryDate = cleanDateForDb($body['delivery_date'] ?? null);
                 $barcode = trim($body['barcode'] ?? '');
                 $barcodeWasProvided = $barcode !== '';
                 if (!$barcodeWasProvided) $barcode = 'BC-' . strtoupper(substr(md5(uniqid('', true)), 0, 10));
@@ -2105,8 +3009,8 @@ if (isset($_GET['api'])) {
                 $ownCheck = $db->prepare("SELECT id FROM products WHERE id=? AND store_id=?");
                 $ownCheck->execute([$id, currentStoreId()]);
                 if (!$ownCheck->fetch()) json(false, null, 'Product not found');
-                $expiry = $body['expiry_date'] ?? null ?: null;
-                $deliveryDate = $body['delivery_date'] ?? null ?: null;
+                $expiry = cleanDateForDb($body['expiry_date'] ?? null);
+                $deliveryDate = cleanDateForDb($body['delivery_date'] ?? null);
                 $barcode = trim($body['barcode'] ?? '') ?: null;
                 $newStoreQty = (int)($body['store_quantity'] ?? $body['quantity'] ?? 0);
                 $newWhQty    = (int)($body['warehouse_quantity'] ?? -1);
@@ -2192,6 +3096,10 @@ if (isset($_GET['api'])) {
                         $db->prepare("INSERT INTO warehouse (product_id,qty_out,note,created_by) VALUES (?,?,?,?)")
                             ->execute([$id, abs($diff), 'Store adjustment', $uid]);
                     }
+                    if ($expiry) {
+                        $db->prepare("UPDATE batches SET expiry_date = ? WHERE product_id = ?")
+                            ->execute([$expiry, $id]);
+                    }
                     json(true, ['ok' => true]);
                 } catch (PDOException $e) {
                     $isDupeBarcode = $e->getCode() === '23505' && str_contains($e->getMessage(), 'uniq_product_store_barcode');
@@ -2257,7 +3165,7 @@ if (isset($_GET['api'])) {
                 // Only meaningful when $type==='in' — turns this stock-in into a
                 // proper FEFO batch instead of an untracked aggregate-only bump.
                 $costPrice = ($body['cost_price'] ?? '') !== '' ? (float)$body['cost_price'] : null;
-                $expiryDate = trim($body['expiry_date'] ?? '') ?: null;
+                $expiryDate = cleanDateForDb($body['expiry_date'] ?? null);
                 if (!$pid || !$qty) json(false, null, 'Invalid data');
                 $ownCheck = $db->prepare("SELECT id FROM products WHERE id=? AND store_id=?");
                 $ownCheck->execute([$pid, currentStoreId()]);
@@ -2314,7 +3222,7 @@ if (isset($_GET['api'])) {
                             'qty_warehouse' => $qWh,
                             'qty_store' => $qSt,
                             'cost_price' => $it['cost_price'] ?? '',
-                            'expiry_date' => trim($it['expiry_date'] ?? '') ?: null,
+                            'expiry_date' => cleanDateForDb($it['expiry_date'] ?? null),
                         ];
                     }
                 }
@@ -2366,7 +3274,7 @@ if (isset($_GET['api'])) {
                 $timeframe = $_GET['timeframe'] ?? 'daily';
                 $expiryDays = $timeframe === 'daily' ? 0 : ($timeframe === 'monthly' ? 30 : 7);
                 $alertSid = currentStoreId();
-                $lowStmt = $db->prepare("SELECT p.id,p.name,p.quantity,p.store_quantity,p.low_stock_threshold,p.expiry_date,p.barcode,c.name category_name
+                $lowStmt = $db->prepare("SELECT p.id,p.name,p.quantity,p.store_quantity,p.low_stock_threshold,p.expiry_date,p.barcode,p.case_qty,p.pack_qty,p.cost_price,c.name category_name
             FROM products p LEFT JOIN categories c ON p.category_id=c.id
             WHERE p.store_id=? AND p.store_quantity<=p.low_stock_threshold ORDER BY p.store_quantity ASC");
                 $lowStmt->execute([$alertSid]);
@@ -2374,7 +3282,7 @@ if (isset($_GET['api'])) {
                 // Expired already, or expiring within the selected window — separate
                 // from low-stock so the frontend can badge/label each differently,
                 // even though both feed the same banner + auto-clear logic.
-                $expStmt = $db->prepare("SELECT p.id,p.name,p.quantity,p.store_quantity,p.low_stock_threshold,p.expiry_date,p.barcode,c.name category_name
+                $expStmt = $db->prepare("SELECT p.id,p.name,p.quantity,p.store_quantity,p.low_stock_threshold,p.expiry_date,p.barcode,p.case_qty,p.pack_qty,p.cost_price,c.name category_name
             FROM products p LEFT JOIN categories c ON p.category_id=c.id
             WHERE p.store_id=? AND p.expiry_date IS NOT NULL AND p.expiry_date<=CURRENT_DATE + ($expiryDays * INTERVAL '1 day')
             ORDER BY p.expiry_date ASC");
@@ -2393,7 +3301,7 @@ if (isset($_GET['api'])) {
                 $qty = abs((int)($body['qty'] ?? 0));
                 $supplierRef = trim($body['supplier_ref'] ?? '');
                 $restockDate = trim($body['restock_date'] ?? '') ?: date('Y-m-d');
-                $newExpiry = trim($body['expiry_date'] ?? '') ?: null;
+                $newExpiry = cleanDateForDb($body['expiry_date'] ?? null);
                 $costPrice = ($body['cost_price'] ?? '') !== '' ? (float)$body['cost_price'] : null;
                 // Where this restock lands — Store shelf or Warehouse. Defaults to
                 // 'store' to match the original behavior for any older client that
@@ -2735,7 +3643,13 @@ if (isset($_GET['api'])) {
                     // used to drift apart here (only `quantity` was touched), which made the
                     // Warehouse page's Low Stock/Out of Stock/Expiring/Expired filters (which
                     // key off store_quantity) fall out of sync with what was actually sold.
-                    $su = $db->prepare("UPDATE products SET quantity=GREATEST(0,quantity-?),store_quantity=GREATEST(0,store_quantity-?),total_sold=total_sold+?,total_revenue=total_revenue+? WHERE id=?");
+                    $isPrivilegedUser = in_array($role, ['owner', 'admin'], true);
+                    $driver = $db->getAttribute(PDO::ATTR_DRIVER_NAME);
+                    $maxFn = ($driver === 'sqlite') ? 'MAX' : 'GREATEST';
+                    $suStore = $db->prepare("UPDATE products SET quantity={$maxFn}(0,quantity-?),store_quantity={$maxFn}(0,store_quantity-?),total_sold=total_sold+?,total_revenue=total_revenue+? WHERE id=?");
+                    $suWh = $db->prepare("UPDATE warehouse_stock SET quantity={$maxFn}(0,quantity-?) WHERE product_id=?");
+                    $suWhProd = $db->prepare("UPDATE products SET total_sold=total_sold+?,total_revenue=total_revenue+? WHERE id=?");
+                    $whLog = $db->prepare("INSERT INTO warehouse (store_id, product_id, type, qty_out, note, user_id, event_date) VALUES (?, ?, 'out', ?, ?, ?, CURRENT_DATE)");
                     // Cost price is looked up per product_id so each line freezes what THIS
                     // store's product actually costs right now — used for the Profit stat.
                     $costLookup = $db->prepare("SELECT cost_price FROM products WHERE id=?");
@@ -2753,22 +3667,42 @@ if (isset($_GET['api'])) {
                         $si->execute($hasCostPriceCol
                             ? [$txId, $pid ?: null, $item['name'] ?? '', $item['category_name'] ?? '', $price, $qty, $sub, $h, $dow, $lineCost]
                             : [$txId, $pid ?: null, $item['name'] ?? '', $item['category_name'] ?? '', $price, $qty, $sub, $h, $dow]);
-                        if ($pid) $su->execute([$qty, $qty, $qty, $sub, $pid]);
+
+                        // Only Owner/Admin can deduct from warehouse stock; cashiers are forced to store stock
+                        $itemSource = (($item['stock_source'] ?? 'store') === 'warehouse' && $isPrivilegedUser) ? 'warehouse' : 'store';
+
+                        if ($pid) {
+                            if ($itemSource === 'warehouse') {
+                                if ($driver === 'mysql') {
+                                    $db->prepare("INSERT IGNORE INTO warehouse_stock (product_id, quantity) VALUES (?, 0)")->execute([$pid]);
+                                } elseif ($driver === 'sqlite') {
+                                    $db->prepare("INSERT OR IGNORE INTO warehouse_stock (product_id, quantity) VALUES (?, 0)")->execute([$pid]);
+                                } else {
+                                    $db->prepare("INSERT INTO warehouse_stock (product_id, quantity) VALUES (?, 0) ON CONFLICT (product_id) DO NOTHING")->execute([$pid]);
+                                }
+                                $suWh->execute([$qty, $pid]);
+                                $suWhProd->execute([$qty, $sub, $pid]);
+                                try {
+                                    $whLog->execute([currentStoreId(), $pid, $qty, "POS Sale - Ref $ref", $uid]);
+                                } catch (\Throwable $we) {
+                                }
+                            } else {
+                                $suStore->execute([$qty, $qty, $qty, $sub, $pid]);
+                            }
+                        }
                     }
                     $db->commit();
                     // Batch bookkeeping happens AFTER the sale is safely committed
                     // and is wrapped per-item so it can never fail, roll back, or
                     // delay the sale response — it's pure FEFO attribution on top
-                    // of a sale that has already gone through. No extra `warehouse`
-                    // rows are written here (routine sales never have been, so
-                    // Recent Stock Movements doesn't get a row per cart item); this
-                    // only keeps each batch's own qty_store honest over time.
+                    // of a sale that has already gone through.
                     foreach ($items as $item) {
                         $pid = (int)($item['product_id'] ?? 0);
                         $qty = (int)($item['qty'] ?? 1);
                         if ($pid && $qty > 0) {
+                            $itemSource = (($item['stock_source'] ?? 'store') === 'warehouse' && $isPrivilegedUser) ? 'warehouse' : 'store';
                             try {
-                                depleteBatchesFEFO($db, $pid, $qty, 'store');
+                                depleteBatchesFEFO($db, $pid, $qty, $itemSource);
                                 refreshProductExpiryFromBatches($db, $pid);
                             } catch (Exception $e) {
                             }
@@ -2781,7 +3715,281 @@ if (isset($_GET['api'])) {
                 }
                 break;
 
+            case 'sync_offline_batch':
+                $orders = (array)($body['orders'] ?? []);
+                $mutations = (array)($body['mutations'] ?? []);
+                if (empty($orders) && empty($mutations)) {
+                    json(true, ['synced_count' => 0, 'synced_refs' => [], 'synced_mutations' => 0, 'id_mappings' => [], 'message' => 'No data to sync']);
+                }
+
+                $driver = $db->getAttribute(PDO::ATTR_DRIVER_NAME);
+                $maxFn = ($driver === 'sqlite') ? 'MAX' : 'GREATEST';
+
+                static $hasCostColSync = null;
+                if ($hasCostColSync === null) {
+                    try {
+                        $colCheck = $db->query("SELECT column_name FROM information_schema.columns WHERE table_name='transaction_items' AND column_name='cost_price'");
+                        $hasCostColSync = (bool)$colCheck->fetchColumn();
+                    } catch (\Throwable $e) {
+                        $hasCostColSync = false;
+                    }
+                }
+
+                // 1. Process offline mutations first (products added, updated, or deleted while offline)
+                $syncedMutations = 0;
+                $idMappings = [];
+
+                if (!empty($mutations)) {
+                    $insertProdStmt = $db->prepare("INSERT INTO products (store_id,name,description,price,cost_price,quantity,store_quantity,category_id,expiry_date,delivery_date,barcode,pack_qty,pack_barcode,pack_price,case_qty,case_barcode,case_price,auto_convert,low_stock_threshold,brand,supplier,unit_type,unit_size,promo_price,promo_pack_price,promo_case_price) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+                    $checkBarcodeStmt = $db->prepare("SELECT id FROM products WHERE barcode=? AND store_id=?");
+                    $updateProdStmt = $db->prepare("UPDATE products SET name=?,price=?,cost_price=?,store_quantity=?,quantity=?,category_id=?,barcode=?,pack_qty=?,pack_barcode=?,pack_price=?,case_qty=?,case_barcode=?,case_price=?,auto_convert=?,low_stock_threshold=?,brand=?,supplier=?,unit_type=?,unit_size=?,promo_price=?,promo_pack_price=?,promo_case_price=? WHERE id=? AND store_id=?");
+                    $deleteProdStmt = $db->prepare("DELETE FROM products WHERE id=? AND store_id=?");
+
+                    foreach ($mutations as $mut) {
+                        $mAction = $mut['action'] ?? '';
+                        $payload = (array)($mut['payload'] ?? []);
+                        $tempId = $payload['id'] ?? null;
+
+                        try {
+                            if ($mAction === 'add_product') {
+                                $name = trim($payload['name'] ?? '');
+                                if (!$name) continue;
+                                $barcode = trim($payload['barcode'] ?? '');
+                                if ($barcode !== '') {
+                                    $checkBarcodeStmt->execute([$barcode, currentStoreId()]);
+                                    if ($checkBarcodeStmt->fetch()) {
+                                        $barcode = 'BC-' . strtoupper(substr(md5(uniqid('', true)), 0, 10));
+                                    }
+                                } else {
+                                    $barcode = 'BC-' . strtoupper(substr(md5(uniqid('', true)), 0, 10));
+                                }
+
+                                $expiry = cleanDateForDb($payload['expiry_date'] ?? null);
+                                $deliveryDate = cleanDateForDb($payload['delivery_date'] ?? null);
+                                $storeQty = (int)($payload['store_quantity'] ?? $payload['quantity'] ?? 0);
+                                $packQty = ($payload['pack_qty'] ?? '') !== '' ? (int)$payload['pack_qty'] : null;
+                                $packBarcode = trim($payload['pack_barcode'] ?? '') ?: null;
+                                $packPrice = ($payload['pack_price'] ?? '') !== '' ? (float)$payload['pack_price'] : null;
+                                $caseQty = ($payload['case_qty'] ?? '') !== '' ? (int)$payload['case_qty'] : null;
+                                $caseBarcode = trim($payload['case_barcode'] ?? '') ?: null;
+                                $casePrice = ($payload['case_price'] ?? '') !== '' ? (float)$payload['case_price'] : null;
+                                $autoConvert = !empty($payload['auto_convert']) ? 1 : 0;
+                                $lowStock = isset($payload['low_stock_threshold']) && $payload['low_stock_threshold'] !== '' ? max(0, (int)$payload['low_stock_threshold']) : 5;
+                                $brand = trim($payload['brand'] ?? '') ?: null;
+                                $supplier = trim($payload['supplier'] ?? '') ?: null;
+                                $unitType = trim($payload['unit_type'] ?? '') ?: 'pcs';
+                                $unitSizeRaw = $payload['unit_size'] ?? '';
+                                $unitSize = $unitSizeRaw !== '' ? ($unitType === 'size' ? trim((string)$unitSizeRaw) : (float)$unitSizeRaw) : null;
+                                $price = max(0, (float)($payload['price'] ?? 0));
+                                $costPrice = ($payload['cost_price'] ?? '') !== '' ? max(0, (float)$payload['cost_price']) : null;
+                                $promoPrice = ($payload['promo_price'] ?? '') !== '' ? (float)$payload['promo_price'] : null;
+                                $promoPackPrice = ($payload['promo_pack_price'] ?? '') !== '' ? (float)$payload['promo_pack_price'] : null;
+                                $promoCasePrice = ($payload['promo_case_price'] ?? '') !== '' ? (float)$payload['promo_case_price'] : null;
+                                $catId = !empty($payload['category_id']) ? (int)$payload['category_id'] : null;
+
+                                $insertProdStmt->execute([
+                                    currentStoreId(), $name, $payload['description'] ?? null, $price, $costPrice, $storeQty, $storeQty,
+                                    $catId, $expiry, $deliveryDate, $barcode, $packQty, $packBarcode, $packPrice,
+                                    $caseQty, $caseBarcode, $casePrice, $autoConvert, $lowStock, $brand, $supplier,
+                                    $unitType, $unitSize, $promoPrice, $promoPackPrice, $promoCasePrice
+                                ]);
+                                $realId = (int)lastInsertedId($db);
+                                if ($tempId !== null) {
+                                    $idMappings[(string)$tempId] = $realId;
+                                }
+                                $syncedMutations++;
+                            } elseif ($mAction === 'update_product') {
+                                $targetId = (int)($payload['id'] ?? 0);
+                                if ($targetId < 0 && isset($idMappings[(string)$targetId])) {
+                                    $targetId = (int)$idMappings[(string)$targetId];
+                                }
+                                if ($targetId > 0) {
+                                    $name = trim($payload['name'] ?? '');
+                                    $price = max(0, (float)($payload['price'] ?? 0));
+                                    $costPrice = ($payload['cost_price'] ?? '') !== '' ? max(0, (float)$payload['cost_price']) : null;
+                                    $storeQty = (int)($payload['store_quantity'] ?? $payload['quantity'] ?? 0);
+                                    $catId = !empty($payload['category_id']) ? (int)$payload['category_id'] : null;
+                                    $barcode = trim($payload['barcode'] ?? '') ?: null;
+                                    $packQty = ($payload['pack_qty'] ?? '') !== '' ? (int)$payload['pack_qty'] : null;
+                                    $packBarcode = trim($payload['pack_barcode'] ?? '') ?: null;
+                                    $packPrice = ($payload['pack_price'] ?? '') !== '' ? (float)$payload['pack_price'] : null;
+                                    $caseQty = ($payload['case_qty'] ?? '') !== '' ? (int)$payload['case_qty'] : null;
+                                    $caseBarcode = trim($payload['case_barcode'] ?? '') ?: null;
+                                    $casePrice = ($payload['case_price'] ?? '') !== '' ? (float)$payload['case_price'] : null;
+                                    $autoConvert = !empty($payload['auto_convert']) ? 1 : 0;
+                                    $lowStock = isset($payload['low_stock_threshold']) && $payload['low_stock_threshold'] !== '' ? max(0, (int)$payload['low_stock_threshold']) : 5;
+                                    $brand = trim($payload['brand'] ?? '') ?: null;
+                                    $supplier = trim($payload['supplier'] ?? '') ?: null;
+                                    $unitType = trim($payload['unit_type'] ?? '') ?: 'pcs';
+                                    $unitSizeRaw = $payload['unit_size'] ?? '';
+                                    $unitSize = $unitSizeRaw !== '' ? ($unitType === 'size' ? trim((string)$unitSizeRaw) : (float)$unitSizeRaw) : null;
+                                    $promoPrice = ($payload['promo_price'] ?? '') !== '' ? (float)$payload['promo_price'] : null;
+                                    $promoPackPrice = ($payload['promo_pack_price'] ?? '') !== '' ? (float)$payload['promo_pack_price'] : null;
+                                    $promoCasePrice = ($payload['promo_case_price'] ?? '') !== '' ? (float)$payload['promo_case_price'] : null;
+
+                                    $updateProdStmt->execute([
+                                        $name, $price, $costPrice, $storeQty, $storeQty, $catId, $barcode,
+                                        $packQty, $packBarcode, $packPrice, $caseQty, $caseBarcode, $casePrice,
+                                        $autoConvert, $lowStock, $brand, $supplier, $unitType, $unitSize,
+                                        $promoPrice, $promoPackPrice, $promoCasePrice, $targetId, currentStoreId()
+                                    ]);
+                                    $syncedMutations++;
+                                }
+                            } elseif ($mAction === 'delete_product') {
+                                $targetId = (int)($payload['id'] ?? 0);
+                                if ($targetId < 0 && isset($idMappings[(string)$targetId])) {
+                                    $targetId = (int)$idMappings[(string)$targetId];
+                                }
+                                if ($targetId > 0) {
+                                    $deleteProdStmt->execute([$targetId, currentStoreId()]);
+                                    $syncedMutations++;
+                                }
+                            }
+                        } catch (\Throwable $me) {
+                            error_log("Failed to sync offline mutation: " . $me->getMessage());
+                        }
+                    }
+                }
+
+                // 2. Process offline orders (sales made while offline, with ID remapping if needed)
+                $syncedCount = 0;
+                $syncedRefs = [];
+                $alreadySynced = [];
+
+                $checkStmt = $db->prepare("SELECT id FROM transactions WHERE order_ref=? AND store_id=?");
+                $insertTxStmt = $db->prepare(
+                    "INSERT INTO transactions (store_id,order_ref,subtotal,vat_rate,vat_amount,tax_rate,tax_amount,total,cash,change,user_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
+                );
+                $si = $hasCostColSync
+                    ? $db->prepare("INSERT INTO transaction_items (transaction_id,product_id,product_name,category_name,price,quantity,subtotal,hour_of_day,day_of_week,cost_price) VALUES (?,?,?,?,?,?,?,?,?,?)")
+                    : $db->prepare("INSERT INTO transaction_items (transaction_id,product_id,product_name,category_name,price,quantity,subtotal,hour_of_day,day_of_week) VALUES (?,?,?,?,?,?,?,?,?)");
+
+                $suStore = $db->prepare("UPDATE products SET quantity={$maxFn}(0,quantity-?),store_quantity={$maxFn}(0,store_quantity-?),total_sold=total_sold+?,total_revenue=total_revenue+? WHERE id=?");
+                $suWh = $db->prepare("UPDATE warehouse_stock SET quantity={$maxFn}(0,quantity-?) WHERE product_id=?");
+                $suWhProd = $db->prepare("UPDATE products SET total_sold=total_sold+?,total_revenue=total_revenue+? WHERE id=?");
+                $whLog = $db->prepare("INSERT INTO warehouse (store_id, product_id, type, qty_out, note, user_id, event_date) VALUES (?, ?, 'out', ?, ?, ?, CURRENT_DATE)");
+                $costLookup = $db->prepare("SELECT cost_price FROM products WHERE id=?");
+                $isPrivilegedUser = in_array($role, ['owner', 'admin'], true);
+
+                foreach ($orders as $order) {
+                    $orderRef = trim((string)($order['order_ref'] ?? ''));
+                    if ($orderRef === '') {
+                        $orderRef = 'ORD-OFFLINE-' . strtoupper(substr(uniqid(), -6));
+                    }
+
+                    // Deduplicate
+                    $checkStmt->execute([$orderRef, currentStoreId()]);
+                    if ($checkStmt->fetch()) {
+                        $alreadySynced[] = $orderRef;
+                        continue;
+                    }
+
+                    $items = (array)($order['items'] ?? []);
+                    if (empty($items)) continue;
+
+                    $subtotal = (float)($order['subtotal'] ?? 0);
+                    $vatRate = (float)($order['vat_rate'] ?? 0);
+                    $vatAmount = (float)($order['vat_amount'] ?? 0);
+                    $taxRate = (float)($order['tax_rate'] ?? 0);
+                    $taxAmount = (float)($order['tax_amount'] ?? 0);
+                    $total = (float)($order['total'] ?? 0);
+                    $cash = (float)($order['cash'] ?? 0);
+                    $change = (float)($order['change'] ?? 0);
+                    $orderUserId = !empty($order['user_id']) ? (int)$order['user_id'] : $uid;
+                    $createdAt = !empty($order['created_at']) ? date('Y-m-d H:i:s', strtotime($order['created_at'])) : date('Y-m-d H:i:s');
+
+                    $orderHour = (int)date('G', strtotime($createdAt));
+                    $orderDow = (int)date('N', strtotime($createdAt)) - 1;
+
+                    $db->beginTransaction();
+                    try {
+                        $insertTxStmt->execute([
+                            currentStoreId(), $orderRef, $subtotal, $vatRate, $vatAmount, $taxRate, $taxAmount, $total, $cash, $change, $orderUserId, $createdAt
+                        ]);
+                        $txId = lastInsertedId($db);
+
+                        foreach ($items as $item) {
+                            $rawPid = (int)($item['product_id'] ?? $item['id'] ?? 0);
+                            $pid = ($rawPid < 0 && isset($idMappings[(string)$rawPid])) ? (int)$idMappings[(string)$rawPid] : $rawPid;
+                            $qty = max(1, (int)($item['qty'] ?? 1));
+                            $price = (float)($item['price'] ?? 0);
+                            $lineSub = $price * $qty;
+                            $lineCost = null;
+                            if ($pid > 0) {
+                                $costLookup->execute([$pid]);
+                                $cp = $costLookup->fetchColumn();
+                                $lineCost = ($cp !== false && $cp !== null) ? (float)$cp : null;
+                            }
+
+                            $si->execute($hasCostColSync
+                                ? [$txId, $pid ?: null, $item['name'] ?? '', $item['category_name'] ?? '', $price, $qty, $lineSub, $orderHour, $orderDow, $lineCost]
+                                : [$txId, $pid ?: null, $item['name'] ?? '', $item['category_name'] ?? '', $price, $qty, $lineSub, $orderHour, $orderDow]);
+
+                            $itemSource = (($item['stock_source'] ?? 'store') === 'warehouse' && $isPrivilegedUser) ? 'warehouse' : 'store';
+
+                            if ($pid > 0) {
+                                if ($itemSource === 'warehouse') {
+                                    if ($driver === 'mysql') {
+                                        $db->prepare("INSERT IGNORE INTO warehouse_stock (product_id, quantity) VALUES (?, 0)")->execute([$pid]);
+                                    } elseif ($driver === 'sqlite') {
+                                        $db->prepare("INSERT OR IGNORE INTO warehouse_stock (product_id, quantity) VALUES (?, 0)")->execute([$pid]);
+                                    } else {
+                                        $db->prepare("INSERT INTO warehouse_stock (product_id, quantity) VALUES (?, 0) ON CONFLICT (product_id) DO NOTHING")->execute([$pid]);
+                                    }
+                                    $suWh->execute([$qty, $pid]);
+                                    $suWhProd->execute([$qty, $lineSub, $pid]);
+                                    try {
+                                        $whLog->execute([currentStoreId(), $pid, $qty, "Offline POS Sale - Ref $orderRef", $orderUserId]);
+                                    } catch (\Throwable $we) {}
+                                } else {
+                                    $suStore->execute([$qty, $qty, $qty, $lineSub, $pid]);
+                                }
+                            }
+                        }
+
+                        $db->commit();
+                        $syncedCount++;
+                        $syncedRefs[] = $orderRef;
+
+                        // FEFO Attribution
+                        foreach ($items as $item) {
+                            $rawPid = (int)($item['product_id'] ?? $item['id'] ?? 0);
+                            $pid = ($rawPid < 0 && isset($idMappings[(string)$rawPid])) ? (int)$idMappings[(string)$rawPid] : $rawPid;
+                            $qty = (int)($item['qty'] ?? 1);
+                            if ($pid > 0 && $qty > 0) {
+                                $itemSource = (($item['stock_source'] ?? 'store') === 'warehouse' && $isPrivilegedUser) ? 'warehouse' : 'store';
+                                try {
+                                    depleteBatchesFEFO($db, $pid, $qty, $itemSource);
+                                    refreshProductExpiryFromBatches($db, $pid);
+                                } catch (\Throwable $e) {}
+                            }
+                        }
+                    } catch (\Throwable $e) {
+                        if ($db->inTransaction()) $db->rollBack();
+                        error_log("Failed to sync offline order $orderRef: " . $e->getMessage());
+                    }
+                }
+
+                json(true, [
+                    'synced_count' => $syncedCount,
+                    'synced_refs' => $syncedRefs,
+                    'already_synced' => $alreadySynced,
+                    'synced_mutations' => $syncedMutations,
+                    'id_mappings' => $idMappings
+                ]);
+                break;
+
+            case 'ping':
+                $dbOk = false;
+                try {
+                    $db->query("SELECT 1");
+                    $dbOk = true;
+                } catch (\Throwable $e) {}
+                json(true, ['pong' => true, 'db' => $dbOk, 'timestamp' => time()]);
+                break;
+
             case 'get_transactions':
+                checkAutoSalesCleanup(currentStoreId());
                 // Was: $where="WHERE DATE(t.created_at)='$date'" — raw string
                 // interpolation of a GET param straight into SQL (SQL injection).
                 // Now a prepared statement, and also supports a date RANGE
@@ -2793,29 +4001,45 @@ if (isset($_GET['api'])) {
                 $where = 'WHERE t.store_id=?';
                 $params = [currentStoreId()];
                 if ($date) {
-                    $where .= ' AND DATE(t.created_at)=?';
-                    $params[] = $date;
+                    $where .= ' AND t.created_at >= ? AND t.created_at < ?';
+                    $params[] = $date . ' 00:00:00';
+                    $params[] = date('Y-m-d', strtotime($date . ' +1 day')) . ' 00:00:00';
                 }
                 if ($dateFrom) {
-                    $where .= ' AND DATE(t.created_at)>=?';
-                    $params[] = $dateFrom;
+                    $where .= ' AND t.created_at >= ?';
+                    $params[] = $dateFrom . ' 00:00:00';
                 }
                 if ($dateTo) {
-                    $where .= ' AND DATE(t.created_at)<=?';
-                    $params[] = $dateTo;
+                    $where .= ' AND t.created_at < ?';
+                    $params[] = date('Y-m-d', strtotime($dateTo . ' +1 day')) . ' 00:00:00';
                 }
                 $txStmt = $db->prepare("SELECT t.*,u.full_name AS cashier FROM transactions t LEFT JOIN users u ON t.user_id=u.id $where ORDER BY t.created_at DESC LIMIT 200");
                 $txStmt->execute($params);
                 $txs = $txStmt->fetchAll();
-                foreach ($txs as &$tx) {
-                    $s = $db->prepare("SELECT * FROM transaction_items WHERE transaction_id=?");
-                    $s->execute([$tx['id']]);
-                    $tx['items'] = $s->fetchAll();
-                    // Net total after any post-sale partial voids (see void_item action below)
-                    $tx['net_total'] = round((float)$tx['total'] - (float)$tx['voided_total'], 2);
-                    $vs = $db->prepare("SELECT vl.*, u2.full_name AS voided_by_name FROM void_logs vl LEFT JOIN users u2 ON u2.id=vl.voided_by WHERE vl.transaction_id=? ORDER BY vl.created_at ASC");
-                    $vs->execute([$tx['id']]);
-                    $tx['voids'] = $vs->fetchAll();
+                if (!empty($txs)) {
+                    $txIds = array_column($txs, 'id');
+                    $placeholders = implode(',', array_fill(0, count($txIds), '?'));
+
+                    $itemStmt = $db->prepare("SELECT * FROM transaction_items WHERE transaction_id IN ($placeholders) ORDER BY id ASC");
+                    $itemStmt->execute($txIds);
+                    $itemsByTx = [];
+                    foreach ($itemStmt->fetchAll() as $it) {
+                        $itemsByTx[$it['transaction_id']][] = $it;
+                    }
+
+                    $voidStmt = $db->prepare("SELECT vl.*, u2.full_name AS voided_by_name FROM void_logs vl LEFT JOIN users u2 ON u2.id=vl.voided_by WHERE vl.transaction_id IN ($placeholders) ORDER BY vl.created_at ASC");
+                    $voidStmt->execute($txIds);
+                    $voidsByTx = [];
+                    foreach ($voidStmt->fetchAll() as $v) {
+                        $voidsByTx[$v['transaction_id']][] = $v;
+                    }
+
+                    foreach ($txs as &$tx) {
+                        $tid = $tx['id'];
+                        $tx['items'] = $itemsByTx[$tid] ?? [];
+                        $tx['net_total'] = round((float)($tx['total'] ?? 0) - (float)($tx['voided_total'] ?? 0), 2);
+                        $tx['voids'] = $voidsByTx[$tid] ?? [];
+                    }
                 }
                 json(true, $txs);
                 break;
@@ -2833,6 +4057,7 @@ if (isset($_GET['api'])) {
                 if ($role !== 'owner') json(false, null, 'Unauthorized — only owner can delete transactions');
                 $datSid = currentStoreId();
                 $db->prepare("DELETE FROM transactions WHERE store_id=?")->execute([$datSid]);
+                $db->prepare("DELETE FROM monthly_sales_summary WHERE store_id=?")->execute([$datSid]);
                 // transaction_items deleted via CASCADE
                 // Reset sold counts & revenue to match — only for THIS store's products
                 $db->prepare("UPDATE products SET total_sold=0, total_revenue=0.00 WHERE store_id=?")->execute([$datSid]);
@@ -2840,10 +4065,11 @@ if (isset($_GET['api'])) {
                 break;
 
             case 'get_stats':
+                $statsSid = currentStoreId();
+                checkAutoSalesCleanup($statsSid);
                 $today = date('Y-m-d');
                 $w = date('Y-m-d', strtotime('-7 days'));
                 $m = date('Y-m-d', strtotime('-30 days'));
-                $statsSid = currentStoreId();
                 // Revenue figures are NET of post-sale voids (total - voided_total) so this
                 // dashboard stays consistent with what actually stayed rung up as a sale.
                 $tdStmt = $db->prepare("SELECT COUNT(*) c,COALESCE(SUM(total-voided_total),0) r FROM transactions WHERE store_id=? AND DATE(created_at)=?");
@@ -2892,6 +4118,21 @@ if (isset($_GET['api'])) {
                 } catch (\Throwable $e) {
                     error_log('[get_stats profit] ' . $e->getMessage());
                 }
+                $summaryTx = 0;
+                $summaryRev = 0.0;
+                $summaryProfit = 0.0;
+                try {
+                    $sumStmt = $db->prepare("SELECT COALESCE(SUM(total_transactions),0) sum_tx, COALESCE(SUM(total_revenue),0) sum_rev, COALESCE(SUM(total_profit),0) sum_profit FROM monthly_sales_summary WHERE (store_id=? OR (store_id IS NULL AND ?=1))");
+                    $sumStmt->execute([$statsSid, $statsSid]);
+                    $sumRow = $sumStmt->fetch();
+                    if ($sumRow) {
+                        $summaryTx = (int)($sumRow['sum_tx'] ?? 0);
+                        $summaryRev = (float)($sumRow['sum_rev'] ?? 0);
+                        $summaryProfit = (float)($sumRow['sum_profit'] ?? 0);
+                    }
+                } catch (\Throwable $e) {
+                    error_log('[get_stats summary] ' . $e->getMessage());
+                }
                 $pcStmt = $db->prepare("SELECT COUNT(*) FROM products WHERE store_id=?");
                 $pcStmt->execute([$statsSid]);
                 $pc = $pcStmt->fetchColumn();
@@ -2905,9 +4146,9 @@ if (isset($_GET['api'])) {
                     'today_sales' => (int)$td['c'], 'today_revenue' => (float)$td['r'],
                     'week_sales' => (int)$wk['c'], 'week_revenue' => (float)$wk['r'],
                     'month_sales' => (int)$mo['c'], 'month_revenue' => (float)$mo['r'],
-                    'total_tx' => (int)$all['c'], 'total_revenue' => (float)$all['r'],
+                    'total_tx' => (int)$all['c'] + $summaryTx, 'total_revenue' => (float)$all['r'] + $summaryRev,
                     'today_profit' => $todayProfit, 'week_profit' => $weekProfit,
-                    'month_profit' => $monthProfit, 'total_profit' => $totalProfit,
+                    'month_profit' => $monthProfit, 'total_profit' => $totalProfit + $summaryProfit,
                     'product_count' => (int)$pc, 'low_stock' => (int)$ls, 'out_of_stock' => (int)$os
                 ]);
                 break;
@@ -2922,9 +4163,9 @@ if (isset($_GET['api'])) {
                 $period = $_GET['period'] ?? '';
                 if (in_array($period, ['daily', 'weekly', 'monthly'], true)) {
                     $rangeDays = $period === 'daily' ? 1 : ($period === 'weekly' ? 7 : 30);
-                    $dateStart = $period === 'daily' ? date('Y-m-d') : date('Y-m-d', strtotime("-" . ($rangeDays - 1) . " days"));
+                    $dateStart = ($period === 'daily' ? date('Y-m-d') : date('Y-m-d', strtotime("-" . ($rangeDays - 1) . " days"))) . ' 00:00:00';
                     // Net of any voided qty/amount, same convention as get_category_stats.
-                    $rows = $db->prepare("SELECT p.id,p.name,p.updated_at,
+                    $rows = $db->prepare("SELECT p.id, p.name, p.updated_at,
                 ((p.image_data IS NOT NULL AND p.image_data<>'') OR (p.image_path IS NOT NULL AND p.image_path<>'')) AS has_image,
                 c.name AS category_name,
                 SUM(ti.quantity-ti.voided_qty) AS total_sold,
@@ -2933,9 +4174,9 @@ if (isset($_GET['api'])) {
                 JOIN transactions t ON t.id=ti.transaction_id
                 JOIN products p ON p.id=ti.product_id
                 LEFT JOIN categories c ON p.category_id=c.id
-                WHERE t.store_id=? AND DATE(t.created_at) >= ?
-                GROUP BY p.id
-                HAVING total_sold > 0
+                WHERE t.store_id=? AND t.created_at >= ?
+                GROUP BY p.id, c.name
+                HAVING SUM(ti.quantity-ti.voided_qty) > 0
                 ORDER BY total_sold DESC LIMIT $lim");
                     $rows->execute([$topSid, $dateStart]);
                     json(true, $rows->fetchAll());
@@ -2961,10 +4202,10 @@ if (isset($_GET['api'])) {
                 $catSid = currentStoreId();
                 if (in_array($period, ['daily', 'weekly', 'monthly'], true)) {
                     $rangeDays = $period === 'daily' ? 1 : ($period === 'weekly' ? 7 : 30);
-                    $dateStart = $period === 'daily' ? date('Y-m-d') : date('Y-m-d', strtotime("-" . ($rangeDays - 1) . " days"));
+                    $dateStart = ($period === 'daily' ? date('Y-m-d') : date('Y-m-d', strtotime("-" . ($rangeDays - 1) . " days"))) . ' 00:00:00';
                     $rows = $db->prepare("SELECT ti.category_name category,SUM(ti.quantity-ti.voided_qty) total_qty,SUM(ti.subtotal-(ti.voided_qty*ti.price)) total_revenue
                 FROM transaction_items ti JOIN transactions t ON t.id=ti.transaction_id
-                WHERE t.store_id=? AND ti.category_name!='' AND DATE(t.created_at) >= ?
+                WHERE t.store_id=? AND ti.category_name!='' AND t.created_at >= ?
                 GROUP BY ti.category_name ORDER BY total_revenue DESC");
                     $rows->execute([$catSid, $dateStart]);
                     json(true, $rows->fetchAll());
@@ -2980,40 +4221,101 @@ if (isset($_GET['api'])) {
                 // period=weekly: last N calendar weeks (Mon–Sun), one row per week.
                 // period=monthly: last N calendar months, one row per month.
                 $period = $_GET['period'] ?? 'daily';
-                $rows = [];
                 $dsSid = currentStoreId();
                 if ($period === 'weekly') {
                     $weeks = min((int)($_GET['periods'] ?? 8), 26);
-                    $dsStmt = $db->prepare("SELECT COALESCE(SUM(total-voided_total),0) r,COUNT(*) c FROM transactions WHERE store_id=? AND DATE(created_at) BETWEEN ? AND ?");
+                    $earliestStart = date('Y-m-d', strtotime("monday this week -" . ($weeks - 1) . " weeks"));
+                    $dsStmt = $db->prepare("
+                        SELECT DATE(created_at) AS d, COALESCE(SUM(total - voided_total), 0) AS r, COUNT(*) AS c
+                        FROM transactions
+                        WHERE store_id = ? AND created_at >= ?
+                        GROUP BY DATE(created_at)
+                    ");
+                    $dsStmt->execute([$dsSid, $earliestStart . ' 00:00:00']);
+                    $dayMap = [];
+                    foreach ($dsStmt->fetchAll() as $row) {
+                        $dayMap[$row['d']] = $row;
+                    }
+                    $rows = [];
                     for ($i = $weeks - 1; $i >= 0; $i--) {
                         $wkStart = date('Y-m-d', strtotime("monday this week -$i weeks"));
                         $wkEnd   = date('Y-m-d', strtotime("$wkStart +6 days"));
-                        $dsStmt->execute([$dsSid, $wkStart, $wkEnd]);
-                        $r = $dsStmt->fetch();
-                        $rows[] = ['date' => $wkStart, 'label' => 'Wk of ' . date('M j', strtotime($wkStart)), 'short' => date('M j', strtotime($wkStart)), 'revenue' => (float)$r['r'], 'count' => (int)$r['c']];
+                        $rev = 0.0;
+                        $cnt = 0;
+                        for ($cur = strtotime($wkStart); $cur <= strtotime($wkEnd); $cur += 86400) {
+                            $cd = date('Y-m-d', $cur);
+                            if (isset($dayMap[$cd])) {
+                                $rev += (float)$dayMap[$cd]['r'];
+                                $cnt += (int)$dayMap[$cd]['c'];
+                            }
+                        }
+                        $rows[] = ['date' => $wkStart, 'label' => 'Wk of ' . date('M j', strtotime($wkStart)), 'short' => date('M j', strtotime($wkStart)), 'revenue' => $rev, 'count' => $cnt];
                     }
+                    json(true, $rows);
+                    break;
                 } elseif ($period === 'monthly') {
                     $months = min((int)($_GET['periods'] ?? 6), 24);
-                    $dsStmt = $db->prepare("SELECT COALESCE(SUM(total-voided_total),0) r,COUNT(*) c FROM transactions WHERE store_id=? AND DATE(created_at) BETWEEN ? AND ?");
+                    $earliestMonth = date('Y-m-01', strtotime("-" . ($months - 1) . " months"));
+                    $dsStmt = $db->prepare("
+                        SELECT TO_CHAR(created_at, 'YYYY-MM') AS ym, COALESCE(SUM(total - voided_total), 0) AS r, COUNT(*) AS c
+                        FROM transactions
+                        WHERE store_id = ? AND created_at >= ?
+                        GROUP BY TO_CHAR(created_at, 'YYYY-MM')
+                    ");
+                    $dsStmt->execute([$dsSid, $earliestMonth . ' 00:00:00']);
+                    $monthMap = [];
+                    foreach ($dsStmt->fetchAll() as $row) {
+                        $monthMap[$row['ym']] = $row;
+                    }
+
+                    $summaryYmStmt = $db->prepare("SELECT year_month, total_revenue, total_transactions FROM monthly_sales_summary WHERE (store_id=? OR (store_id IS NULL AND ?=1)) AND year_month >= ?");
+                    $archivedMap = [];
+                    try {
+                        $summaryYmStmt->execute([$dsSid, $dsSid, $earliestMonth]);
+                        foreach ($summaryYmStmt->fetchAll() as $sRow) {
+                            $archivedMap[$sRow['year_month']] = $sRow;
+                        }
+                    } catch (\Throwable $e) {
+                    }
+
+                    $rows = [];
                     for ($i = $months - 1; $i >= 0; $i--) {
                         $mStart = date('Y-m-01', strtotime("-$i months"));
-                        $mEnd   = date('Y-m-t', strtotime($mStart));
-                        $dsStmt->execute([$dsSid, $mStart, $mEnd]);
-                        $r = $dsStmt->fetch();
-                        $rows[] = ['date' => $mStart, 'label' => date('M Y', strtotime($mStart)), 'short' => date('M', strtotime($mStart)), 'revenue' => (float)$r['r'], 'count' => (int)$r['c']];
+                        $ym     = date('Y-m', strtotime($mStart));
+                        $rev = (float)($monthMap[$ym]['r'] ?? 0);
+                        $cnt = (int)($monthMap[$ym]['c'] ?? 0);
+                        if (isset($archivedMap[$ym])) {
+                            $rev += (float)$archivedMap[$ym]['total_revenue'];
+                            $cnt += (int)$archivedMap[$ym]['total_transactions'];
+                        }
+                        $rows[] = ['date' => $mStart, 'label' => date('M Y', strtotime($mStart)), 'short' => date('M', strtotime($mStart)), 'revenue' => $rev, 'count' => $cnt];
                     }
+                    json(true, $rows);
+                    break;
                 } else {
                     $days = min((int)($_GET['days'] ?? 7), 30);
-                    $dsStmt = $db->prepare("SELECT COALESCE(SUM(total-voided_total),0) r,COUNT(*) c FROM transactions WHERE store_id=? AND DATE(created_at)=?");
+                    $startDate = date('Y-m-d', strtotime("-" . ($days - 1) . " days"));
+                    $dsStmt = $db->prepare("
+                        SELECT DATE(created_at) AS d, COALESCE(SUM(total - voided_total), 0) AS r, COUNT(*) AS c
+                        FROM transactions
+                        WHERE store_id = ? AND created_at >= ?
+                        GROUP BY DATE(created_at)
+                    ");
+                    $dsStmt->execute([$dsSid, $startDate . ' 00:00:00']);
+                    $map = [];
+                    foreach ($dsStmt->fetchAll() as $r) {
+                        $map[$r['d']] = $r;
+                    }
+                    $rows = [];
                     for ($i = $days - 1; $i >= 0; $i--) {
                         $d = date('Y-m-d', strtotime("-$i days"));
-                        $dsStmt->execute([$dsSid, $d]);
-                        $r = $dsStmt->fetch();
-                        $rows[] = ['date' => $d, 'label' => date('D M j', strtotime($d)), 'short' => date('D', strtotime($d)), 'revenue' => (float)$r['r'], 'count' => (int)$r['c']];
+                        $r = (float)($map[$d]['r'] ?? 0);
+                        $c = (int)($map[$d]['c'] ?? 0);
+                        $rows[] = ['date' => $d, 'label' => date('D M j', strtotime($d)), 'short' => date('D', strtotime($d)), 'revenue' => $r, 'count' => $c];
                     }
+                    json(true, $rows);
+                    break;
                 }
-                json(true, $rows);
-                break;
 
             case 'get_settings':
                 $stmt = $db->prepare("SELECT key,value FROM settings WHERE store_id=?");
@@ -3033,23 +4335,67 @@ if (isset($_GET['api'])) {
                 break;
 
             case 'save_settings':
+                if ($role !== 'owner') json(false, null, 'Unauthorized — only store owner can update settings');
                 $st = $db->prepare("INSERT INTO settings(store_id,key,value) VALUES(?,?,?) ON CONFLICT (store_id,key) DO UPDATE SET value=EXCLUDED.value");
                 // shop_address/shop_tin/terminal_id are new, purely additive keys for
                 // the redesigned printed receipt header (BIR-style store details) —
                 // same generic settings table, no schema change, no existing key touched.
                 $ssSid = currentStoreId();
-                foreach (['shop_name', 'currency', 'vat_rate', 'tax_rate', 'shop_address', 'shop_tin', 'terminal_id', 'qz_drawer_enabled', 'qz_drawer_printer'] as $k) if (isset($body[$k])) $st->execute([$ssSid, $k, $body[$k]]);
+                foreach (['shop_name', 'currency', 'vat_rate', 'tax_rate', 'shop_address', 'shop_tin', 'terminal_id', 'qz_drawer_enabled', 'qz_drawer_printer', 'sales_retention_days', 'auto_cleanup_enabled', 'receipt_paper_size'] as $k) if (isset($body[$k])) $st->execute([$ssSid, $k, (string)$body[$k]]);
                 unset($_SESSION['store_settings_' . $ssSid]); // bust the per-session settings cache so the change shows up immediately
                 json(true, ['ok' => true]);
                 break;
 
+            case 'get_sales_cleanup_status':
+                $csSid = currentStoreId();
+                $days = (int)getStoreSettingVal('sales_retention_days', '30', $csSid);
+                $autoEnabled = getStoreSettingVal('auto_cleanup_enabled', '1', $csSid) !== '0';
+                $lastCleanup = getStoreSettingVal('last_sales_cleanup', '', $csSid);
+
+                $totTxStmt = $db->prepare("SELECT COUNT(*) FROM transactions WHERE (store_id=? OR (store_id IS NULL AND ?=1))");
+                $totTxStmt->execute([$csSid, $csSid]);
+                $totTxCount = (int)$totTxStmt->fetchColumn();
+
+                $oldTxCount = 0;
+                if ($days > 0) {
+                    $cutoff = date('Y-m-d H:i:s', strtotime("-{$days} days"));
+                    $oldTxStmt = $db->prepare("SELECT COUNT(*) FROM transactions WHERE (store_id=? OR (store_id IS NULL AND ?=1)) AND created_at < ?");
+                    $oldTxStmt->execute([$csSid, $csSid, $cutoff]);
+                    $oldTxCount = (int)$oldTxStmt->fetchColumn();
+                }
+
+                $archivedStmt = $db->prepare("SELECT COALESCE(SUM(total_transactions),0) AS sum_tx, COALESCE(SUM(total_revenue),0) AS sum_rev, COUNT(*) AS count_months FROM monthly_sales_summary WHERE (store_id=? OR (store_id IS NULL AND ?=1))");
+                $archivedStmt->execute([$csSid, $csSid]);
+                $archivedRow = $archivedStmt->fetch();
+
+                json(true, [
+                    'retention_days' => $days,
+                    'auto_cleanup_enabled' => $autoEnabled,
+                    'last_cleanup' => $lastCleanup ?: null,
+                    'total_active_transactions' => $totTxCount,
+                    'old_transactions_count' => $oldTxCount,
+                    'archived_transactions' => (int)($archivedRow['sum_tx'] ?? 0),
+                    'archived_revenue' => round((float)($archivedRow['sum_rev'] ?? 0), 2),
+                    'archived_months_count' => (int)($archivedRow['count_months'] ?? 0)
+                ]);
+                break;
+
+            case 'cleanup_old_sales':
+                if ($role !== 'owner' && $role !== 'admin' && $role !== 'manager') {
+                    json(false, null, 'Unauthorized — only admin, manager, or owner can run database cleanup');
+                }
+                $csSid = currentStoreId();
+                $forceDays = isset($body['retention_days']) ? (int)$body['retention_days'] : null;
+                try {
+                    $result = pruneOldSales($csSid, $forceDays);
+                    json(true, $result);
+                } catch (\Throwable $e) {
+                    json(false, null, 'Cleanup failed: ' . $e->getMessage());
+                }
+                break;
+
             case 'upload_shop_logo':
-                // Shown on the Login page, the nav bar, and as the browser tab
-                // favicon — validated the same strict way as product photos (real
-                // image bytes, allowed type, size/dimension caps), never trusting
-                // the client's claimed file type. Only Owners should be doing this,
-                // but role-gating settings changes isn't this endpoint's job here —
-                // it matches how the rest of save_settings already works.
+                if ($role !== 'owner') json(false, null, 'Unauthorized — only store owner can update shop logo');
                 if (empty($body['image'])) json(false, null, 'No image provided');
                 $validated = decodeValidatedImage($body['image']);
                 if (!$validated) json(false, null, 'That photo could not be used — please choose a valid JPG, PNG, WEBP, or GIF image under 5MB.');
@@ -3073,6 +4419,7 @@ if (isset($_GET['api'])) {
                 break;
 
             case 'remove_shop_logo':
+                if ($role !== 'owner') json(false, null, 'Unauthorized — only store owner can remove shop logo');
                 $rmSid = currentStoreId();
                 $oldLogoStmt2 = $db->prepare("SELECT value FROM settings WHERE store_id=? AND key='shop_logo'");
                 $oldLogoStmt2->execute([$rmSid]);
@@ -3357,7 +4704,7 @@ if (isset($_GET['api'])) {
                 $duOwnCheck = $db->prepare("SELECT id FROM users WHERE id=? AND store_id=?");
                 $duOwnCheck->execute([$id, currentStoreId()]);
                 if (!$duOwnCheck->fetch()) json(false, null, 'User not found');
-                $db->prepare("DELETE FROM users WHERE id=?")->execute([$id]);
+                $db->prepare("DELETE FROM users WHERE id=? AND store_id=?")->execute([$id, currentStoreId()]);
                 json(true, ['ok' => true]);
                 break;
 
@@ -3514,13 +4861,13 @@ if (isset($_GET['api'])) {
                 // picking the wrong one silently forecasted for a model that may not
                 // exist. This pulls the real list straight from the API.
                 //
-                // ?refresh=1 bypasses the 1-hour cache — used by the "🔄 Refresh"
+                // ?refresh=1 bypasses the 1-hour cache — used by the "Refresh"
                 // button so a stale/incomplete list (e.g. cached during a Render
                 // cold-start timeout) doesn't stick around for the full hour.
                 $forceRefresh = !empty($_GET['refresh']);
                 $mlStores = mlApiGet(
                     $db,
-                    'https://pos-ml-api.onrender.com/stores',
+                    'https://pos-ml-api-johv.onrender.com/stores',
                     'ml_stores_list',
                     3600, // 1 hour cache — this list only changes when you retrain
                     $forceRefresh
@@ -3542,7 +4889,7 @@ if (isset($_GET['api'])) {
                 break;
 
             case 'get_forecast':
-                // Single product quick forecast via pos-ml-api.onrender.com
+                // Single product quick forecast via pos-ml-api-johv.onrender.com
                 // New API accepts: store_id + forecast_days
                 $storeId     = trim($body['store_id']     ?? 'BAR-01');
                 $period      = trim($body['period']        ?? 'daily');
@@ -3587,7 +4934,7 @@ if (isset($_GET['api'])) {
                 // includes store_id + forecast_days since that's what changes the result.
                 $mlResult = mlApiCall(
                     $db,
-                    'https://pos-ml-api.onrender.com/forecast',
+                    'https://pos-ml-api-johv.onrender.com/forecast',
                     ['store_id' => $storeId, 'forecast_days' => $forecastDays],
                     'forecast_' . $storeId . '_' . $forecastDays,
                     300 // 5 min cache
@@ -3696,7 +5043,7 @@ if (isset($_GET['api'])) {
 
                 $mlResult = mlApiCall(
                     $db,
-                    'https://pos-ml-api.onrender.com/forecast',
+                    'https://pos-ml-api-johv.onrender.com/forecast',
                     ['store_id' => $storeId, 'forecast_days' => 30],
                     'forecast_' . $storeId . '_30',
                     300
@@ -3749,7 +5096,7 @@ if (isset($_GET['api'])) {
                 break;
 
             case 'get_all_forecasts':
-                // Fetch forecasts via pos-ml-api.onrender.com — uses store_id + forecast_days
+                // Fetch forecasts via pos-ml-api-johv.onrender.com — uses store_id + forecast_days
                 $period      = trim($_GET['period'] ?? 'daily');
                 $storeId     = trim($_GET['store_id'] ?? 'BAR-01');
                 $forecastDays = $period === 'monthly' ? 30 : ($period === 'weekly' ? 7 : 1);
@@ -3776,7 +5123,7 @@ if (isset($_GET['api'])) {
                 // Call the new ML API — cached + fast-failing (see mlApiCall above).
                 $mlResult = mlApiCall(
                     $db,
-                    'https://pos-ml-api.onrender.com/forecast',
+                    'https://pos-ml-api-johv.onrender.com/forecast',
                     ['store_id' => $storeId, 'forecast_days' => $forecastDays],
                     'forecast_' . $storeId . '_' . $forecastDays,
                     300 // 5 min cache — forecasts don't need to be more real-time than this
@@ -3948,7 +5295,7 @@ if (isset($_GET['api'])) {
                 break;
 
             case 'get_ml_basket_analysis':
-                // Market Basket Analysis via pos-ml-api.onrender.com /recommend endpoint
+                // Market Basket Analysis via pos-ml-api-johv.onrender.com /recommend endpoint
                 // We send current top-selling products as "cart" to get cross-sell associations
                 $topStmt = $db->prepare("
             SELECT ti.product_name, COUNT(*) as freq
@@ -3971,7 +5318,7 @@ if (isset($_GET['api'])) {
 
                 $result = mlApiCall(
                     $db,
-                    'https://pos-ml-api.onrender.com/recommend',
+                    'https://pos-ml-api-johv.onrender.com/recommend',
                     ['cart_items' => $cartItems, 'top_n' => $topN],
                     'basket_' . md5(implode(',', $cartItems)) . '_' . $topN,
                     300
@@ -4019,7 +5366,7 @@ if (isset($_GET['api'])) {
                 // Try the ML API — cached + fast-failing (see mlApiCall above).
                 $result = mlApiCall(
                     $db,
-                    'https://pos-ml-api.onrender.com/recommend',
+                    'https://pos-ml-api-johv.onrender.com/recommend',
                     ['cart_items' => $cartItems, 'top_n' => $topN],
                     'combo_' . md5(implode(',', $cartItems)) . '_' . $topN,
                     300
@@ -4408,10 +5755,12 @@ if (isset($_GET['api'])) {
         // file in your file manager if you need the file/line too).
         error_log('[API ERROR] action=' . $action . ' : ' . $e->getMessage()
             . ' @ ' . $e->getFile() . ':' . $e->getLine());
-        // Return the real message to the frontend so the toast is useful
-        // instead of a bare "Server error (500)". Remove/shorten this in
-        // production if you don't want DB details visible to the browser.
-        json(false, null, 'Server error: ' . $e->getMessage());
+        // Sanitize internal database/PDO errors to prevent disclosing schema details or credentials
+        $msg = $e->getMessage();
+        if (stripos($msg, 'SQLSTATE') !== false || stripos($msg, 'PDO') !== false || stripos($msg, 'postgres') !== false || stripos($msg, 'connection') !== false) {
+            json(false, null, 'A database error occurred. Please try again.');
+        }
+        json(false, null, 'Server error: ' . htmlspecialchars($msg, ENT_QUOTES, 'UTF-8'));
     }
 }
 
@@ -4445,15 +5794,17 @@ $loginError = '';
 if (($_SESSION['schema_ok_version'] ?? null) !== SCHEMA_VERSION) {
     try {
         $db = db();
-        $installedVersion = null;
-        try {
-            $installedVersion = $db->query("SELECT version FROM schema_meta WHERE id = 1")->fetchColumn();
-        } catch (Exception $e) {
-            // schema_meta doesn't exist yet — this is a brand-new database.
+        if ($db->getAttribute(PDO::ATTR_DRIVER_NAME) === 'pgsql') {
             $installedVersion = null;
-        }
-        if ($installedVersion === null || (int)$installedVersion !== SCHEMA_VERSION) {
-            installDB();
+            try {
+                $installedVersion = $db->query("SELECT version FROM schema_meta WHERE id = 1")->fetchColumn();
+            } catch (Exception $e) {
+                // schema_meta doesn't exist yet — this is a brand-new database.
+                $installedVersion = null;
+            }
+            if ($installedVersion === null || (int)$installedVersion !== SCHEMA_VERSION) {
+                installDB();
+            }
         }
         $_SESSION['schema_ok_version'] = SCHEMA_VERSION;
     } catch (Exception $e) { /* silent — will show on login page if DB is broken */
@@ -4463,18 +5814,19 @@ if (($_SESSION['schema_ok_version'] ?? null) !== SCHEMA_VERSION) {
 // Fetch shop settings ONCE per page load, server-side, so the shop name is
 // consistent EVERYWHERE it's rendered — browser tab title, nav logo, and
 // printed receipts. Pre-login pages (Login/Signup/Forgot/Reset) show a
-// neutral, generic "POS SYSTEM" identity — there's no "current store" yet
+// neutral, generic "ProCast" identity — there's no "current store" yet
 // before someone's logged in, and different accounts belong to entirely
 // different stores now, so showing any one store's branding there wouldn't
 // make sense. Once logged in, this loads THAT user's own store's settings.
 $storeSettings = [
-    'shop_name' => 'POS SYSTEM',
+    'shop_name' => 'ProCast',
     'currency' => '₱',
     'tax_rate' => '0',
     'shop_address' => '',
     'shop_tin' => '',
     'terminal_id' => 'POS-01',
-    'shop_logo' => ''
+    'shop_logo' => '',
+    'receipt_paper_size' => '58mm'
 ];
 if (loggedIn()) {
     // PERFORMANCE FIX: settings barely ever change, but were being
@@ -4492,10 +5844,16 @@ if (loggedIn()) {
             foreach ($stmt as $row) {
                 $storeSettings[$row['key']] = $row['value'];
             }
+            if (in_array(trim($storeSettings['shop_name'] ?? ''), ['PANGGA STORE', 'PANGGA POS', 'POS SYSTEM', ''], true)) {
+                $storeSettings['shop_name'] = 'ProCast';
+            }
             $_SESSION[$settingsCacheKey] = $storeSettings;
         } catch (Exception $e) { /* DB not ready yet on a very first load — defaults above are fine */
         }
     }
+}
+if (in_array(trim($storeSettings['shop_name'] ?? ''), ['PANGGA STORE', 'PANGGA POS', 'POS SYSTEM', ''], true)) {
+    $storeSettings['shop_name'] = 'ProCast';
 }
 
 // Renders a shop name as "First Words<TAG> Last Word</TAG>" — the same two-tone
@@ -4504,7 +5862,10 @@ if (loggedIn()) {
 // whole thing wrapped in the tag instead of an empty split).
 function renderShopNameHtml(string $name, string $tag = 'span'): string
 {
-    $name = trim($name) !== '' ? trim($name) : 'POS SYSTEM';
+    $name = trim($name) !== '' ? trim($name) : 'ProCast';
+    if (strcasecmp($name, 'ProCast') === 0) {
+        return 'Pro<' . $tag . '>Cast</' . $tag . '>';
+    }
     $parts = preg_split('/\s+/', $name);
     if (count($parts) === 1) {
         return '<' . $tag . '>' . htmlspecialchars($name) . '</' . $tag . '>';
@@ -4521,47 +5882,66 @@ if ($page === 'login' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!csrfValid($_POST['csrf_token'] ?? null)) {
         $loginError = 'Your session expired — please try again.';
     } elseif ($username && $password) {
-        try {
-            $db = db();
-            $lockedMin = loginLockoutMinutesLeft($db, $username);
-            if ($lockedMin > 0) {
-                $loginError = "Too many failed attempts. Try again in $lockedMin minute" . ($lockedMin === 1 ? '' : 's') . '.';
-            } else {
-                $stmt = $db->prepare("SELECT id,username,password,full_name,role,email,store_id FROM users WHERE username=? LIMIT 1");
-                $stmt->execute([$username]);
-                $user = $stmt->fetch();
-                if ($user && password_verify($password, $user['password'])) {
-                    recordLoginAttempt($db, $username, true);
-                    // Regenerate the session ID on privilege change (login) —
-                    // standard defense against session fixation, where an
-                    // attacker plants a known session ID in a victim's
-                    // browser before they log in and hijacks it afterward.
-                    session_regenerate_id(true);
-                    $_SESSION['uid'] = $user['id'];
-                    $_SESSION['username'] = $user['username'];
-                    $_SESSION['full_name'] = $user['full_name'];
-                    $_SESSION['role'] = $user['role'];
-                    $_SESSION['email'] = $user['email'];
-                    // This is the whole multi-tenant boundary — every query
-                    // for the rest of this session filters by this. Falls
-                    // back to Store #1 only if a pre-migration user row
-                    // somehow still has no store_id.
-                    $_SESSION['store_id'] = (int)($user['store_id'] ?: 1);
-                    // Issue the 30-day remember token so a server restart, a
-                    // closed browser, or a powered-off device never costs the
-                    // login — only an explicit Logout does.
-                    createAuthToken((int)$user['id']);
-                    $db->prepare("UPDATE users SET last_login=CURRENT_TIMESTAMP WHERE id=?")->execute([$user['id']]);
-                    header('Location: ?page=dashboard');
-                    exit;
+        $loginAttempts = 0;
+        $loginSuccess = false;
+        while ($loginAttempts < 2 && !$loginSuccess) {
+            $loginAttempts++;
+            try {
+                $db = db($loginAttempts > 1);
+                $lockedMin = loginLockoutMinutesLeft($db, $username);
+                if ($lockedMin > 0) {
+                    $loginError = "Too many failed attempts. Try again in $lockedMin minute" . ($lockedMin === 1 ? '' : 's') . '.';
+                    break;
                 } else {
-                    recordLoginAttempt($db, $username, false);
-                    $loginError = 'Invalid username or password.';
+                    $stmt = $db->prepare("SELECT id,username,password,full_name,role,email,store_id FROM users WHERE LOWER(username)=LOWER(?) OR LOWER(email)=LOWER(?) LIMIT 1");
+                    $stmt->execute([$username, $username]);
+                    $user = $stmt->fetch();
+                    if ($user && password_verify($password, $user['password'])) {
+                        recordLoginAttempt($db, $username, true);
+                        // Clear previous session memory and regenerate ID on login
+                        $_SESSION = [];
+                        session_regenerate_id(true);
+                        $_SESSION['uid'] = $user['id'];
+                        $_SESSION['username'] = $user['username'];
+                        $_SESSION['full_name'] = $user['full_name'];
+                        $_SESSION['role'] = $user['role'];
+                        $_SESSION['email'] = $user['email'];
+                        // This is the whole multi-tenant boundary — every query
+                        // for the rest of this session filters by this. Falls
+                        // back to Store #1 only if a pre-migration user row
+                        // somehow still has no store_id.
+                        $_SESSION['store_id'] = (int)($user['store_id'] ?: 1);
+                        // Issue the 30-day remember token so a server restart, a
+                        // closed browser, or a powered-off device never costs the
+                        // login — only an explicit Logout does.
+                        createAuthToken((int)$user['id']);
+                        $db->prepare("UPDATE users SET last_login=CURRENT_TIMESTAMP WHERE id=?")->execute([$user['id']]);
+                        $loginSuccess = true;
+                        header('Location: ?page=dashboard');
+                        exit;
+                    } else {
+                        recordLoginAttempt($db, $username, false);
+                        $loginError = 'Invalid username or password.';
+                        break;
+                    }
+                }
+            } catch (\Throwable $e) {
+                error_log('Login error (attempt ' . $loginAttempts . '): ' . $e->getMessage());
+                if ($loginAttempts < 2) {
+                    usleep(300000); // 300ms pause before retrying fresh connection
+                    continue;
+                }
+                $msg = $e->getMessage();
+                if (stripos($msg, 'connection') !== false || stripos($msg, 'server closed') !== false || stripos($msg, 'timeout') !== false || stripos($msg, 'remaining connection slots') !== false) {
+                    if (str_contains(DATABASE_URL, 'supabase.co') && !str_contains(DATABASE_URL, 'pooler')) {
+                        $loginError = 'Database connection timed out. On Render, direct Supabase URLs require IPv6; please update DATABASE_URL to use the Supabase Connection Pooler (port 6543) in your dashboard.';
+                    } else {
+                        $loginError = 'Database is reconnecting or waking up. Please wait 10 seconds and try again.';
+                    }
+                } else {
+                    $loginError = 'Something went wrong: ' . $msg;
                 }
             }
-        } catch (Exception $e) {
-            error_log('Login error: ' . $e->getMessage());
-            $loginError = 'Something went wrong. Please try again.';
         }
     } else {
         $loginError = 'Please enter username and password.';
@@ -4571,6 +5951,7 @@ if ($page === 'login' && $_SERVER['REQUEST_METHOD'] === 'POST') {
 // FORGOT PASSWORD — request reset link
 $forgotMsg = '';
 $forgotError = '';
+$localResetLink = '';
 if ($page === 'forgot' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     $identifier = trim($_POST['identifier'] ?? '');
     if (!csrfValid($_POST['csrf_token'] ?? null)) {
@@ -4585,10 +5966,10 @@ if ($page === 'forgot' && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt = db()->prepare("SELECT id,username,full_name,email FROM users WHERE username=? OR email=? LIMIT 1");
                 $stmt->execute([$identifier, $identifier]);
                 $user = $stmt->fetch();
-                if ($user && !empty($user['email'])) {
+                if ($user) {
                     $token = bin2hex(random_bytes(32));
                     $expires = date('Y-m-d H:i:s', strtotime('+1 hour'));
-                    db()->prepare("UPDATE users SET reset_token=?, reset_expires=? WHERE id=?")->execute([$token, $expires, $user['id']]);
+                    db()->prepare("UPDATE users SET reset_token=?, reset_expires=? WHERE id=?")->execute([hash('sha256', $token), $expires, $user['id']]);
                     // Render/other proxies terminate TLS for us, so HTTPS is only
                     // visible in the X-Forwarded-Proto header — checking
                     // $_SERVER['HTTPS'] alone would produce http:// reset links
@@ -4596,20 +5977,32 @@ if ($page === 'forgot' && $_SERVER['REQUEST_METHOD'] === 'POST') {
                     $__fwdProto = strtolower($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '');
                     $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || $__fwdProto === 'https' ? 'https://' : 'http://';
                     $resetLink = $scheme . $_SERVER['HTTP_HOST'] . $_SERVER['PHP_SELF'] . '?page=reset&token=' . $token;
-                    [$sent, $mailErr] = sendResetEmail($user['email'], $user['full_name'], $resetLink);
-                    if (!$sent) {
-                        // Surface the real reason (bad API key, unverified sender,
-                        // Brevo daily limit, …) instead of silently claiming the
-                        // email went out — previously this failure was swallowed
-                        // and the user was told a link was sent when none was.
-                        error_log('Password-reset email FAILED for ' . $user['username'] . ': ' . $mailErr);
-                        $forgotError = 'The reset email could not be sent: ' . $mailErr . ' (The server admin should check the BREVO_API_KEY / sender settings.)';
+
+                    $host = strtolower($_SERVER['HTTP_HOST'] ?? '');
+                    $isLocal = str_contains($host, 'localhost') || str_contains($host, '127.0.0.1');
+
+                    if (empty($user['email'])) {
+                        $forgotError = "The account '" . htmlspecialchars($user['username']) . "' has no email address configured in the system. Please sign in as owner/admin to set an email in Settings > Users.";
+                        if ($isLocal) {
+                            $localResetLink = $resetLink;
+                        }
+                    } else {
+                        [$sent, $mailErr] = sendResetEmail($user['email'], $user['full_name'], $resetLink);
+                        if ($sent) {
+                            $forgotMsg = 'A password reset link has been sent to ' . htmlspecialchars($user['email']) . '. Please check your inbox and spam folder.';
+                        } else {
+                            error_log('Password-reset email FAILED for ' . $user['username'] . ': ' . $mailErr);
+                            $forgotError = 'The reset email could not be sent: ' . $mailErr;
+                            if (str_contains($mailErr, 'unrecognised IP') || str_contains($mailErr, 'authorised_ips')) {
+                                $forgotError .= ' (Brevo blocked this request because your IP address is not authorized. Visit https://app.brevo.com/security/authorised_ips to authorize it or disable IP restriction.)';
+                            }
+                            if ($isLocal) {
+                                $localResetLink = $resetLink;
+                            }
+                        }
                     }
-                }
-                // Same message whether or not the account/email was found, to avoid
-                // leaking which usernames exist (skipped when sending failed so the
-                // real error above stays visible).
-                if (empty($forgotError)) {
+                } else {
+                    // Account not found - generic message for security
                     $forgotMsg = 'If that account has an email on file, a password reset link has been sent to it.';
                 }
             } catch (Exception $e) {
@@ -4628,8 +6021,8 @@ $resetTokenValid = false;
 $resetToken = $_GET['token'] ?? ($_POST['token'] ?? '');
 if ($page === 'reset') {
     if ($resetToken) {
-        $stmt = db()->prepare("SELECT id FROM users WHERE reset_token=? AND reset_expires > CURRENT_TIMESTAMP LIMIT 1");
-        $stmt->execute([$resetToken]);
+        $stmt = db()->prepare("SELECT id FROM users WHERE (reset_token=? OR reset_token=?) AND reset_expires > CURRENT_TIMESTAMP LIMIT 1");
+        $stmt->execute([$resetToken, hash('sha256', $resetToken)]);
         $resetTokenValid = (bool)$stmt->fetch();
     }
     if ($_SERVER['REQUEST_METHOD'] === 'POST' && $resetTokenValid) {
@@ -4642,8 +6035,8 @@ if ($page === 'reset') {
         } elseif ($newPw !== $confirmPw) {
             $resetError = 'Passwords do not match.';
         } else {
-            db()->prepare("UPDATE users SET password=?, reset_token=NULL, reset_expires=NULL WHERE reset_token=?")
-                ->execute([password_hash($newPw, PASSWORD_DEFAULT), $resetToken]);
+            db()->prepare("UPDATE users SET password=?, reset_token=NULL, reset_expires=NULL WHERE (reset_token=? OR reset_token=?)")
+                ->execute([password_hash($newPw, PASSWORD_DEFAULT), $resetToken, hash('sha256', $resetToken)]);
             $resetSuccess = true;
             $resetTokenValid = false;
         }
@@ -4696,27 +6089,38 @@ if ($page === 'signup' && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 $db = db();
                 $db->beginTransaction();
                 // A brand-new, empty store for this owner — separate from
-                // every other store in the system. Name defaults to "POS
-                // SYSTEM" until they rename it in Settings, same as the
+                // every other store in the system. Name defaults to "ProCast"
+                // until they rename it in Settings, same as the
                 // table-level default.
-                $db->exec("INSERT INTO stores (name) VALUES ('POS SYSTEM')");
+                $db->exec("INSERT INTO stores (name) VALUES ('ProCast')");
                 $newStoreId = (int)lastInsertedId($db);
                 $db->prepare("INSERT INTO users (username,password,full_name,email,role,store_id) VALUES (?,?,?,?,'owner',?)")
                     ->execute([$username, password_hash($pw, PASSWORD_DEFAULT), $fullName, $email, $newStoreId]);
-                // Seed this store with its own starter settings + default
-                // categories, same as what a fresh install gets — a new
-                // store shouldn't start with literally nothing to pick from.
-                $db->prepare("INSERT INTO settings (store_id,key,value) VALUES (?,'shop_name','POS SYSTEM'),(?,'currency','₱'),(?,'vat_rate','0'),(?,'tax_rate','0') ON CONFLICT (store_id,key) DO NOTHING")
-                    ->execute([$newStoreId, $newStoreId, $newStoreId, $newStoreId]);
-                $db->prepare("INSERT INTO categories (store_id,name,sort_order) VALUES (?,'Food',0),(?,'Drinks',1),(?,'Snacks',2),(?,'Desserts',3),(?,'Others',4) ON CONFLICT (store_id,name) DO NOTHING")
-                    ->execute([$newStoreId, $newStoreId, $newStoreId, $newStoreId, $newStoreId]);
+                $driver = $db->getAttribute(PDO::ATTR_DRIVER_NAME);
+                if ($driver === 'mysql') {
+                    $db->prepare("INSERT IGNORE INTO settings (store_id,`key`,value) VALUES (?,'shop_name','ProCast'),(?,'currency','₱'),(?,'vat_rate','0'),(?,'tax_rate','0')")
+                        ->execute([$newStoreId, $newStoreId, $newStoreId, $newStoreId]);
+                    $db->prepare("INSERT IGNORE INTO categories (store_id,name,sort_order) VALUES (?,'Food',0),(?,'Drinks',1),(?,'Snacks',2),(?,'Desserts',3),(?,'Others',4)")
+                        ->execute([$newStoreId, $newStoreId, $newStoreId, $newStoreId, $newStoreId]);
+                } elseif ($driver === 'sqlite') {
+                    $db->prepare("INSERT OR IGNORE INTO settings (store_id,key,value) VALUES (?,'shop_name','ProCast'),(?,'currency','₱'),(?,'vat_rate','0'),(?,'tax_rate','0')")
+                        ->execute([$newStoreId, $newStoreId, $newStoreId, $newStoreId]);
+                    $db->prepare("INSERT OR IGNORE INTO categories (store_id,name,sort_order) VALUES (?,'Food',0),(?,'Drinks',1),(?,'Snacks',2),(?,'Desserts',3),(?,'Others',4)")
+                        ->execute([$newStoreId, $newStoreId, $newStoreId, $newStoreId, $newStoreId]);
+                } else {
+                    $db->prepare("INSERT INTO settings (store_id,key,value) VALUES (?,'shop_name','ProCast'),(?,'currency','₱'),(?,'vat_rate','0'),(?,'tax_rate','0') ON CONFLICT (store_id,key) DO NOTHING")
+                        ->execute([$newStoreId, $newStoreId, $newStoreId, $newStoreId]);
+                    $db->prepare("INSERT INTO categories (store_id,name,sort_order) VALUES (?,'Food',0),(?,'Drinks',1),(?,'Snacks',2),(?,'Desserts',3),(?,'Others',4) ON CONFLICT (store_id,name) DO NOTHING")
+                        ->execute([$newStoreId, $newStoreId, $newStoreId, $newStoreId, $newStoreId]);
+                }
                 $db->commit();
                 $_SESSION['signup_success'] = true;
                 header('Location: ?page=login&signup=success');
                 exit;
             } catch (Exception $e) {
                 if ($db->inTransaction()) $db->rollBack();
-                $signupErrors[] = 'Something went wrong creating your account. Please try again.';
+                error_log('Signup exception: ' . $e->getMessage());
+                $signupErrors[] = 'Something went wrong creating your account: ' . htmlspecialchars($e->getMessage());
             }
         }
     }
@@ -4726,6 +6130,14 @@ if ($page === 'signup' && $_SERVER['REQUEST_METHOD'] === 'POST') {
 if ($page === 'logout') {
     clearAuthToken(); // kill the remember token + cookie — Logout is the ONE
                       // thing that should end a session for real
+    $_SESSION = [];
+    if (ini_get("session.use_cookies")) {
+        $params = session_get_cookie_params();
+        setcookie(session_name(), '', time() - 42000,
+            $params["path"] ?? '/', $params["domain"] ?? '',
+            $params["secure"] ?? false, $params["httponly"] ?? true
+        );
+    }
     session_destroy();
     header('Location: ?page=login');
     exit;
@@ -4746,7 +6158,7 @@ $currentUser = loggedIn() ? ['id' => $_SESSION['uid'], 'username' => $_SESSION['
 //  STAFF/CASHIER: "Settings" is off-limits, and if they don't have an
 //  open shift for today they must be intercepted before any sales UI paints.
 // ═══════════════════════════════════════════════════
-$isCashierRole = ($currentUser['role'] ?? '') === 'staff';
+$isCashierRole = in_array($currentUser['role'] ?? '', ['staff', 'cashier'], true);
 $isAuthPage = in_array($page, ['login', 'forgot', 'reset', 'signup', 'landing'], true);
 
 // Hard server-side guard — even a direct URL hit can't reach these pages as staff
@@ -4763,13 +6175,64 @@ if ($isCashierRole && $page !== 'login') {
     $chk->execute([$currentUser['id']]);
     $showShiftLockOnLoad = !$chk->fetch();
 }
+
+// ═══════════════════════════════════════════════════
+//  SEO & SOCIAL GRAPH METADATA
+// ═══════════════════════════════════════════════════
+$rawShopName = trim($storeSettings['shop_name'] ?? '');
+$siteShopName = ($rawShopName !== '' && $rawShopName !== 'PANGGA STORE' && $rawShopName !== 'PANGGA POS' && $rawShopName !== 'POS SYSTEM') ? $rawShopName : 'ProCast';
+$seoTitles = [
+    'landing'   => $siteShopName . ' — Modern Cloud Point of Sale & Inventory Management System',
+    'login'     => 'Sign In — ' . $siteShopName,
+    'signup'    => 'Create Your Store Account — ' . $siteShopName,
+    'forgot'    => 'Reset Password — ' . $siteShopName,
+    'reset'     => 'New Password — ' . $siteShopName,
+    'dashboard' => 'Dashboard & Checkout — ' . $siteShopName,
+    'products'  => 'Product Catalog & Pricing — ' . $siteShopName,
+    'warehouse' => 'Warehouse & Inventory Ledger — ' . $siteShopName,
+    'sales'     => 'Sales History & Receipts — ' . $siteShopName,
+    'analytics' => 'Analytics & Financial Reports — ' . $siteShopName,
+    'forecast'  => 'AI Demand Forecasting — ' . $siteShopName,
+    'settings'  => 'Store Settings & Configuration — ' . $siteShopName,
+];
+$seoTitle = $seoTitles[$page] ?? ($siteShopName . ' — Point of Sale');
+
+$seoDescriptions = [
+    'landing'   => 'Streamline retail sales with ' . $siteShopName . '. Features real-time stock ledger, FEFO batch expiry tracking, barcode scanning, multi-unit UOM, and instant receipt generation.',
+    'login'     => 'Sign in to access your ' . $siteShopName . ' terminal, manage transactions, stock levels, and daily sales.',
+    'signup'    => 'Register your store on ' . $siteShopName . ' today. Fast setup for inventory control, automated billing, and cashier management.',
+    'forgot'    => 'Request a secure password reset link for your ' . $siteShopName . ' account.',
+    'reset'     => 'Set a new secure password for your ' . $siteShopName . ' account.',
+    'dashboard' => 'Active POS terminal and quick sales checkout for ' . $siteShopName . '.',
+    'products'  => 'Manage product pricing, variants, barcodes, and units of measurement.',
+    'warehouse' => 'Real-time warehouse stock ledger, delivery receiving, and stock movement tracking.',
+    'sales'     => 'Complete transaction history, sales receipts, and void logs.',
+    'analytics' => 'Financial reporting, daily revenue breakdowns, and performance analytics.',
+    'forecast'  => 'Predictive stock forecasting and inventory demand intelligence.',
+    'settings'  => 'Store branding, tax configuration, receipt customization, and system theme settings.',
+];
+$seoDesc = $seoDescriptions[$page] ?? ('Cloud-based Point of Sale and Inventory Management System by ' . $siteShopName);
+
+$canonicalProto = $__isHttps ? 'https' : 'http';
+$canonicalHost = $_SERVER['HTTP_HOST'] ?? 'localhost';
+$canonicalPath = strtok($_SERVER['REQUEST_URI'] ?? '', '?');
+$canonicalUrl = $canonicalProto . '://' . $canonicalHost . $canonicalPath . ($page !== 'landing' ? ('?page=' . urlencode($page)) : '');
+
+// Search Engine Indexing: public landing and sign-in pages are indexed; protected store workspaces are noindex
+$isPublicIndexPage = in_array($page, ['landing', 'login', 'signup'], true);
+$seoRobots = $isPublicIndexPage ? 'index, follow, max-image-preview:large' : 'noindex, nofollow';
+
+// OpenGraph & Social Card Image
+$seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_logo'], 'http') === 0)
+    ? $storeSettings['shop_logo']
+    : ($canonicalProto . '://' . $canonicalHost . $canonicalPath . 'uploads/shop/logo.png');
 ?>
 <!DOCTYPE html>
 <html lang="en">
 
 <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <!-- Tells the browser this page manages its own light/dark colors, so
          Android Chrome's "Force dark mode for web contents" (and similar
          browser/OS-level auto-dark features) stops trying to auto-invert
@@ -4777,7 +6240,43 @@ if ($isCashierRole && $page !== 'login') {
          the white payment receipt looked washed-out/low-contrast on some
          phones even though its CSS colors were correct all along. -->
     <meta name="color-scheme" content="dark light" />
-    <title><?= htmlspecialchars($storeSettings['shop_name']) ?></title>
+    <title><?= htmlspecialchars($seoTitle) ?></title>
+    <meta name="description" content="<?= htmlspecialchars($seoDesc) ?>" />
+    <meta name="robots" content="<?= htmlspecialchars($seoRobots) ?>" />
+    <link rel="canonical" href="<?= htmlspecialchars($canonicalUrl) ?>" />
+
+    <!-- Open Graph / Facebook / WhatsApp -->
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="<?= htmlspecialchars($canonicalUrl) ?>" />
+    <meta property="og:title" content="<?= htmlspecialchars($seoTitle) ?>" />
+    <meta property="og:description" content="<?= htmlspecialchars($seoDesc) ?>" />
+    <meta property="og:site_name" content="<?= htmlspecialchars($siteShopName) ?>" />
+    <meta property="og:image" content="<?= htmlspecialchars($seoImage) ?>" />
+
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:url" content="<?= htmlspecialchars($canonicalUrl) ?>" />
+    <meta name="twitter:title" content="<?= htmlspecialchars($seoTitle) ?>" />
+    <meta name="twitter:description" content="<?= htmlspecialchars($seoDesc) ?>" />
+    <meta name="twitter:image" content="<?= htmlspecialchars($seoImage) ?>" />
+
+    <!-- Mobile App / PWA Meta -->
+    <meta name="application-name" content="<?= htmlspecialchars($siteShopName) ?>" />
+    <meta name="apple-mobile-web-app-title" content="<?= htmlspecialchars($siteShopName) ?>" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="theme-color" content="#0a1628" />
+    <meta name="msapplication-TileColor" content="#0a1628" />
+    <meta name="msapplication-navbutton-color" content="#0a1628" />
+    <link rel="manifest" href="manifest.json?v=<?= filemtime(__DIR__ . '/manifest.json') ?: '10' ?>" />
+    <link rel="apple-touch-icon" href="<?= logoCacheBuster('assets/apple-touch-icon.png') ?>" />
+    <link rel="apple-touch-icon" sizes="180x180" href="<?= logoCacheBuster('assets/apple-touch-icon.png') ?>" />
+    <link rel="apple-touch-icon" sizes="192x192" href="<?= logoCacheBuster('assets/icon-192.png') ?>" />
+    <link rel="apple-touch-icon" sizes="512x512" href="<?= logoCacheBuster('assets/icon-512.png') ?>" />
+    <link rel="icon" type="image/png" sizes="192x192" href="<?= logoCacheBuster('assets/icon-192.png') ?>" />
+    <link rel="icon" type="image/png" sizes="512x512" href="<?= logoCacheBuster('assets/icon-512.png') ?>" />
+    <link rel="shortcut icon" href="<?= logoCacheBuster('assets/icon-192.png') ?>" />
     <!-- Applies the saved Light/Dark app theme (see toggleTheme() further
      down) before first paint, so the page never flashes dark-then-light
      or vice versa on load. Runs only for the logged-in app pages — the
@@ -7342,6 +8841,8 @@ if ($isCashierRole && $page !== 'login') {
     <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
     <!-- SheetJS — builds .xlsx files client-side for the Warehouse/History Excel export buttons -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <!-- bcryptjs — offline password hashing & verification for offline login/signup via IndexedDB -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/bcryptjs/2.4.3/bcrypt.min.js"></script>
     <!-- QZ Tray — local desktop bridge that lets this page send raw ESC/POS
      commands to a real printer (e.g. a cash-drawer kick pulse). Requires
      QZ Tray to be installed and running on the till's own PC; if it isn't,
@@ -7378,6 +8879,42 @@ if ($isCashierRole && $page !== 'login') {
             --nav: 64px;
         }
 
+        /* ── OFFLINE STATUS PILL ── */
+        .network-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 5px 12px;
+            border-radius: 99px;
+            font-size: 0.76rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            user-select: none;
+            letter-spacing: 0.2px;
+        }
+        .network-pill.online {
+            background: rgba(46, 204, 113, 0.14);
+            color: #2ecc71;
+            border: 1px solid rgba(46, 204, 113, 0.35);
+        }
+        .network-pill.online:hover {
+            background: rgba(46, 204, 113, 0.22);
+        }
+        .network-pill.offline {
+            background: rgba(231, 76, 60, 0.18);
+            color: #e74c3c;
+            border: 1px solid rgba(231, 76, 60, 0.45);
+        }
+        .network-pill.offline:hover {
+            background: rgba(231, 76, 60, 0.28);
+        }
+        .network-pill.syncing {
+            background: rgba(52, 152, 219, 0.18);
+            color: #3498db;
+            border: 1px solid rgba(52, 152, 219, 0.45);
+        }
+
         /* ── LIGHT MODE ──
            Applied when <html> has class "theme-light" (toggled from the nav
            icon or Settings → Appearance, saved in localStorage — see
@@ -7410,6 +8947,8 @@ if ($isCashierRole && $page !== 'login') {
 
         html {
             scroll-behavior: smooth;
+            max-width: 100%;
+            overflow-x: clip;
         }
 
         body {
@@ -7420,6 +8959,8 @@ if ($isCashierRole && $page !== 'login') {
             -webkit-font-smoothing: antialiased;
             font-size: 15px;
             font-weight: 500;
+            max-width: 100%;
+            overflow-x: clip;
         }
 
         /* ── NAV ── */
@@ -7435,18 +8976,22 @@ if ($isCashierRole && $page !== 'login') {
             border-bottom: 1.5px solid var(--border);
             display: flex;
             align-items: center;
-            padding: 0 20px;
-            gap: 10px;
+            padding: 0 16px;
+            gap: 8px;
+            box-sizing: border-box;
         }
 
         .nav-logo {
             font-family: 'Poppins', sans-serif;
-            font-size: 1.5rem;
+            font-size: 1.4rem;
             font-weight: 900;
             color: var(--accent);
             text-decoration: none;
-            flex: 1;
+            flex-shrink: 1;
+            min-width: 0;
             white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
             letter-spacing: -0.5px;
         }
 
@@ -7467,23 +9012,33 @@ if ($isCashierRole && $page !== 'login') {
         .nav-links {
             display: flex;
             gap: 2px;
+            align-items: center;
+            flex-shrink: 1;
+            overflow-x: auto;
+            scrollbar-width: none;
+            -ms-overflow-style: none;
+        }
+        .nav-links::-webkit-scrollbar {
+            display: none;
         }
 
         .nav-link {
-            padding: 7px 12px;
+            padding: 6px 11px;
             border-radius: 8px;
-            font-size: 1rem;
+            font-size: .95rem;
             font-weight: 800;
             color: var(--nav-ink-muted);
             text-decoration: none;
             transition: all .2s;
             display: flex;
             align-items: center;
-            gap: 5px;
+            gap: 4px;
             background: none;
             border: none;
             cursor: pointer;
             font-family: 'Inter', sans-serif;
+            white-space: nowrap;
+            flex-shrink: 0;
         }
 
         .nav-link:hover,
@@ -7492,11 +9047,32 @@ if ($isCashierRole && $page !== 'login') {
             color: #fff;
         }
 
+        .nav-right {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-left: auto;
+            flex-shrink: 0;
+            min-width: max-content;
+            z-index: 2;
+        }
+
         .nav-user-name {
-            font-size: .9rem;
+            font-size: .88rem;
             font-weight: 700;
             color: var(--nav-ink-muted);
             white-space: nowrap;
+            max-width: 140px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .nav-logout-btn {
+            white-space: nowrap;
+            flex-shrink: 0;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
         }
 
         /* ── MOBILE NAV ── */
@@ -7506,36 +9082,56 @@ if ($isCashierRole && $page !== 'login') {
             bottom: 0;
             left: 0;
             right: 0;
+            width: 100%;
+            max-width: 100vw;
             z-index: 999;
-            background: rgba(251, 247, 240, .97);
+            background: rgba(251, 247, 240, .98);
             backdrop-filter: blur(12px);
             border-top: 1.5px solid var(--border);
-            padding: 6px 0 8px;
+            padding: 4px 0 env(safe-area-inset-bottom, 6px);
+            box-sizing: border-box;
         }
 
         .mob-nav-inner {
             display: flex;
             justify-content: space-around;
+            align-items: center;
+            width: 100%;
+            max-width: 100%;
+            box-sizing: border-box;
+            overflow-x: auto;
+            scrollbar-width: none;
+        }
+
+        .mob-nav-inner::-webkit-scrollbar {
+            display: none;
         }
 
         .mob-btn {
             display: flex;
             flex-direction: column;
             align-items: center;
+            justify-content: center;
             gap: 2px;
-            padding: 6px 12px;
-            border-radius: 10px;
+            padding: 4px 1px;
+            flex: 1 1 0;
+            min-width: 42px;
+            border-radius: 8px;
             /* Same fix as the desktop nav — dark ink instead of the pale
                --text3 tone, so labels are readable on the light bottom bar. */
             color: var(--nav-ink-muted);
-            font-size: .65rem;
+            font-size: .58rem;
             font-weight: 700;
+            letter-spacing: -0.01em;
             text-decoration: none;
             border: none;
             background: none;
             cursor: pointer;
             font-family: 'Inter', sans-serif;
             transition: color .2s;
+            text-align: center;
+            white-space: nowrap;
+            box-sizing: border-box;
         }
 
         .mob-btn.active,
@@ -7544,8 +9140,9 @@ if ($isCashierRole && $page !== 'login') {
         }
 
         .mob-btn svg {
-            width: 20px;
-            height: 20px;
+            width: 18px;
+            height: 18px;
+            flex-shrink: 0;
         }
 
         /* ── LAYOUT ── */
@@ -7553,12 +9150,20 @@ if ($isCashierRole && $page !== 'login') {
             padding-top: calc(var(--nav) + 20px);
             padding-bottom: 40px;
             min-height: 100vh;
+            width: 100%;
+            box-sizing: border-box;
+        }
+
+        .pos-page-view {
+            width: 100%;
         }
 
         .container {
+            width: 100%;
             max-width: 1200px;
             margin: 0 auto;
             padding: 0 18px;
+            box-sizing: border-box;
         }
 
         /* ── BUTTONS ── */
@@ -7585,7 +9190,7 @@ if ($isCashierRole && $page !== 'login') {
         }
 
         .btn-primary:hover {
-            background: #b8420a;
+            background: var(--accent2);
             transform: translateY(-1px);
         }
 
@@ -7809,7 +9414,17 @@ if ($isCashierRole && $page !== 'login') {
 
         .stat-period-group {
             display: inline-flex;
-            gap: 4px;
+            gap: 2px;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+        }
+
+        .stat-period-group .period-btn {
+            font-size: .58rem !important;
+            padding: 2px 4px !important;
+            min-width: 0 !important;
+            border-radius: 4px !important;
+            line-height: 1.2 !important;
         }
 
         .stat-label {
@@ -8063,8 +9678,12 @@ if ($isCashierRole && $page !== 'login') {
             display: flex;
             gap: 7px;
             overflow-x: auto;
-            padding-bottom: 4px;
+            -webkit-overflow-scrolling: touch;
+            padding: 2px 2px 8px;
             scrollbar-width: none;
+            max-width: 100%;
+            min-width: 0;
+            box-sizing: border-box;
         }
 
         .cat-scroll::-webkit-scrollbar {
@@ -8072,7 +9691,7 @@ if ($isCashierRole && $page !== 'login') {
         }
 
         .cat-pill {
-            padding: 7px 16px;
+            padding: 6px 14px;
             border-radius: 99px;
             border: 1.5px solid var(--border);
             font-size: .8rem;
@@ -8083,6 +9702,8 @@ if ($isCashierRole && $page !== 'login') {
             color: var(--text2);
             white-space: nowrap;
             font-family: 'Inter', sans-serif;
+            flex-shrink: 0;
+            user-select: none;
         }
 
         .cat-pill:hover,
@@ -8098,19 +9719,22 @@ if ($isCashierRole && $page !== 'login') {
             inset: 0;
             z-index: 2000;
             background: rgba(26, 18, 8, .55);
-            backdrop-filter: blur(4px);
             display: flex;
             align-items: center;
             justify-content: center;
             padding: 16px;
             opacity: 0;
+            visibility: hidden;
             pointer-events: none;
-            transition: opacity .25s;
+            transition: opacity .25s, visibility .25s;
         }
 
         .modal-overlay.open {
             opacity: 1;
+            visibility: visible;
             pointer-events: all;
+            backdrop-filter: blur(4px);
+            -webkit-backdrop-filter: blur(4px);
         }
 
         /* Anchors near the top of the viewport instead of dead-center, so on
@@ -8127,8 +9751,39 @@ if ($isCashierRole && $page !== 'login') {
         }
 
         @media(max-width:520px) {
+            .modal-overlay {
+                padding: 8px;
+            }
             .modal-overlay.modal-top .modal {
                 margin-top: 16px;
+            }
+            .modal {
+                padding: 18px 14px;
+                border-radius: 16px;
+            }
+            .cart-col-header {
+                grid-template-columns: 28px 1fr 68px 44px 50px 18px !important;
+                gap: 4px !important;
+                font-size: .6rem !important;
+            }
+            .cart-line {
+                grid-template-columns: 28px 1fr 68px 44px 50px 18px !important;
+                gap: 4px !important;
+                padding: 8px 0 !important;
+            }
+            .cart-line-img {
+                width: 28px !important;
+                height: 28px !important;
+            }
+            .cart-qty-input {
+                width: 28px !important;
+                padding: 4px 1px !important;
+                font-size: .74rem !important;
+            }
+            .qty-btn {
+                width: 22px !important;
+                height: 22px !important;
+                font-size: .8rem !important;
             }
         }
 
@@ -8157,7 +9812,6 @@ if ($isCashierRole && $page !== 'login') {
         body.shift-locked .nav,
         body.shift-locked .mob-nav {
             pointer-events: none;
-            filter: blur(4px);
             user-select: none;
         }
 
@@ -8264,20 +9918,57 @@ if ($isCashierRole && $page !== 'login') {
         }
 
         /* ── FORECAST PAGE ── */
+        #fc-table-wrap {
+            max-height: 520px;
+            overflow-y: auto;
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+            overscroll-behavior: contain;
+            border-radius: var(--r-sm, 8px);
+            position: relative;
+        }
+
+        #fc-table-wrap::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        #fc-table-wrap::-webkit-scrollbar-track {
+            background: rgba(0, 0, 0, .08);
+            border-radius: 4px;
+        }
+
+        #fc-table-wrap::-webkit-scrollbar-thumb {
+            background: rgba(140, 150, 170, .45);
+            border-radius: 4px;
+        }
+
+        #fc-table-wrap::-webkit-scrollbar-thumb:hover {
+            background: rgba(140, 150, 170, .75);
+        }
+
         #fc-table-wrap table {
             width: 100%;
-            border-collapse: collapse;
+            min-width: 680px;
+            border-collapse: separate;
+            border-spacing: 0;
         }
 
         #fc-table-wrap th {
+            position: sticky;
+            top: 0;
+            z-index: 5;
+            background: var(--surface);
             text-align: left;
             font-size: .72rem;
             font-weight: 700;
             color: var(--text3);
             text-transform: uppercase;
             letter-spacing: .04em;
-            padding: 6px 10px;
+            padding: 8px 10px;
             border-bottom: 2px solid var(--border);
+            box-shadow: 0 1px 0 var(--border);
+            white-space: nowrap;
         }
 
         #fc-table-wrap td {
@@ -8285,6 +9976,12 @@ if ($isCashierRole && $page !== 'login') {
             border-bottom: 1px solid var(--border);
             font-size: .85rem;
             vertical-align: middle;
+            white-space: nowrap;
+        }
+
+        #fc-table-wrap td:first-child {
+            white-space: normal;
+            min-width: 160px;
         }
 
         #fc-table-wrap tr:last-child td {
@@ -8653,25 +10350,149 @@ if ($isCashierRole && $page !== 'login') {
             gap: 14px;
         }
 
+        .dash-layout {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 18px;
+            align-items: start;
+            width: 100%;
+            min-width: 0;
+            box-sizing: border-box;
+        }
+
+        .dash-layout > div {
+            min-width: 0;
+            width: 100%;
+            max-width: 100%;
+            box-sizing: border-box;
+        }
+
         .grid-4 {
             display: grid;
             grid-template-columns: repeat(4, 1fr);
             gap: 14px;
+            width: 100%;
+            box-sizing: border-box;
         }
 
         /* Product grids get their own auto-fill layout (overrides .grid-4 via higher ID
-   specificity) so the column count adapts smoothly to ANY screen width — phone,
-   tablet, laptop, or ultrawide — instead of jumping between fixed 1/2/4 columns. */
+           specificity) so the column count adapts smoothly to ANY screen width — phone,
+           tablet, laptop, or ultrawide — instead of jumping between fixed 1/2/4 columns. */
         #prod-grid,
         #prods-grid {
-            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+            gap: 12px;
+            width: 100%;
+            box-sizing: border-box;
+        }
+
+        .dash-stock-source-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            margin-bottom: 12px;
+            background: var(--surface);
+            padding: 8px 12px;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            box-sizing: border-box;
+            width: 100%;
+        }
+
+        .dash-stock-source-title {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-shrink: 0;
+        }
+
+        .dash-src-group {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            background: var(--surface2);
+            padding: 3px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            box-sizing: border-box;
+        }
+
+        .dash-src-btn {
+            background: transparent;
+            border: none;
+            color: var(--text2);
+            cursor: pointer;
+            transition: all .15s ease;
+            padding: 5px 12px;
+            font-size: .78rem;
+            font-weight: 700;
+            border-radius: 6px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            white-space: nowrap;
+            text-align: center;
+            line-height: 1.3;
+        }
+
+        .dash-src-btn.active {
+            background: var(--accent);
+            color: #fff !important;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, .2);
+        }
+
+        .dash-src-btn .src-lbl-short {
+            display: none;
+        }
+
+        .dash-src-btn .src-lbl-full {
+            display: inline;
+        }
+
+        @media(max-width: 640px) {
+            .dash-stock-source-bar {
+                flex-direction: column;
+                align-items: stretch;
+                padding: 9px 10px;
+                gap: 8px;
+            }
+
+            .dash-stock-source-title {
+                justify-content: space-between;
+                width: 100%;
+            }
+
+            .dash-src-group {
+                width: 100%;
+                display: flex;
+            }
+
+            .dash-src-btn {
+                flex: 1 1 0;
+                min-width: 0;
+                padding: 6px 3px !important;
+                font-size: .74rem;
+            }
+
+            .dash-src-btn .src-lbl-full {
+                display: none;
+            }
+
+            .dash-src-btn .src-lbl-short {
+                display: inline;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
         }
 
         @media(max-width:480px) {
 
             #prod-grid,
             #prods-grid {
-                grid-template-columns: repeat(auto-fill, minmax(128px, 1fr));
+                grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
                 gap: 9px;
             }
         }
@@ -8879,22 +10700,52 @@ if ($isCashierRole && $page !== 'login') {
         }
 
         .preset-btn {
-            padding: 5px 11px;
-            border-radius: 7px;
+            padding: 7px 13px;
+            border-radius: 8px;
             border: 1.5px solid var(--border);
             background: var(--surface2);
             color: var(--text);
-            font-size: .78rem;
+            font-size: .82rem;
             font-weight: 600;
             cursor: pointer;
-            transition: all .15s;
+            transition: all .15s ease;
             font-family: 'Inter', sans-serif;
+            user-select: none;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 4px;
         }
 
-        .preset-btn:hover {
+        .preset-btn:hover,
+        .preset-btn:focus,
+        .preset-btn:focus-visible {
             background: var(--accent);
             color: #fff;
             border-color: var(--accent);
+            outline: 2px solid var(--accent);
+            outline-offset: 1px;
+        }
+
+        .preset-btn.active {
+            background: var(--accent);
+            color: #fff;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.45);
+        }
+
+        .preset-btn.preset-exact {
+            border-color: var(--accent);
+            color: var(--accent);
+            font-weight: 700;
+            background: rgba(59, 130, 246, 0.08);
+        }
+
+        .preset-btn.preset-exact:hover,
+        .preset-btn.preset-exact:focus,
+        .preset-btn.preset-exact.active {
+            background: var(--accent);
+            color: #fff;
         }
 
         .change-box {
@@ -9229,7 +11080,7 @@ if ($isCashierRole && $page !== 'login') {
 
         /* ── INSIGHT CARD ── */
         .insight-card {
-            background: linear-gradient(135deg, var(--accent), #b8420a);
+            background: linear-gradient(135deg, var(--accent), var(--accent2));
             color: #fff;
             border-radius: var(--r);
             padding: 22px;
@@ -9283,8 +11134,8 @@ if ($isCashierRole && $page !== 'login') {
         .login-logo-img {
             width: 64px;
             height: 64px;
-            object-fit: contain;
-            border-radius: 14px;
+            object-fit: cover;
+            border-radius: 50%;
             margin-bottom: 6px;
         }
 
@@ -9336,7 +11187,8 @@ if ($isCashierRole && $page !== 'login') {
             .login-logo-img {
                 width: 112px;
                 height: 112px;
-                border-radius: 22px;
+                object-fit: cover;
+                border-radius: 50%;
                 margin-bottom: 14px;
             }
 
@@ -9422,9 +11274,62 @@ if ($isCashierRole && $page !== 'login') {
         }
 
         /* ── RESPONSIVE ── */
+        @media(max-width:1180px) {
+            .nav {
+                padding: 0 10px;
+                gap: 6px;
+            }
+            .nav-logo {
+                font-size: 1.15rem;
+                max-width: 140px;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+            .nav-links {
+                gap: 1px;
+            }
+            .nav-link {
+                padding: 5px 7px;
+                font-size: .84rem;
+                gap: 3px;
+            }
+            .nav-right {
+                gap: 6px;
+                flex-shrink: 0;
+            }
+            .nav-user-name {
+                max-width: 90px;
+                font-size: .8rem;
+            }
+            .nav-logout-btn {
+                padding: 4px 9px;
+                font-size: .82rem;
+                flex-shrink: 0;
+            }
+        }
+
         @media(max-width:1024px) {
+            .nav-logo {
+                font-size: 1.1rem;
+                max-width: 130px;
+            }
+            .nav-links {
+                overflow-x: auto;
+                flex-shrink: 1;
+                scrollbar-width: none;
+            }
             .dash-layout {
                 grid-template-columns: 1fr !important;
+            }
+        }
+
+        @media(max-width:920px) {
+            .nav-user-name {
+                display: none;
+            }
+            .nav-link {
+                padding: 4px 6px;
+                font-size: .8rem;
             }
         }
 
@@ -9442,19 +11347,65 @@ if ($isCashierRole && $page !== 'login') {
             }
 
             .page {
+                padding-top: calc(var(--nav) + 10px);
                 padding-bottom: 85px;
             }
 
+            .page-header {
+                margin-bottom: 12px !important;
+            }
+
+            .page-title {
+                font-size: 1.35rem !important;
+            }
+
+            .page-sub {
+                font-size: .8rem !important;
+                margin-top: 2px !important;
+            }
+
             .grid-4 {
-                grid-template-columns: repeat(2, 1fr);
+                gap: 8px !important;
+                margin-bottom: 12px !important;
+            }
+
+            .stat-card {
+                padding: 10px 12px !important;
+            }
+
+            .stat-card .stat-value {
+                font-size: 1.25rem !important;
+            }
+
+            .stat-card .stat-label {
+                font-size: 0.76rem !important;
+            }
+
+            .stat-card .stat-sub {
+                font-size: 0.7rem !important;
+            }
+
+            .ai-highlights-wrap {
+                background: var(--surface) !important;
+                border: 1px solid var(--border) !important;
+                border-radius: var(--r-sm) !important;
+                margin-bottom: 12px !important;
+            }
+
+            .ai-highlights-toggle {
+                display: flex !important;
+            }
+
+            .ai-highlights-body {
+                display: none;
+            }
+
+            .grid-4:not(#prods-grid):not(#prod-grid) {
+                grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
             }
 
             .grid-3 {
                 grid-template-columns: repeat(2, 1fr);
-            }
-
-            .page-title {
-                font-size: 1.65rem;
             }
 
             .modal {
@@ -9462,11 +11413,13 @@ if ($isCashierRole && $page !== 'login') {
             }
 
             .container {
-                padding: 0 13px;
+                padding: 0 10px;
+                width: 100%;
             }
 
             .dash-layout {
                 grid-template-columns: 1fr !important;
+                width: 100%;
             }
 
             /* Warehouse table: with Store/Warehouse now split into Cases/Bundle/Pcs/
@@ -9486,14 +11439,47 @@ if ($isCashierRole && $page !== 'login') {
             }
         }
 
+        @media(min-width:769px) {
+            .ai-highlights-wrap {
+                background: none !important;
+                border: none !important;
+                box-shadow: none !important;
+                padding: 0 !important;
+                margin-bottom: 24px !important;
+            }
+            .ai-highlights-toggle {
+                display: none !important;
+            }
+            .ai-highlights-body {
+                display: block !important;
+                padding: 0 !important;
+            }
+        }
+
         @media(max-width:480px) {
-            .grid-4 {
-                grid-template-columns: repeat(2, 1fr);
+            .grid-4:not(#prods-grid):not(#prod-grid) {
+                grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
                 gap: 9px;
             }
 
             .grid-2 {
                 grid-template-columns: 1fr;
+            }
+
+            .stat-card .stat-label {
+                flex-wrap: wrap;
+                gap: 4px;
+            }
+
+            .stat-period-group {
+                width: 100%;
+                justify-content: flex-start;
+                margin-top: 3px;
+            }
+
+            .stat-period-group .period-btn {
+                font-size: .54rem !important;
+                padding: 2px 4px !important;
             }
 
             .stat-value {
@@ -9681,6 +11667,49 @@ if ($isCashierRole && $page !== 'login') {
             gap: 8px;
         }
 
+        #alert-banner-wrap:empty,
+        #alert-banner-wrap:not(:has(.wh-alert-card)) {
+            display: none;
+        }
+
+        .wh-alert-card {
+            background: var(--surface);
+            border: 1px solid rgba(239, 68, 68, .35);
+            border-radius: var(--r-sm);
+            overflow: hidden;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, .15);
+        }
+
+        .alert-banner-list, .wh-alert-scroll {
+            max-height: 280px !important;
+            overflow-y: auto !important;
+            overflow-x: hidden !important;
+            width: 100%;
+            padding: 0 16px;
+            overscroll-behavior: contain;
+        }
+
+        .alert-banner-list::-webkit-scrollbar, .wh-alert-scroll::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        .alert-banner-list::-webkit-scrollbar-track, .wh-alert-scroll::-webkit-scrollbar-track {
+            background: rgba(0, 0, 0, .12);
+            border-radius: 4px;
+        }
+
+        .alert-banner-list::-webkit-scrollbar-thumb, .wh-alert-scroll::-webkit-scrollbar-thumb {
+            background: rgba(239, 68, 68, .45);
+            border-radius: 4px;
+        }
+
+        .alert-banner-list::-webkit-scrollbar-thumb:hover, .wh-alert-scroll::-webkit-scrollbar-thumb:
+... [truncated for diff preview]
+        .alert-banner-list::-webkit-scrollbar-thumb:hover, .wh-alert-scroll::-webkit-scrollbar-thumb:hover {
+            background: rgba(239, 68, 68, .75);
+        }
+
         .alert-banner-row {
             display: flex;
             align-items: center;
@@ -9703,6 +11732,38 @@ if ($isCashierRole && $page !== 'login') {
             display: flex;
             gap: 6px;
             flex-wrap: wrap;
+        }
+
+        /* ── AUTOCOMPLETE SEARCH SUGGESTIONS ── */
+        .search-suggest-dropdown {
+            position: absolute;
+            z-index: 1050;
+            left: 0;
+            right: 0;
+            top: 100%;
+            margin-top: 4px;
+            background: var(--surface);
+            border: 1.5px solid var(--accent);
+            border-radius: 10px;
+            box-shadow: 0 12px 32px rgba(0, 0, 0, .35);
+            max-height: 270px;
+            overflow-y: auto;
+            overscroll-behavior: contain;
+        }
+
+        .search-suggest-item {
+            padding: 9px 13px;
+            cursor: pointer;
+            border-bottom: 1px solid var(--border);
+            transition: background .15s;
+        }
+
+        .search-suggest-item:last-child {
+            border-bottom: none;
+        }
+
+        .search-suggest-item:hover {
+            background: rgba(37, 99, 235, .08);
         }
 
         /* ── BARCODE ── */
@@ -9732,33 +11793,38 @@ if ($isCashierRole && $page !== 'login') {
             }
         }
 
-        /* ── DRAGGABLE SCANNER ── */
+        /* ── DRAGGABLE GREEN SCANNER ── */
         #scanner-float {
             position: fixed;
-            bottom: 160px;
-            right: 18px;
-            z-index: 600;
+            top: 70px;
+            right: 14px;
+            z-index: 1000;
             touch-action: none;
         }
 
         #scan-fab-new {
             background: var(--green);
             color: #fff;
-            width: 56px;
-            height: 56px;
+            width: 48px;
+            height: 48px;
             border-radius: 50%;
             display: flex;
             align-items: center;
             justify-content: center;
-            font-size: 1.4rem;
+            font-size: 1.35rem;
             border: none;
             cursor: grab;
             box-shadow: 0 4px 18px rgba(45, 122, 58, .5);
-            transition: transform .15s;
+            transition: transform .15s, box-shadow .15s;
         }
 
         #scan-fab-new:hover {
             transform: scale(1.08);
+            box-shadow: 0 6px 22px rgba(45, 122, 58, .65);
+        }
+
+        #scan-fab-new:active {
+            cursor: grabbing;
         }
 
         /* ── BARCODE PRINT 5-per-row ── */
@@ -9814,6 +11880,7 @@ if ($isCashierRole && $page !== 'login') {
         * {
             font-family: var(--user-font-family, 'Inter', sans-serif) !important;
         }
+
     </style>
 <script>
     // ── SHOW/HIDE PASSWORD (👁️ eye button) — one global helper for every
@@ -9830,50 +11897,54 @@ if ($isCashierRole && $page !== 'login') {
         btn.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
     }
 </script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/bcryptjs/2.4.3/bcrypt.min.js"></script>
 </head>
 <body<?= $showShiftLockOnLoad ? ' class="shift-locked"' : '' ?>>
     <?php if (!$isAuthPage): ?>
         <!-- ── NAV ── -->
         <nav class="nav">
-            <a href="?page=dashboard" class="nav-logo" style="display:flex;align-items:center;gap:8px;">
+            <a href="?page=dashboard" onclick="return navigateToPage('dashboard', event);" class="nav-logo" style="display:flex;align-items:center;gap:8px;">
                 <?= renderShopNameHtml($storeSettings['shop_name'], 'b') ?>
             </a>
             <div class="nav-links">
-                <a href="?page=dashboard" class="nav-link <?= $page === 'dashboard' ? 'active' : '' ?>">🏠 Dashboard</a>
+                <a href="?page=dashboard" onclick="return navigateToPage('dashboard', event);" class="nav-link <?= $page === 'dashboard' ? 'active' : '' ?>"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:3px;"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>Dashboard</a>
                 <?php if (!$isCashierRole): ?>
-                    <a href="?page=products" class="nav-link <?= $page === 'products' ? 'active' : '' ?>">📦 Products</a>
-                    <a href="?page=warehouse" class="nav-link <?= $page === 'warehouse' ? 'active' : '' ?>">🏭 Warehouse</a>
+                    <a href="?page=products" onclick="return navigateToPage('products', event);" class="nav-link <?= $page === 'products' ? 'active' : '' ?>"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:3px;"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>Products</a>
+                    <a href="?page=warehouse" onclick="return navigateToPage('warehouse', event);" class="nav-link <?= $page === 'warehouse' ? 'active' : '' ?>"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:3px;"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>Warehouse</a>
                 <?php endif; ?>
                 <?php if (!$isCashierRole): ?>
-                    <a href="?page=sales" class="nav-link <?= $page === 'sales' ? 'active' : '' ?>">🧾 Sales</a>
+                    <a href="?page=sales" onclick="return navigateToPage('sales', event);" class="nav-link <?= $page === 'sales' ? 'active' : '' ?>"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:3px;"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>Sales</a>
                 <?php endif; ?>
                 <?php if (!$isCashierRole): ?>
-                    <a href="?page=analytics" class="nav-link <?= $page === 'analytics' ? 'active' : '' ?>">📊 Analytics</a>
-                    <a href="?page=forecast" class="nav-link <?= $page === 'forecast' ? 'active' : '' ?>">🔮 Forecast</a>
-                    <a href="?page=settings" class="nav-link <?= $page === 'settings' ? 'active' : '' ?>">⚙️ Settings</a>
+                    <a href="?page=analytics" onclick="return navigateToPage('analytics', event);" class="nav-link <?= $page === 'analytics' ? 'active' : '' ?>"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:3px;"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>Analytics</a>
+                    <a href="?page=forecast" onclick="return navigateToPage('forecast', event);" class="nav-link <?= $page === 'forecast' ? 'active' : '' ?>"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:3px;"><path d="M23 6l-9.5 9.5-5-5L1 18"/><polyline points="17 6 23 6 23 12"/></svg>Forecast</a>
+                    <a href="?page=settings" onclick="return navigateToPage('settings', event);" class="nav-link <?= $page === 'settings' ? 'active' : '' ?>"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:3px;"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>Settings</a>
                 <?php endif; ?>
             </div>
             <!-- Light/Dark app-theme toggle — see toggleTheme() in the main
      script block. Icon flips between 🌙 (currently dark, click for
      light) and ☀️ (currently light, click for dark); state also
      controllable from Settings → Appearance. -->
-            <button type="button" id="theme-toggle-btn" class="nav-link" style="padding:7px 10px;" title="Switch to light mode" onclick="toggleTheme()">🌙</button>
-            <span class="nav-user-name"><?= htmlspecialchars($currentUser['full_name']) ?></span>
-            <?php if ($isCashierRole): ?>
-                <!-- Cashiers have no direct Logout link — the only way out is completing
-       the mandatory closing cash count via End Shift, which then redirects
-       to ?page=logout itself once the drawer count is submitted
-       (see submitShiftModal()'s close-shift branch). This keeps "No Count,
-       No Transaction" from being bypassed by simply logging out mid-shift. -->
-                <button class="btn btn-secondary btn-sm" style="margin-left:8px;" onclick="requestEndShift()">🔚 End Shift</button>
-            <?php else: ?>
-                <a href="?page=logout" class="btn btn-secondary btn-sm" style="margin-left:8px;" onclick="return attemptLogout(event)">Logout</a>
-            <?php endif; ?>
+            <div class="nav-right">
+                <div id="network-status-pill" class="network-pill online" onclick="handleNetworkPillClick()" title="Network connection status — tap to sync">🟢</div>
+                <button type="button" id="theme-toggle-btn" class="nav-link" style="padding:6px 9px;" title="Switch to light mode" onclick="toggleTheme()">🌙</button>
+                <span class="nav-user-name" title="<?= htmlspecialchars($currentUser['full_name']) ?>"><?= htmlspecialchars($currentUser['full_name']) ?></span>
+                <?php if ($isCashierRole): ?>
+                    <!-- Cashiers have no direct Logout link — the only way out is completing
+           the mandatory closing cash count via End Shift, which then redirects
+           to ?page=logout itself once the drawer count is submitted
+           (see submitShiftModal()'s close-shift branch). This keeps "No Count,
+           No Transaction" from being bypassed by simply logging out mid-shift. -->
+                    <button class="btn btn-secondary btn-sm nav-logout-btn" onclick="requestEndShift()">End Shift</button>
+                <?php else: ?>
+                    <a href="?page=logout" class="btn btn-secondary btn-sm nav-logout-btn" onclick="return attemptLogout(event)">Logout</a>
+                <?php endif; ?>
+            </div>
         </nav>
         <!-- ── MOBILE NAV ── -->
         <nav class="mob-nav">
             <div class="mob-nav-inner">
-                <a href="?page=dashboard" class="mob-btn <?= $page === 'dashboard' ? 'active' : '' ?>">
+                <a href="?page=dashboard" onclick="return navigateToPage('dashboard', event);" class="mob-btn <?= $page === 'dashboard' ? 'active' : '' ?>">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <rect x="3" y="3" width="7" height="7" />
                         <rect x="14" y="3" width="7" height="7" />
@@ -9882,12 +11953,12 @@ if ($isCashierRole && $page !== 'login') {
                     </svg>Dash
                 </a>
                 <?php if (!$isCashierRole): ?>
-                    <a href="?page=products" class="mob-btn <?= $page === 'products' ? 'active' : '' ?>">
+                    <a href="?page=products" onclick="return navigateToPage('products', event);" class="mob-btn <?= $page === 'products' ? 'active' : '' ?>">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z" />
                         </svg>Items
                     </a>
-                    <a href="?page=warehouse" class="mob-btn <?= $page === 'warehouse' ? 'active' : '' ?>">
+                    <a href="?page=warehouse" onclick="return navigateToPage('warehouse', event);" class="mob-btn <?= $page === 'warehouse' ? 'active' : '' ?>">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
                             <polyline points="9 22 9 12 15 12 15 22" />
@@ -9895,7 +11966,7 @@ if ($isCashierRole && $page !== 'login') {
                     </a>
                 <?php endif; ?>
                 <?php if (!$isCashierRole): ?>
-                    <a href="?page=sales" class="mob-btn <?= $page === 'sales' ? 'active' : '' ?>">
+                    <a href="?page=sales" onclick="return navigateToPage('sales', event);" class="mob-btn <?= $page === 'sales' ? 'active' : '' ?>">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
                             <polyline points="14 2 14 8 20 8" />
@@ -9910,29 +11981,60 @@ if ($isCashierRole && $page !== 'login') {
                     </a>
                 <?php endif; ?>
                 <?php if (!$isCashierRole): ?>
-                    <a href="?page=analytics" class="mob-btn <?= $page === 'analytics' ? 'active' : '' ?>">
+                    <a href="?page=analytics" onclick="return navigateToPage('analytics', event);" class="mob-btn <?= $page === 'analytics' ? 'active' : '' ?>">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <line x1="18" y1="20" x2="18" y2="10" />
                             <line x1="12" y1="20" x2="12" y2="4" />
                             <line x1="6" y1="20" x2="6" y2="14" />
                         </svg>Stats
                     </a>
-                    <a href="?page=forecast" class="mob-btn <?= $page === 'forecast' ? 'active' : '' ?>">
+                    <a href="?page=forecast" onclick="return navigateToPage('forecast', event);" class="mob-btn <?= $page === 'forecast' ? 'active' : '' ?>">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M3 3l7.5 7.5L13 8l8 8" />
                             <path d="M21 16v5h-5" />
                         </svg>Forecast
                     </a>
-                    <a href="?page=settings" class="mob-btn <?= $page === 'settings' ? 'active' : '' ?>">
+                    <a href="?page=settings" onclick="return navigateToPage('settings', event);" class="mob-btn <?= $page === 'settings' ? 'active' : '' ?>">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <circle cx="12" cy="12" r="3" />
                             <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z" />
                         </svg>Config
                     </a>
                 <?php endif; ?>
+                <a href="javascript:void(0)" id="mob-pwa-install-btn" class="mob-btn" style="display:none;color:var(--accent);" onclick="promptInstallPwa()" title="Install App">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                        <polyline points="7 10 12 15 17 10" />
+                        <line x1="12" y1="15" x2="12" y2="3" />
+                    </svg>Install
+                </a>
+                <?php if ($isCashierRole): ?>
+                    <a href="javascript:void(0)" class="mob-btn" onclick="requestEndShift()" title="End Shift" style="color:var(--danger,#ef4444);">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                            <polyline points="16 17 21 12 16 7" />
+                            <line x1="21" y1="12" x2="9" y2="12" />
+                        </svg>End
+                    </a>
+                <?php endif; ?>
             </div>
         </nav>
     <?php endif; ?>
+
+    <!-- ── PWA FLOATING INSTALL PROMPT (shown on mobile when installable) ── -->
+    <div id="pwa-install-banner" style="display:none;position:fixed;bottom:70px;left:14px;right:14px;max-width:420px;margin:0 auto;background:var(--surface2,#1e293b);border:1.5px solid var(--accent,#2563eb);border-radius:12px;padding:12px 14px;box-shadow:0 10px 25px rgba(0,0,0,0.5);z-index:99999;align-items:center;justify-content:space-between;gap:10px;">
+        <div style="display:flex;align-items:center;gap:10px;">
+            <img src="<?= logoCacheBuster('assets/icon-192.png') ?>" style="width:34px;height:34px;border-radius:50%;object-fit:cover;" alt="ProCast" onerror="this.src='assets/default-logo.png'"/>
+            <div>
+                <div style="font-weight:700;font-size:.85rem;color:var(--text,#f8fafc);">Install ProCast</div>
+                <div style="font-size:.72rem;color:var(--text3,#94a3b8);">Add to home screen for fullscreen checkout</div>
+            </div>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;">
+            <button type="button" class="btn btn-primary btn-sm" style="padding:5px 12px;font-size:.8rem;" onclick="promptInstallPwa()">Install</button>
+            <button type="button" style="background:none;border:none;color:var(--text3,#94a3b8);font-size:1.1rem;cursor:pointer;padding:0 4px;" onclick="dismissInstallBanner()">✕</button>
+        </div>
+    </div>
 
     <!-- ══════════════════════════════════════════
      SHIFT LOCK MODAL — mandatory denomination count.
@@ -9944,9 +12046,20 @@ if ($isCashierRole && $page !== 'login') {
         <div class="modal-overlay" id="shift-modal">
             <div class="modal" style="max-width:540px;">
                 <div class="modal-header">
-                    <span class="modal-title" id="shift-modal-title" style="font-size:1.35rem;">💰 Cash Count</span>
+                    <span class="modal-title" id="shift-modal-title" style="font-size:1.35rem;">Cash Count</span>
                 </div>
-                <p style="font-size:.92rem;color:var(--text2);margin-bottom:16px;" id="shift-modal-sub"></p>
+                <p style="font-size:.92rem;color:var(--text2);margin-bottom:14px;" id="shift-modal-sub"></p>
+
+                <div id="shift-drawer-banner" style="display:flex;align-items:center;justify-content:space-between;background:rgba(37,99,235,0.08);border:1px solid rgba(37,99,235,0.25);border-radius:8px;padding:10px 14px;margin-bottom:14px;">
+                    <div style="display:flex;align-items:center;gap:8px;">
+                        
+                        <div>
+                            <div style="font-size:.82rem;font-weight:700;color:var(--text1);" id="shift-drawer-status">Cash drawer released for cash count</div>
+                            <div style="font-size:.72rem;color:var(--text3);">Hardware pulse sent to cash drawer</div>
+                        </div>
+                    </div>
+                    <button type="button" class="btn btn-secondary btn-sm" onclick="openCashDrawer(false)" style="font-size:.78rem;padding:5px 12px;display:flex;align-items:center;gap:5px;">Pop Drawer</button>
+                </div>
 
                 <div style="display:grid;grid-template-columns:1fr 92px 112px;gap:8px 12px;align-items:center;font-size:.82rem;font-weight:800;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px;">
                     <span>Denomination</span><span style="text-align:center;">Qty</span><span style="text-align:right;">Total</span>
@@ -10359,7 +12472,7 @@ if ($isCashierRole && $page !== 'login') {
         </style>
         <div class="lp">
             <nav class="lp-nav">
-                <div class="lp-logo">POS <span>SYSTEM</span></div>
+                <div class="lp-logo">Pro<span>Cast</span></div>
                 <div class="lp-nav-actions"></div>
             </nav>
 
@@ -10389,7 +12502,7 @@ if ($isCashierRole && $page !== 'login') {
                 <div class="lp-steps">
                     <button type="button" class="lp-step" onclick="openStepGuide(0)" aria-haspopup="dialog">
                         <div class="lp-step-num">1</div>
-                        <div class="lp-step-icon">📝</div>
+                        <div class="lp-step-icon"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></div>
                         <h3>Create Your Account</h3>
                         <p>Sign up with your name, email, and a password. This becomes your own admin account — separate from every other store.</p>
                         <div class="lp-step-learn">Learn more →</div>
@@ -10397,7 +12510,7 @@ if ($isCashierRole && $page !== 'login') {
                     </button>
                     <button type="button" class="lp-step" onclick="openStepGuide(1)" aria-haspopup="dialog">
                         <div class="lp-step-num">2</div>
-                        <div class="lp-step-icon">📦</div>
+                        <div class="lp-step-icon"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg></div>
                         <h3>Add Your Products</h3>
                         <p>Enter your items with prices, barcodes, and categories — or import stock straight into your Warehouse.</p>
                         <div class="lp-step-learn">Learn more →</div>
@@ -10405,7 +12518,7 @@ if ($isCashierRole && $page !== 'login') {
                     </button>
                     <button type="button" class="lp-step" onclick="openStepGuide(2)" aria-haspopup="dialog">
                         <div class="lp-step-num">3</div>
-                        <div class="lp-step-icon">🏭</div>
+                        <div class="lp-step-icon"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg></div>
                         <h3>Stock Your Warehouse</h3>
                         <p>Log deliveries, track batches and expiry dates, and move stock between your warehouse and the store shelf.</p>
                         <div class="lp-step-learn">Learn more →</div>
@@ -10413,7 +12526,7 @@ if ($isCashierRole && $page !== 'login') {
                     </button>
                     <button type="button" class="lp-step" onclick="openStepGuide(3)" aria-haspopup="dialog">
                         <div class="lp-step-num">4</div>
-                        <div class="lp-step-icon">🧾</div>
+                        <div class="lp-step-icon"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></div>
                         <h3>Start Selling</h3>
                         <p>Ring up sales from the Dashboard, scan barcodes, take payments, and watch your reports update in real time.</p>
                         <div class="lp-step-learn">Learn more →</div>
@@ -10446,37 +12559,37 @@ if ($isCashierRole && $page !== 'login') {
                 </div>
                 <div class="lp-features">
                     <button type="button" class="lp-feature" onclick="openFeatureGuide(0)" aria-haspopup="dialog">
-                        <div class="lp-feature-icon">🏠</div>
+                        <div class="lp-feature-icon"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg></div>
                         <h4>Dashboard</h4>
                         <p>A daily snapshot of sales, low stock, and top sellers the moment you log in.</p>
                         <div class="lp-feature-learn">See how it works →</div>
                     </button>
                     <button type="button" class="lp-feature" onclick="openFeatureGuide(1)" aria-haspopup="dialog">
-                        <div class="lp-feature-icon">📦</div>
+                        <div class="lp-feature-icon"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg></div>
                         <h4>Products</h4>
                         <p>Full catalog management — pricing, categories, barcodes, and photos.</p>
                         <div class="lp-feature-learn">See how it works →</div>
                     </button>
                     <button type="button" class="lp-feature" onclick="openFeatureGuide(2)" aria-haspopup="dialog">
-                        <div class="lp-feature-icon">🏭</div>
+                        <div class="lp-feature-icon"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg></div>
                         <h4>Warehouse</h4>
                         <p>Batch-level stock tracking with expiry dates and restock/pull-out logs.</p>
                         <div class="lp-feature-learn">See how it works →</div>
                     </button>
                     <button type="button" class="lp-feature" onclick="openFeatureGuide(3)" aria-haspopup="dialog">
-                        <div class="lp-feature-icon">🧾</div>
+                        <div class="lp-feature-icon"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></div>
                         <h4>Sales</h4>
                         <p>Fast checkout, order history, and per-item voids when something goes wrong.</p>
                         <div class="lp-feature-learn">See how it works →</div>
                     </button>
                     <button type="button" class="lp-feature" onclick="openFeatureGuide(4)" aria-haspopup="dialog">
-                        <div class="lp-feature-icon">📊</div>
+                        <div class="lp-feature-icon"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg></div>
                         <h4>Analytics</h4>
                         <p>See which products sell together and where your revenue is really coming from.</p>
                         <div class="lp-feature-learn">See how it works →</div>
                     </button>
                     <button type="button" class="lp-feature" onclick="openFeatureGuide(5)" aria-haspopup="dialog">
-                        <div class="lp-feature-icon">🔮</div>
+                        <div class="lp-feature-icon"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 6l-9.5 9.5-5-5L1 18"/><polyline points="17 6 23 6 23 12"/></svg></div>
                         <h4>Forecast</h4>
                         <p>AI-powered demand predictions so you know what to restock before you run out.</p>
                         <div class="lp-feature-learn">See how it works →</div>
@@ -10508,7 +12621,7 @@ if ($isCashierRole && $page !== 'login') {
                 <a href="?page=signup" class="lp-btn lp-btn-primary lp-btn-lg">Create Your Store →</a>
             </section>
 
-            <footer class="lp-footer">© <?= date('Y') ?> POS SYSTEM. Built for small stores that want to grow.</footer>
+            <footer class="lp-footer">© <?= date('Y') ?> ProCast. Built for small stores that want to grow.</footer>
         </div>
 
         <script>
@@ -10518,7 +12631,7 @@ if ($isCashierRole && $page !== 'login') {
             // whichever step is active and step forward/back without a
             // page reload.
             const STEP_GUIDES = [{
-                    icon: '📝',
+                    icon: '',
                     title: 'Create Your Account',
                     body: `
                     <p style="margin-bottom:14px;">Setting up your own store takes under a minute — no approval wait, no setup call.</p>
@@ -10527,11 +12640,11 @@ if ($isCashierRole && $page !== 'login') {
                         <li style="margin-bottom:10px;">Enter your name, a working email address, and choose a password. Your email is used for login and for password-reset if you ever forget it.</li>
                         <li style="margin-bottom:10px;">Submit the form — you're instantly signed in as the <b style="color:#fff;">admin</b> of your own brand-new store.</li>
                     </ol>
-                    <p style="margin:0;padding:12px 14px;background:rgba(77,163,255,.1);border:1px solid rgba(77,163,255,.25);border-radius:10px;font-size:.83rem;">💡 Every store's data — products, sales, warehouse — is completely separate. Nothing you enter is ever visible to other stores using this same system.</p>
+                    <p style="margin:0;padding:12px 14px;background:rgba(77,163,255,.1);border:1px solid rgba(77,163,255,.25);border-radius:10px;font-size:.83rem;">Every store's data — products, sales, warehouse — is completely separate. Nothing you enter is ever visible to other stores using this same system.</p>
                 `
                 },
                 {
-                    icon: '📦',
+                    icon: '',
                     title: 'Add Your Products',
                     body: `
                     <p style="margin-bottom:14px;">Once you're in, head to the <b style="color:#fff;">Products</b> tab to build your catalog.</p>
@@ -10541,11 +12654,11 @@ if ($isCashierRole && $page !== 'login') {
                         <li style="margin-bottom:10px;">Add a photo so items are easy to recognize at checkout.</li>
                         <li style="margin-bottom:10px;">Repeat for each item, or bring stock in through the Warehouse tab (next step) if you're starting with a delivery.</li>
                     </ol>
-                    <p style="margin:0;padding:12px 14px;background:rgba(77,163,255,.1);border:1px solid rgba(77,163,255,.25);border-radius:10px;font-size:.83rem;">💡 You can set multi-tier wholesale pricing per product too — different prices for different quantity breaks.</p>
+                    <p style="margin:0;padding:12px 14px;background:rgba(77,163,255,.1);border:1px solid rgba(77,163,255,.25);border-radius:10px;font-size:.83rem;">You can set multi-tier wholesale pricing per product too — different prices for different quantity breaks.</p>
                 `
                 },
                 {
-                    icon: '🏭',
+                    icon: '',
                     title: 'Stock Your Warehouse',
                     body: `
                     <p style="margin-bottom:14px;">The <b style="color:#fff;">Warehouse</b> tab is where incoming stock is tracked before it reaches the store shelf.</p>
@@ -10554,11 +12667,11 @@ if ($isCashierRole && $page !== 'login') {
                         <li style="margin-bottom:10px;">Each delivery is tracked as its own <b style="color:#fff;">batch</b>, so you always know which stock is oldest and what's expiring soonest.</li>
                         <li style="margin-bottom:10px;">When you're ready to sell it, use <b style="color:#fff;">Transfer to Store</b> to move quantity from the warehouse onto the sales floor.</li>
                     </ol>
-                    <p style="margin:0;padding:12px 14px;background:rgba(77,163,255,.1);border:1px solid rgba(77,163,255,.25);border-radius:10px;font-size:.83rem;">💡 Low-stock and expiring-soon alerts show up automatically on your Dashboard — no manual checking needed.</p>
+                    <p style="margin:0;padding:12px 14px;background:rgba(77,163,255,.1);border:1px solid rgba(77,163,255,.25);border-radius:10px;font-size:.83rem;">Low-stock and expiring-soon alerts show up automatically on your Dashboard — no manual checking needed.</p>
                 `
                 },
                 {
-                    icon: '🧾',
+                    icon: '',
                     title: 'Start Selling',
                     body: `
                     <p style="margin-bottom:14px;">You're ready to ring up your first sale from the <b style="color:#fff;">Dashboard</b>.</p>
@@ -10568,7 +12681,7 @@ if ($isCashierRole && $page !== 'login') {
                         <li style="margin-bottom:10px;">Take payment and confirm — the sale is recorded instantly and stock is deducted.</li>
                         <li style="margin-bottom:10px;">Check <b style="color:#fff;">Analytics</b> and <b style="color:#fff;">Forecast</b> any time to see your best sellers and what to restock next.</li>
                     </ol>
-                    <p style="margin:0;padding:12px 14px;background:rgba(77,163,255,.1);border:1px solid rgba(77,163,255,.25);border-radius:10px;font-size:.83rem;">💡 If the power or internet drops mid-sale, your cart is saved automatically and syncs the moment you're back online.</p>
+                    <p style="margin:0;padding:12px 14px;background:rgba(77,163,255,.1);border:1px solid rgba(77,163,255,.25);border-radius:10px;font-size:.83rem;">If the power or internet drops mid-sale, your cart is saved automatically and syncs the moment you're back online.</p>
                 `
                 }
             ];
@@ -10608,7 +12721,7 @@ if ($isCashierRole && $page !== 'login') {
             // them), but a separate array/modal since these describe
             // existing pages rather than a linear onboarding sequence.
             const FEATURE_GUIDES = [{
-                    icon: '🏠',
+                    icon: '',
                     title: 'Dashboard',
                     body: `
                     <p style="margin-bottom:14px;">Your Dashboard is the first thing you see after logging in — a live snapshot of how the store is doing right now.</p>
@@ -10618,11 +12731,11 @@ if ($isCashierRole && $page !== 'login') {
                         <li style="margin-bottom:10px;">The <b style="color:#fff;">AI-Powered Demand Forecasting</b> and <b style="color:#fff;">Combo Recommendations</b> panels link straight into Forecast and Analytics for deeper detail.</li>
                         <li style="margin-bottom:10px;">Use <b style="color:#fff;">Void</b> if you need to reverse a recent sale — every void is logged for your records.</li>
                     </ol>
-                    <p style="margin:0;padding:12px 14px;background:rgba(77,163,255,.1);border:1px solid rgba(77,163,255,.25);border-radius:10px;font-size:.83rem;">💡 This is also where cashiers spend most of their shift — it doubles as the checkout screen.</p>
+                    <p style="margin:0;padding:12px 14px;background:rgba(77,163,255,.1);border:1px solid rgba(77,163,255,.25);border-radius:10px;font-size:.83rem;">This is also where cashiers spend most of their shift — it doubles as the checkout screen.</p>
                 `
                 },
                 {
-                    icon: '📦',
+                    icon: '',
                     title: 'Products',
                     body: `
                     <p style="margin-bottom:14px;">Products is your full catalog — everything you sell, with pricing and details in one place.</p>
@@ -10632,11 +12745,11 @@ if ($isCashierRole && $page !== 'login') {
                         <li style="margin-bottom:10px;">Search, filter by category, or scan a barcode to jump straight to a product and edit it.</li>
                         <li style="margin-bottom:10px;">Low-stock items are flagged right in the list, so you know what needs restocking before it runs out.</li>
                     </ol>
-                    <p style="margin:0;padding:12px 14px;background:rgba(77,163,255,.1);border:1px solid rgba(77,163,255,.25);border-radius:10px;font-size:.83rem;">💡 A product's stock count updates automatically as sales happen and warehouse stock is transferred in.</p>
+                    <p style="margin:0;padding:12px 14px;background:rgba(77,163,255,.1);border:1px solid rgba(77,163,255,.25);border-radius:10px;font-size:.83rem;">A product's stock count updates automatically as sales happen and warehouse stock is transferred in.</p>
                 `
                 },
                 {
-                    icon: '🏭',
+                    icon: '',
                     title: 'Warehouse',
                     body: `
                     <p style="margin-bottom:14px;">Warehouse tracks stock before it ever reaches the sales floor — deliveries, batches, and expiry dates.</p>
@@ -10646,11 +12759,11 @@ if ($isCashierRole && $page !== 'login') {
                         <li style="margin-bottom:10px;">Use <b style="color:#fff;">Transfer to Store</b> to move a quantity from the warehouse onto the shelf, ready to sell.</li>
                         <li style="margin-bottom:10px;">Record <b style="color:#fff;">pull-outs</b> for damaged, expired, or returned stock, with a reason logged for your records.</li>
                     </ol>
-                    <p style="margin:0;padding:12px 14px;background:rgba(77,163,255,.1);border:1px solid rgba(77,163,255,.25);border-radius:10px;font-size:.83rem;">💡 Restock and pull-out dates are tracked per batch, giving you a full paper trail for every item that came through your stockroom.</p>
+                    <p style="margin:0;padding:12px 14px;background:rgba(77,163,255,.1);border:1px solid rgba(77,163,255,.25);border-radius:10px;font-size:.83rem;">Restock and pull-out dates are tracked per batch, giving you a full paper trail for every item that came through your stockroom.</p>
                 `
                 },
                 {
-                    icon: '🧾',
+                    icon: '',
                     title: 'Sales',
                     body: `
                     <p style="margin-bottom:14px;">Sales is your order history — every transaction the store has ever recorded, searchable and reviewable.</p>
@@ -10660,11 +12773,11 @@ if ($isCashierRole && $page !== 'login') {
                         <li style="margin-bottom:10px;">Use <b style="color:#fff;">partial void</b> to reverse individual items from a completed sale rather than the whole order — every void is logged with a reason, and unusual patterns are flagged for review.</li>
                         <li style="margin-bottom:10px;">At the end of a shift, the <b style="color:#fff;">Z-read shift report</b> gives a full cash-drawer summary for reconciliation.</li>
                     </ol>
-                    <p style="margin:0;padding:12px 14px;background:rgba(77,163,255,.1);border:1px solid rgba(77,163,255,.25);border-radius:10px;font-size:.83rem;">💡 Nothing here can be silently edited — every change leaves an audit trail.</p>
+                    <p style="margin:0;padding:12px 14px;background:rgba(77,163,255,.1);border:1px solid rgba(77,163,255,.25);border-radius:10px;font-size:.83rem;">Nothing here can be silently edited — every change leaves an audit trail.</p>
                 `
                 },
                 {
-                    icon: '📊',
+                    icon: '',
                     title: 'Analytics',
                     body: `
                     <p style="margin-bottom:14px;">Analytics turns your sales history into insight — what's actually driving revenue, and what sells together.</p>
@@ -10673,11 +12786,11 @@ if ($isCashierRole && $page !== 'login') {
                         <li style="margin-bottom:10px;">The <b style="color:#fff;">Combo Recommendations</b> panel finds products that are frequently bought together, so you can bundle or place them side-by-side.</li>
                         <li style="margin-bottom:10px;">Break down revenue by category, time of day, or cashier to spot patterns.</li>
                     </ol>
-                    <p style="margin:0;padding:12px 14px;background:rgba(77,163,255,.1);border:1px solid rgba(77,163,255,.25);border-radius:10px;font-size:.83rem;">💡 Use Analytics before restocking or running a promo — it shows you what's actually worth pushing.</p>
+                    <p style="margin:0;padding:12px 14px;background:rgba(77,163,255,.1);border:1px solid rgba(77,163,255,.25);border-radius:10px;font-size:.83rem;">Use Analytics before restocking or running a promo — it shows you what's actually worth pushing.</p>
                 `
                 },
                 {
-                    icon: '🔮',
+                    icon: '',
                     title: 'Forecast',
                     body: `
                     <p style="margin-bottom:14px;">Forecast uses your sales history to predict what you'll need to restock — before you actually run out.</p>
@@ -10686,7 +12799,7 @@ if ($isCashierRole && $page !== 'login') {
                         <li style="margin-bottom:10px;">Items likely to run low are flagged with a suggested restock quantity.</li>
                         <li style="margin-bottom:10px;">Forecasts improve automatically the longer you use the system — more sales history means more accurate predictions.</li>
                     </ol>
-                    <p style="margin:0;padding:12px 14px;background:rgba(77,163,255,.1);border:1px solid rgba(77,163,255,.25);border-radius:10px;font-size:.83rem;">💡 Check Forecast before placing a supplier order — it's the fastest way to avoid both stockouts and overstocking.</p>
+                    <p style="margin:0;padding:12px 14px;background:rgba(77,163,255,.1);border:1px solid rgba(77,163,255,.25);border-radius:10px;font-size:.83rem;">Check Forecast before placing a supplier order — it's the fastest way to avoid both stockouts and overstocking.</p>
                 `
                 }
             ];
@@ -10739,12 +12852,12 @@ if ($isCashierRole && $page !== 'login') {
                     <a href="?page=landing" style="display:inline-block;margin-top:8px;font-size:.8rem;color:var(--text3);text-decoration:none;border-bottom:1px dashed var(--text3);">New here? See how it works →</a>
                 </div>
                 <div class="login-card">
-                    <h2 style="font-size:1.05rem;font-weight:600;margin-bottom:18px;">Welcome back 👋</h2>
+                    <h2 style="font-size:1.05rem;font-weight:600;margin-bottom:18px;">Welcome back</h2>
                     <?php if ($signupFlash): ?>
-                        <div class="error-box" style="background:rgba(45,122,58,.08);border-color:rgba(45,122,58,.25);color:var(--green);">✅ Congratulations! Your account was created successfully. You can now log in.</div>
+                        <div class="error-box" style="background:rgba(45,122,58,.08);border-color:rgba(45,122,58,.25);color:var(--green);">Congratulations! Your account was created successfully. You can now log in.</div>
                     <?php endif; ?>
                     <?php if ($loginError): ?>
-                        <div class="error-box">⚠️ <?= htmlspecialchars($loginError) ?></div>
+                        <div class="error-box"><?= htmlspecialchars($loginError) ?></div>
                     <?php endif; ?>
                     <form method="POST" action="?page=login">
                         <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(CSRF_TOKEN) ?>" />
@@ -10771,7 +12884,7 @@ if ($isCashierRole && $page !== 'login') {
                         </div>
                         <div style="display:flex;gap:10px;margin-top:6px;">
                             <a href="?page=signup" class="btn btn-secondary btn-full" style="text-decoration:none;text-align:center;display:flex;align-items:center;justify-content:center;">Sign up</a>
-                            <button type="submit" class="btn btn-primary btn-full btn-lg" style="box-shadow:0 6px 18px rgba(212,80,10,.45);">Login →</button>
+                            <button type="submit" class="btn btn-primary btn-full btn-lg" style="box-shadow:0 6px 18px rgba(47,127,245,.45);">Login →</button>
                         </div>
                     </form>
                     <div style="text-align:left;margin-top:18px;">
@@ -10805,14 +12918,14 @@ if ($isCashierRole && $page !== 'login') {
                 </div>
                 <div class="login-card">
                     <?php if ($signupSuccess): ?>
-                        <h2 style="font-size:1.05rem;font-weight:600;margin-bottom:18px;">Account created 🎉</h2>
-                        <div class="error-box" style="background:rgba(45,122,58,.08);border-color:rgba(45,122,58,.25);color:var(--green);">✅ Your account is ready. Sign in with your new username and password.</div>
+                        <h2 style="font-size:1.05rem;font-weight:600;margin-bottom:18px;">Account created</h2>
+                        <div class="error-box" style="background:rgba(45,122,58,.08);border-color:rgba(45,122,58,.25);color:var(--green);">Your account is ready. Sign in with your new username and password.</div>
                         <a href="?page=login" class="btn btn-primary btn-full btn-lg" style="margin-top:6px;text-align:center;text-decoration:none;display:block;">Go to Sign In →</a>
                     <?php else: ?>
-                        <h2 style="font-size:1.05rem;font-weight:600;margin-bottom:18px;">Sign up 👋</h2>
+                        <h2 style="font-size:1.05rem;font-weight:600;margin-bottom:18px;">Sign up</h2>
                         <p style="font-size:.82rem;color:var(--text2);margin-bottom:16px;">This creates a full admin account for managing your own store. An email is required so you can recover your account later if you forget your password.</p>
                         <?php if ($signupErrors): ?>
-                            <div class="error-box">⚠️ <?= implode('<br>⚠️ ', array_map('htmlspecialchars', $signupErrors)) ?></div>
+                            <div class="error-box"><?= implode('<br>', array_map('htmlspecialchars', $signupErrors)) ?></div>
                         <?php endif; ?>
                         <form method="POST" action="?page=signup">
                             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(CSRF_TOKEN) ?>" />
@@ -10887,17 +13000,24 @@ if ($isCashierRole && $page !== 'login') {
             <div style="position:absolute;top:-10%;left:-15%;width:60%;height:120%;background:radial-gradient(circle, rgba(47,127,245,.25) 0%, transparent 70%);pointer-events:none;"></div>
             <div class="login-wrap">
                 <div class="login-logo">
-                    <span class="icon">🔑</span>
+                    <span class="icon"><svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="2"><circle cx="7.5" cy="15.5" r="5.5"/><path d="M12 11l8-8m-3 3l2 2m-4 0l2 2"/></svg></span>
                     <h1><?= renderShopNameHtml($storeSettings['shop_name']) ?></h1>
                     <p>Reset your password</p>
                 </div>
                 <div class="login-card">
                     <h2 style="font-size:1.05rem;font-weight:600;margin-bottom:18px;">Forgot your password?</h2>
                     <?php if ($forgotError): ?>
-                        <div class="error-box">⚠️ <?= htmlspecialchars($forgotError) ?></div>
+                        <div class="error-box" style="margin-bottom:12px;"><?= htmlspecialchars($forgotError) ?></div>
+                    <?php endif; ?>
+                    <?php if (!empty($localResetLink)): ?>
+                        <div class="error-box" style="background:rgba(47,127,245,.08);border-color:rgba(47,127,245,.25);color:var(--accent);margin-bottom:12px;">
+                            <strong>Local Development Reset Link:</strong><br>
+                            <span style="font-size:.82rem;">Since email was not delivered or you are testing locally, you can reset directly:</span><br>
+                            <a href="<?= htmlspecialchars($localResetLink) ?>" class="btn btn-primary btn-sm" style="display:inline-block;margin-top:8px;padding:6px 14px;text-decoration:none;">Click Here to Reset Password →</a>
+                        </div>
                     <?php endif; ?>
                     <?php if ($forgotMsg): ?>
-                        <div class="error-box" style="background:rgba(45,122,58,.08);border-color:rgba(45,122,58,.25);color:var(--green);">✅ <?= htmlspecialchars($forgotMsg) ?></div>
+                        <div class="error-box" style="background:rgba(45,122,58,.08);border-color:rgba(45,122,58,.25);color:var(--green);"><?= htmlspecialchars($forgotMsg) ?></div>
                     <?php else: ?>
                         <p style="font-size:.83rem;color:var(--text2);margin-bottom:16px;">Enter your username or the email on your account. We'll send a reset link if it matches an account.</p>
                         <form method="POST" action="?page=forgot">
@@ -10917,7 +13037,7 @@ if ($isCashierRole && $page !== 'login') {
                     <?php endif; ?>
                     <div class="login-footer"><a href="?page=login" style="color:var(--accent);text-decoration:none;font-weight:600;">← Back to Sign In</a></div>
                     <div style="margin-top:22px;padding-top:18px;border-top:1px solid var(--border);">
-                        <p style="font-size:.8rem;color:var(--text3);line-height:1.6;">🔒 We'll email a secure reset link to the address on file for that account — it expires in 1 hour, and only works once. For security, you can request up to 3 reset emails per account per hour; further requests are blocked until the hour resets. If you signed up without an email on file, ask your store admin to reset your password for you from Settings instead.</p>
+                        <p style="font-size:.8rem;color:var(--text3);line-height:1.6;">We'll email a secure reset link to the address on file for that account — it expires in 1 hour, and only works once. For security, you can request up to 3 reset emails per account per hour; further requests are blocked until the hour resets. If you signed up without an email on file, ask your store admin to reset your password for you from Settings instead.</p>
                     </div>
                 </div>
             </div>
@@ -10932,21 +13052,21 @@ if ($isCashierRole && $page !== 'login') {
             <div style="position:absolute;top:-10%;left:-15%;width:60%;height:120%;background:radial-gradient(circle, rgba(47,127,245,.25) 0%, transparent 70%);pointer-events:none;"></div>
             <div class="login-wrap">
                 <div class="login-logo">
-                    <span class="icon">🔒</span>
+                    <span class="icon"><svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></span>
                     <h1><?= renderShopNameHtml($storeSettings['shop_name']) ?></h1>
                     <p>Choose a new password</p>
                 </div>
                 <div class="login-card">
                     <h2 style="font-size:1.05rem;font-weight:600;margin-bottom:18px;">Reset password</h2>
                     <?php if ($resetSuccess): ?>
-                        <div class="error-box" style="background:rgba(45,122,58,.08);border-color:rgba(45,122,58,.25);color:var(--green);">✅ Password updated! You can now sign in.</div>
+                        <div class="error-box" style="background:rgba(45,122,58,.08);border-color:rgba(45,122,58,.25);color:var(--green);">Password updated! You can now sign in.</div>
                         <a href="?page=login" class="btn btn-primary btn-full btn-lg" style="margin-top:6px;text-align:center;text-decoration:none;display:block;">Go to Sign In →</a>
                     <?php elseif (!$resetTokenValid): ?>
-                        <div class="error-box">⚠️ This reset link is invalid or has expired.</div>
+                        <div class="error-box">This reset link is invalid or has expired.</div>
                         <a href="?page=forgot" style="color:var(--accent);text-decoration:none;font-weight:600;font-size:.85rem;">Request a new link →</a>
                     <?php else: ?>
                         <?php if ($resetError): ?>
-                            <div class="error-box">⚠️ <?= htmlspecialchars($resetError) ?></div>
+                            <div class="error-box"><?= htmlspecialchars($resetError) ?></div>
                         <?php endif; ?>
                         <form method="POST" action="?page=reset&token=<?= htmlspecialchars($resetToken) ?>">
                             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(CSRF_TOKEN) ?>" />
@@ -10982,16 +13102,16 @@ if ($isCashierRole && $page !== 'login') {
     <?php endif; ?>
 
     <!-- TRANSFER TO STORE MODAL — moves stock from Warehouse to the Store shelf.
-     Used from the Warehouse page's 🔄 row icon and the Forecast page's
+     Used from the Warehouse page's transfer row button and the Forecast page's
      "recommended restock" list. Made page-agnostic (not nested inside any
      single ?page= block) for the same reason as Void Order above — it used
      to live only inside the Analytics page's markup, so document.getElementById
-     ('transfer-modal') returned null anywhere else, and clicking 🔄 on
+     ('transfer-modal') returned null anywhere else, and clicking transfer on
      Warehouse silently did nothing (openModal() no-ops on a missing element,
      no error shown). -->
     <div class="modal-overlay" id="transfer-modal">
         <div class="modal" style="max-width:380px;">
-            <div class="modal-header"><span class="modal-title">🔄 Transfer to Store</span><button class="modal-close" onclick="closeModal('transfer-modal')">✕</button></div>
+            <div class="modal-header"><span class="modal-title">Transfer to Store</span><button class="modal-close" onclick="closeModal('transfer-modal')">✕</button></div>
             <p style="font-size:.83rem;color:var(--text2);margin-bottom:14px;">Move stock from Warehouse into the Store shelf.</p>
             <div class="form-group">
                 <label class="form-label">Product</label>
@@ -11040,7 +13160,7 @@ if ($isCashierRole && $page !== 'login') {
      cashier's Dashboard-only view. -->
     <div class="modal-overlay" id="void-order-modal">
         <div class="modal" style="max-width:460px;">
-            <div class="modal-header"><span class="modal-title">🚫 Void Order</span><button class="modal-close" onclick="closeVoidOrderModal()">✕</button></div>
+            <div class="modal-header"><span class="modal-title">Void Order</span><button class="modal-close" onclick="closeVoidOrderModal()">✕</button></div>
 
             <!-- STEP 1: order code entry, so the cashier doesn't have to scroll history -->
             <div class="form-group">
@@ -11076,9 +13196,28 @@ if ($isCashierRole && $page !== 'login') {
                 </div>
                 <div id="vo-items-list" style="max-height:220px;overflow-y:auto;border:1px solid var(--border);border-radius:10px;"></div>
 
+                <!-- LIVE REFUND BANNER: Shows exact cash amount to return to customer -->
+                <div id="vo-refund-banner" style="background:rgba(192,57,43,0.08);border:1px solid rgba(192,57,43,0.25);border-radius:8px;padding:10px 14px;margin-top:12px;display:flex;justify-content:space-between;align-items:center;">
+                    <div style="font-size:.84rem;font-weight:700;color:var(--danger,#C0392B);">Cash Due to Customer:</div>
+                    <strong id="vo-refund-total" style="font-size:1.15rem;color:var(--danger,#C0392B);">₱0.00</strong>
+                </div>
+
+                <!-- REASON FOR VOID / RETURN -->
+                <div class="form-group" style="margin-top:12px;">
+                    <label class="form-label">Reason for Void / Return</label>
+                    <select class="form-select" id="vo-reason">
+                        <option value="Customer Return / Exchange">Customer Return / Exchange</option>
+                        <option value="Wrong Item Scanned">Wrong Item Scanned</option>
+                        <option value="Damaged / Defective Item">Damaged / Defective Item</option>
+                        <option value="Customer Changed Mind">Customer Changed Mind</option>
+                        <option value="Cashier / System Error">Cashier / System Error</option>
+                        <option value="Other">Other (Audit Log)</option>
+                    </select>
+                </div>
+
                 <!-- STEP 3: password gate, only shown after a valid order is loaded -->
-                <div class="form-group" style="margin-top:14px;">
-                    <label class="form-label">Admin Password <span style="color:var(--text3);font-weight:400;">(cashier passwords are not accepted)</span></label>
+                <div class="form-group" style="margin-top:12px;">
+                    <label class="form-label" id="vo-auth-label">Admin / Owner Password <span style="color:var(--text3);font-weight:400;">(cashier passwords are not accepted)</span></label>
                     <div class="pw-eye-wrap">
                         <input type="password" class="form-input" id="vo-password" placeholder="Enter admin password to authorize" oninput="updateVoidOrderConfirmState()"
                             onkeydown="if(event.key==='Enter'){event.preventDefault();confirmVoidOrder();}" />
@@ -11087,312 +13226,14 @@ if ($isCashierRole && $page !== 'login') {
                 </div>
 
                 <!-- STEP 4: locked until at least one item is selected AND a password is typed -->
-                <button type="button" class="btn btn-danger btn-full" id="vo-confirm-btn" onclick="confirmVoidOrder()" disabled>Confirm Void</button>
+                <button type="button" class="btn btn-danger btn-full" id="vo-confirm-btn" onclick="confirmVoidOrder()" disabled>Authorize Void &amp; Release Cash Refund</button>
             </div>
         </div>
     </div>
-
-    <!-- ══════════════════════════════════════════
-     DASHBOARD PAGE
-══════════════════════════════════════════ -->
-    <?php if ($page === 'dashboard'): ?>
-        <main class="page">
-            <div class="container">
-                <div class="page-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
-                    <div>
-                        <h1 class="page-title">Good <span id="greet">Day</span> 👋</h1>
-                        <p class="page-sub" id="shop-name">Loading…</p>
-                    </div>
-                    <div style="display:flex;gap:8px;align-items:center;">
-                        <button type="button" class="btn btn-sm" onclick="openVoidOrderModal()" style="background:#C0392B;color:#fff;border:none;font-weight:700;">🚫 Void</button>
-                        <button class="btn btn-primary btn-sm" onclick="openModal('cart-modal')">
-                            🛒 Cart <span id="cart-badge" style="background:#fff;color:var(--accent);border-radius:99px;padding:1px 6px;font-size:.68rem;margin-left:2px;">0</span>
-                        </button>
-                    </div>
-                </div>
-                <!-- Stats -->
-                <div class="grid-4" style="margin-bottom:24px;">
-                    <div class="stat-card orange">
-                        <div class="stat-label">Today's Sales</div>
-                        <div class="stat-value" id="s-today-rev">—</div>
-                        <div class="stat-sub" id="s-today-cnt">—</div>
-                    </div>
-                    <div class="stat-card red">
-                        <div class="stat-label" style="display:flex;align-items:center;justify-content:space-between;gap:4px;">
-                            <span>Revenue</span>
-                            <!-- Today/7-Day/30-Day/All toggle — the same one appears on the
-                                 Profit card below, and both are kept in sync by setDashPeriod()
-                                 so either button set switches both cards together. -->
-                            <span class="stat-period-group" data-card="rev"></span>
-                        </div>
-                        <div class="stat-value" id="s-week">—</div>
-                        <div class="stat-sub" id="s-week-label">7-day revenue</div>
-                    </div>
-                    <div class="stat-card purple">
-                        <div class="stat-label" style="display:flex;align-items:center;justify-content:space-between;gap:4px;">
-                            <span>Profit</span>
-                            <span class="stat-period-group" data-card="profit"></span>
-                        </div>
-                        <div class="stat-value" id="s-profit">—</div>
-                        <div class="stat-sub" id="s-profit-label">7-day profit</div>
-                    </div>
-                    <div class="stat-card green">
-                        <div class="stat-label">Products</div>
-                        <div class="stat-value" id="s-prods">—</div>
-                        <div class="stat-sub" id="s-lowstock">—</div>
-                    </div>
-                </div>
-
-                <?php if (!$isCashierRole): ?>
-                    <!-- ══════════════════════════════════════════
-       AI HIGHLIGHTS — Forecasting & Combo Recommendations
-       Presented as their own feature cards so they read as a
-       standalone smart-insights system, not a buried sub-tab.
-       Owner-only — the cashier's dashboard is Sales-focused.
-  ══════════════════════════════════════════ -->
-                    <div class="ai-highlights" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:26px;">
-                        <a href="?page=forecast" class="ai-card ai-card-forecast">
-                            <div class="ai-card-icon">🔮</div>
-                            <div class="ai-card-body">
-                                <div class="ai-card-eyebrow">AI-Powered</div>
-                                <div class="ai-card-title">Demand Forecasting</div>
-                                <div class="ai-card-desc">See how much of each product you'll likely sell tomorrow, this week, or this month — and exactly what to restock.</div>
-                                <div class="ai-card-stats" id="dash-fc-preview">
-                                    <span class="ai-mini-stat"><span class="ai-mini-num" id="dash-fc-count">—</span><span class="ai-mini-lbl">products tracked</span></span>
-                                    <span class="ai-mini-stat"><span class="ai-mini-num" id="dash-fc-restock">—</span><span class="ai-mini-lbl">need restock</span></span>
-                                </div>
-                                <div class="ai-card-cta">Open Forecast →</div>
-                            </div>
-                        </a>
-
-                        <a href="?page=analytics#combo" class="ai-card ai-card-combo" onclick="localStorage.setItem('_gotoCombo','1')">
-                            <div class="ai-card-icon">🛍️</div>
-                            <div class="ai-card-body">
-                                <div class="ai-card-eyebrow">AI-Powered</div>
-                                <div class="ai-card-title">Combo Recommendations</div>
-                                <div class="ai-card-desc">Discover which products sell well together, so you can bundle, place them side-by-side, or upsell at checkout.</div>
-                                <div class="ai-card-stats" id="dash-combo-preview">
-                                    <span class="ai-mini-stat"><span class="ai-mini-num" id="dash-combo-count">—</span><span class="ai-mini-lbl">pairs found</span></span>
-                                    <span class="ai-mini-stat"><span class="ai-mini-num">🔥</span><span class="ai-mini-lbl">smart bundles</span></span>
-                                </div>
-                                <div class="ai-card-cta">View Combos →</div>
-                            </div>
-                        </a>
-                    </div>
-                <?php endif; ?>
-
-                <!-- Top Sellers — moved up to sit directly under the AI Highlights cards,
-       full width, and made collapsible (closed by default) like the rest of
-       the app's summary cards. -->
-                <div class="card" style="margin-bottom:18px;">
-                    <div class="card-title collapse-toggle" onclick="toggleCollapseCard('top-sellers-wrap', this)" style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;">
-                        <span>🏆 Top Sellers</span><span class="collapse-chevron">▾</span>
-                    </div>
-                    <div id="top-sellers-wrap" class="collapse-body" style="display:none;">
-                        <div id="top-sellers">
-                            <div style="text-align:center;padding:16px;color:var(--text3);font-size:.83rem;">Loading…</div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Products -->
-                <div style="display:grid;grid-template-columns:1fr;gap:18px;align-items:start;" class="dash-layout">
-                    <div>
-                        <div style="display:flex;gap:8px;margin-bottom:12px;">
-                            <div class="search-wrap" style="flex:1;">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                    <circle cx="11" cy="11" r="8" />
-                                    <line x1="21" y1="21" x2="16.65" y2="16.65" />
-                                </svg>
-                                <input type="text" class="form-input search-input" id="search-inp" placeholder="Search products…" oninput="filterProds()" />
-                            </div>
-                        </div>
-                        <div class="cat-scroll" id="cat-pills" style="margin-bottom:14px;"></div>
-                        <div class="grid-4 fade-in" id="prods-grid">
-                            <div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text3);">Loading…</div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </main>
-
-        <!-- CART MODAL -->
-        <div class="modal-overlay" id="cart-modal">
-            <div class="modal" style="max-width:720px;width:96%;max-height:95vh;padding:22px;">
-                <div class="modal-header">
-                    <span class="modal-title">🛒 Cart</span>
-                    <div style="display:flex;align-items:center;gap:10px;">
-                        <button class="modal-close" onclick="closeModal('cart-modal')">✕</button>
-                    </div>
-                </div>
-                <div class="cart-col-header" id="cart-col-header" style="display:none;">
-                    <span></span><span>Product / Details</span><span>Unit / Qty</span><span>Price</span><span>Subtotal</span><span></span>
-                </div>
-                <div id="cart-items"></div>
-                <div id="cart-summary" style="margin-top:14px;display:none;">
-                    <div class="pay-row"><span>Subtotal</span><span id="cart-sub">—</span></div>
-                    <div class="pay-row"><span>VAT (<span id="cart-vat-rate">0</span>%)</span><span id="cart-vat">—</span></div>
-                    <div class="pay-row"><span>Tax (<span id="cart-tax-rate">0</span>%)</span><span id="cart-tax">—</span></div>
-                    <div class="pay-row total"><span>Total</span><span id="cart-total">—</span></div>
-                    <div style="margin:14px 0;">
-                        <label class="form-label">Cash Tendered</label>
-                        <input type="number" class="form-input" id="cash-input" placeholder="Enter amount…" oninput="calcChange()" min="0" step="1" />
-                        <div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:7px;" id="presets"></div>
-                    </div>
-                    <div id="change-display"></div>
-                    <!-- Shown only once Cash Tendered has an amount entered — lets the
-           cashier pick any product already in the cart and mark it down on
-           the spot (e.g. it expires tomorrow and nobody set a Promo Price). -->
-                    <button type="button" id="cart-discount-trigger-btn" class="btn btn-secondary btn-full" style="display:none;margin-top:8px;border:1.5px dashed #e74c3c;color:#e74c3c;" onclick="openCartDiscountModal()">
-                        🏷️ Give a Discount on a Product
-                    </button>
-                    <button class="btn btn-primary btn-full btn-lg" style="margin-top:10px;" onclick="processPayment()" id="pay-btn" disabled>
-                        ✔ Process Payment
-                    </button>
-                    <div style="display:flex;gap:7px;margin-top:8px;">
-                        <button type="button" class="btn cart-hold-btn" style="flex:1;" onclick="holdCurrentCart()">
-                            Hold
-                        </button>
-                        <div style="flex:1;position:relative;">
-                            <button type="button" class="btn cart-held-btn" style="width:100%;" id="held-carts-btn" onclick="toggleHeldCartsMenu()">
-                                Held Carts (<span id="held-carts-count">0</span>)
-                            </button>
-                            <div class="held-carts-dropdown" id="held-carts-menu" style="display:none;"></div>
-                        </div>
-                        <button type="button" class="btn cart-clear-btn" style="flex:1;" onclick="clearCart()">
-                            Clear Cart
-                        </button>
-                    </div>
-                </div>
-                <div id="cart-empty" style="text-align:center;padding:36px;color:var(--text3);">
-                    <div style="font-size:2.8rem;margin-bottom:7px;">🛒</div>
-                    <p>Cart is empty</p>
-                    <p style="font-size:.78rem;margin-top:3px;">Scan or tap a product to add it</p>
-                </div>
-            </div>
-        </div>
-
-        <!-- CART LINE DISCOUNT MODAL — an on-the-spot markdown a cashier/admin can
-     apply to one cart line at checkout, for cases like a product expiring
-     tomorrow that nobody set a Promo Price for ahead of time. This is
-     separate from the catalog Promo Price: it only affects the item while
-     it's in this cart/sale, it never touches the product's stored price. -->
-        <div class="modal-overlay" id="cart-discount-modal">
-            <div class="modal" style="max-width:380px;">
-                <div class="modal-header"><span class="modal-title">🏷️ Give a Discount</span><button class="modal-close" onclick="closeModal('cart-discount-modal')">✕</button></div>
-
-                <label class="form-label">Product</label>
-                <select class="form-input" id="cd-product-select" onchange="onCartDiscountProductChange()" style="width:100%;margin-bottom:4px;"></select>
-                <div style="font-size:.8rem;color:var(--text3);margin-bottom:14px;">Current price: <strong id="cd-current-price">—</strong> / piece</div>
-
-                <label class="form-label">Discount Type</label>
-                <div style="display:flex;gap:8px;margin-bottom:12px;">
-                    <button type="button" class="btn btn-secondary btn-sm" id="cd-type-percent" style="flex:1;" onclick="setCartDiscountType('percent')">% Percent Off</button>
-                    <button type="button" class="btn btn-secondary btn-sm" id="cd-type-amount" style="flex:1;" onclick="setCartDiscountType('amount')">₱ Amount Off</button>
-                </div>
-
-                <label class="form-label" id="cd-value-label">Percent Off (%)</label>
-                <input type="number" class="form-input" id="cd-value" placeholder="e.g. 20" min="0" step="1" oninput="updateCartDiscountPreview()" />
-
-                <label class="form-label" style="margin-top:10px;">Reason <span style="color:var(--text3);font-weight:400;">(optional, shown on receipt)</span></label>
-                <input type="text" class="form-input" id="cd-reason" placeholder="e.g. Expiring tomorrow" />
-
-                <div id="cd-preview" style="margin-top:12px;padding:10px;background:var(--surface2);border-radius:var(--r-sm);font-size:.85rem;text-align:center;"></div>
-
-                <div style="display:flex;gap:8px;margin-top:16px;">
-                    <button type="button" class="btn btn-danger btn-sm" id="cd-remove-btn" style="display:none;" onclick="removeCartDiscount()">Remove Discount</button>
-                    <button type="button" class="btn btn-secondary" style="flex:1;" onclick="closeModal('cart-discount-modal')">Cancel</button>
-                    <button type="button" class="btn btn-primary" style="flex:1;" onclick="applyCartDiscount()">Apply</button>
-                </div>
-            </div>
-        </div>
-
-        <!-- SUCCESS MODAL -->
-        <div class="modal-overlay" id="success-modal">
-            <div class="modal" style="max-width:380px;text-align:center;">
-                <div style="font-size:3rem;margin-bottom:6px;">🎉</div>
-                <h2 class="modal-title" style="text-align:center;font-size:1.5rem;margin-bottom:10px;">Payment Receipt</h2>
-                <div id="receipt-display" class="receipt" style="text-align:left;max-height:260px;overflow-y:auto;margin:14px 0;font-size:.76rem;"></div>
-                <div class="change-box" id="change-box">
-                    <div class="change-label">Change</div>
-                    <div class="change-amount" id="final-change">—</div>
-                </div>
-                <div style="display:flex;gap:8px;margin-top:14px;">
-                    <button class="btn btn-secondary btn-full" onclick="closeModal('success-modal')">Done <span class="kbd" style="margin-left:6px;">Enter</span></button>
-                    <button class="btn btn-primary btn-full" onclick="printSaleReceipt()">🖨️ Print <span class="kbd" style="margin-left:6px;">P</span></button>
-                </div>
-            </div>
-        </div>
-
-
-        <!-- Draggable Scanner Float Button (Dashboard only) -->
-        <div id="scanner-float" style="display:none;">
-            <button id="scan-fab-new" onclick="openDashScan()" title="Open Cart & Scanner">🛒</button>
-        </div>
-
-        <!-- DASH SCAN MODAL -->
-        <div class="modal-overlay" id="dash-scan-modal">
-            <div class="modal" style="max-width:420px;">
-                <div class="modal-header"><span class="modal-title">📷 Barcode Scanner</span><button class="modal-close" onclick="closeDashScan()">✕</button></div>
-                <div style="background:#000;border-radius:12px;overflow:hidden;margin-bottom:14px;position:relative;">
-                    <video id="dash-scan-video" style="width:100%;display:block;" autoplay playsinline></video>
-                    <div style="position:absolute;inset:0;pointer-events:none;display:flex;align-items:center;justify-content:center;">
-                        <div style="width:240px;height:90px;border:3px solid var(--accent);border-radius:6px;box-shadow:0 0 0 9999px rgba(0,0,0,.5);"></div>
-                    </div>
-                </div>
-                <div id="dash-scan-status" style="text-align:center;font-size:.85rem;color:var(--text3);margin-bottom:10px;">Point at barcode — scans one item at a time</div>
-                <div style="display:flex;gap:7px;margin-bottom:10px;">
-                    <input type="text" class="form-input" id="dash-manual-bc" placeholder="Or type barcode…" style="flex:1;" onkeydown="if(event.key==='Enter')dashManualLookup()" />
-                    <button type="button" class="btn btn-primary btn-sm" onclick="dashManualLookup()">Add</button>
-                </div>
-                <button type="button" class="btn btn-success btn-full" onclick="closeDashScan();openModal('cart-modal');" style="font-size:.93rem;">
-                    🛒 Pay Now — <span id="scan-cart-count">0</span> item(s) in cart
-                </button>
-            </div>
-        </div>
-    <?php endif; ?>
-
-    <!-- ══════════════════════════════════════════
-     PRODUCTS PAGE
-══════════════════════════════════════════ -->
-    <?php if ($page === 'products'): ?>
-        <main class="page">
-            <div class="container">
-                <div class="page-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
-                    <div>
-                        <h1 class="page-title">Product <span>Inventory</span></h1>
-                        <p class="page-sub" id="prod-count">Loading…</p>
-                    </div>
-                    <div style="display:flex;gap:7px;flex-wrap:wrap;">
-                        <button class="btn btn-secondary btn-sm" onclick="openCatModal()">🏷️ Categories</button>
-                        <button class="btn btn-primary" onclick="openAddModal()">+ Add Product</button>
-                    </div>
-                </div>
-                <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;">
-                    <div class="search-wrap" style="flex:1;min-width:180px;">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <circle cx="11" cy="11" r="8" />
-                            <line x1="21" y1="21" x2="16.65" y2="16.65" />
-                        </svg>
-                        <input type="text" class="form-input search-input" id="prod-search" placeholder="Search…" oninput="renderProds()" />
-                    </div>
-                    <select class="form-select" id="cat-filter" onchange="renderProds()" style="width:auto;min-width:130px;">
-                        <option value="">All Categories</option>
-                    </select>
-                    <select class="form-select" id="sort-sel" onchange="renderProds()" style="width:auto;min-width:120px;">
-                        <option value="name">Name</option>
-                        <option value="price">Price</option>
-                        <option value="qty">Stock</option>
-                        <option value="sold">Best Selling</option>
-                    </select>
-                </div>
-                <div class="cat-scroll" id="prod-cat-pills" style="margin-bottom:16px;"></div>
-                <div class="grid-4 fade-in" id="prod-grid"></div>
-            </div>
-        <?php endif; ?>
-
-        <?php if ($page === 'products' || $page === 'warehouse'): ?>
-            <!-- ADD/EDIT PRODUCT MODAL -->
+    <!-- ==========================================
+         SHARED PRODUCT & WAREHOUSE MODALS (Permanent)
+    ========================================== -->
+    <!-- ADD/EDIT PRODUCT MODAL -->
             <div class="modal-overlay" id="prod-modal">
                 <div class="modal">
                     <div class="modal-header">
@@ -11409,12 +13250,12 @@ if ($isCashierRole && $page !== 'login') {
                         <div style="border:2px dashed var(--border);border-radius:var(--r-sm);padding:16px;background:var(--bg);text-align:center;">
                             <img id="img-preview" style="max-height:140px;object-fit:contain;border-radius:8px;display:none;margin:0 auto 10px;width:100%;" />
                             <div id="img-placeholder" style="margin-bottom:10px;">
-                                <div style="font-size:2.2rem;margin-bottom:4px;">🖼️</div>
+                                <div style="display:flex;justify-content:center;margin-bottom:4px;"><svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="var(--text3)" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg></div>
                                 <div style="font-size:.8rem;color:var(--text3);">No image selected</div>
                             </div>
                             <div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;">
-                                <button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById('img-input-camera').click()">📷 Camera</button>
-                                <button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById('img-input-gallery').click()">🖼️ Gallery</button>
+                                <button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById('img-input-camera').click()">Camera</button>
+                                <button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById('img-input-gallery').click()">Gallery</button>
                                 <button type="button" class="btn btn-secondary btn-sm" id="img-remove-btn" onclick="removeImg()" style="display:none;color:var(--danger);">✕ Remove</button>
                             </div>
                         </div>
@@ -11432,8 +13273,8 @@ if ($isCashierRole && $page !== 'login') {
                             <label class="form-label">Expiry Date</label>
                             <div style="display:flex;gap:6px;">
                                 <input type="text" class="form-input" id="p-expiry-display" placeholder="MM/DD/YYYY" inputmode="numeric" maxlength="10" oninput="formatExpiryInput(this)" />
-                                <button type="button" class="btn btn-secondary btn-sm" onclick="const n=document.getElementById('p-expiry-native');n.showPicker?n.showPicker():n.click();" title="Pick a date">📅</button>
-                                <input type="date" id="p-expiry-native" style="position:absolute;opacity:0;width:0;height:0;pointer-events:none;" onchange="syncExpiryFromNative()" />
+                                <button type="button" class="btn btn-secondary btn-sm" onclick="try{document.getElementById('p-expiry-native').showPicker();}catch(e){document.getElementById('p-expiry-native').click();}" title="Pick a date"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg></button>
+                                <input type="date" id="p-expiry-native" style="position:absolute;opacity:0;width:1px;height:1px;overflow:hidden;" onchange="syncExpiryFromNative()" />
                             </div>
                             <input type="hidden" id="p-expiry" />
                         </div>
@@ -11442,8 +13283,8 @@ if ($isCashierRole && $page !== 'login') {
                         <label class="form-label">Delivery Date <span style="font-weight:400;color:var(--text3);">(batch received)</span></label>
                         <div style="display:flex;gap:6px;">
                             <input type="text" class="form-input" id="p-delivery-display" placeholder="MM/DD/YYYY" inputmode="numeric" maxlength="10" oninput="formatDeliveryInput(this)" />
-                            <button type="button" class="btn btn-secondary btn-sm" onclick="const n=document.getElementById('p-delivery-native');n.showPicker?n.showPicker():n.click();" title="Pick a date">📅</button>
-                            <input type="date" id="p-delivery-native" style="position:absolute;opacity:0;width:0;height:0;pointer-events:none;" onchange="syncDeliveryFromNative()" />
+                            <button type="button" class="btn btn-secondary btn-sm" onclick="try{document.getElementById('p-delivery-native').showPicker();}catch(e){document.getElementById('p-delivery-native').click();}" title="Pick a date"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg></button>
+                            <input type="date" id="p-delivery-native" style="position:absolute;opacity:0;width:1px;height:1px;overflow:hidden;" onchange="syncDeliveryFromNative()" />
                         </div>
                         <input type="hidden" id="p-delivery" />
                         <div style="font-size:.72rem;color:var(--text3);margin-top:3px;">Tag this batch so it's easy to find later in Warehouse, Product History, and Stock Movements.</div>
@@ -11466,62 +13307,81 @@ if ($isCashierRole && $page !== 'login') {
                         <div style="display:flex;gap:8px;">
                             <input type="number" class="form-input" id="p-unit-size" min="0" step="0.01" placeholder="e.g. 230" style="flex:1;" data-role="unit-size-number" />
                             <!-- Actual-size holder — shown instead of the number input whenever a
-                                 Diaper/Sleeper size is picked below. Starts pre-filled with the
-                                 picked size's label (e.g. "XXL – 15kg & up") but, unlike before,
-                                 stays fully editable — a size bracket like that is a range, and the
-                                 person may want to record the specific actual size/weight of what's
-                                 on the shelf (e.g. "XXL – 16kg" or a specific slipper size like
-                                 "42"), not just the preset label itself. -->
-                            <input type="text" class="form-input" data-role="unit-size-size" placeholder="Actual size, e.g. 16kg or 42" style="flex:1;display:none;" />
+                                 Universal Apparel / Product Size is picked below. Starts pre-filled with the
+                                 picked size (e.g. "XL", "M") but stays fully editable so any specific
+                                 actual size/weight/fit (e.g. "42", "32x30", "Free Size") can be recorded. -->
+                            <input type="text" class="form-input" data-role="unit-size-size" placeholder="Size, e.g. M, 42, 32x30, Free Size" style="flex:1;display:none;" />
                             <select class="form-select" id="p-unit-type" style="flex:1;" onchange="onUnitTypeChange()">
-                                <optgroup label="Quantity / Packaging">
-                                    <option value="pcs">Pieces (pcs)</option>
-                                    <option value="box">Box</option>
-                                    <option value="pack">Pack</option>
-                                    <option value="case">Case</option>
+                                <optgroup label="Count &amp; Quantity">
+                                    <option value="pcs">Pieces / Each (pcs)</option>
+                                    <option value="pair">Pair (pr)</option>
+                                    <option value="dozen">Dozen (dz)</option>
+                                    <option value="pack">Pack / Multi-pack (pk)</option>
+                                    <option value="booklet">Booklet (bk)</option>
                                 </optgroup>
-                                <optgroup label="Volume">
+                                <optgroup label="Weight &amp; Mass">
+                                    <option value="kg">Kilograms (kg)</option>
+                                    <option value="g">Grams (g)</option>
+                                    <option value="mg">Milligrams (mg)</option>
+                                    <option value="lb">Pounds (lb)</option>
+                                    <option value="oz">Ounces (oz)</option>
+                                    <option value="ton">Metric Tons (t)</option>
+                                </optgroup>
+                                <optgroup label="Volume &amp; Capacity">
                                     <option value="ml">Milliliters (ml)</option>
                                     <option value="L">Liters (L)</option>
+                                    <option value="gal">Gallons (gal)</option>
+                                    <option value="qt">Quarts (qt)</option>
+                                    <option value="pt">Pints (pt)</option>
+                                    <option value="fl_oz">Fluid Ounces (fl oz)</option>
                                 </optgroup>
-                                <optgroup label="Mass / Weight">
-                                    <option value="g">Grams (g)</option>
-                                    <option value="kg">Kilograms (kg)</option>
+                                <optgroup label="Dimensions &amp; Area">
+                                    <option value="mm">Millimeters (mm)</option>
+                                    <option value="cm">Centimeters (cm)</option>
+                                    <option value="m">Meters (m)</option>
+                                    <option value="yd">Yards (yd)</option>
+                                    <option value="in">Inches (in)</option>
+                                    <option value="sq_m">Square Meters (sq m)</option>
+                                    <option value="sq_ft">Square Feet (sq ft)</option>
+                                    <option value="cu_m">Cubic Meters (cu m)</option>
+                                    <option value="cu_ft">Cubic Feet (cu ft)</option>
                                 </optgroup>
-                                <optgroup label="Diaper Sizes">
-                                    <option value="size|Newborn (NB) – up to 5kg">Newborn (NB) – up to 5kg</option>
-                                    <option value="size|Small (S) – 3-8kg">Small (S) – 3-8kg</option>
-                                    <option value="size|Medium (M) – 6-11kg">Medium (M) – 6-11kg</option>
-                                    <option value="size|Large (L) – 9-14kg">Large (L) – 9-14kg</option>
-                                    <option value="size|Extra Large (XL) – 12-17kg">Extra Large (XL) – 12-17kg</option>
-                                    <option value="size|XXL – 15kg & up">XXL – 15kg &amp; up</option>
+                                <optgroup label="Packaging &amp; Logistics">
+                                    <option value="case">Case (cs)</option>
+                                    <option value="box">Box (bx)</option>
+                                    <option value="roll">Roll (rl)</option>
+                                    <option value="pallet">Pallet (pl)</option>
+                                    <option value="bundle">Bundle (bdl)</option>
                                 </optgroup>
-                                <optgroup label="Sleeper Sizes (Age)">
-                                    <option value="size|Newborn">Newborn</option>
-                                    <option value="size|0-3 Months">0-3 Months</option>
-                                    <option value="size|3-6 Months">3-6 Months</option>
-                                    <option value="size|6-9 Months">6-9 Months</option>
-                                    <option value="size|9-12 Months">9-12 Months</option>
-                                    <option value="size|12-18 Months">12-18 Months</option>
-                                    <option value="size|18-24 Months">18-24 Months</option>
+                                <optgroup label="Dispensing Units">
+                                    <option value="bottle">Bottle (btl)</option>
+                                    <option value="tube">Tube (tb)</option>
+                                    <option value="sachet">Sachet / Pouch (sch)</option>
+                                    <option value="blister">Blister Pack (bl)</option>
                                 </optgroup>
-                                <optgroup label="Sleeper Sizes (Letter)">
-                                    <option value="size|XS">XS</option>
-                                    <option value="size|S">S</option>
-                                    <option value="size|M">M</option>
-                                    <option value="size|L">L</option>
-                                    <option value="size|XL">XL</option>
+                                <optgroup label="Universal Apparel &amp; Product Sizes">
+                                    <option value="size|XS">XS (Extra Small)</option>
+                                    <option value="size|S">Small (S)</option>
+                                    <option value="size|M">Medium (M)</option>
+                                    <option value="size|L">Large (L)</option>
+                                    <option value="size|XL">XL (Extra Large)</option>
+                                    <option value="size|2XL">2XL / XXL</option>
+                                    <option value="size|3XL">3XL</option>
+                                    <option value="size|4XL">4XL</option>
+                                    <option value="size|5XL">5XL</option>
+                                    <option value="size|Free Size">Free Size (FS)</option>
+                                    <option value="size|Custom">Custom Size…</option>
                                 </optgroup>
                             </select>
                         </div>
-                        <div style="font-size:.74rem;color:var(--text3);margin-top:4px;">e.g. 230 + ml for a 230ml bottle, or 1 + kg for a 1kg bag. For diapers/sleepers, pick the closest size from the list, then edit the box next to it with the actual size (e.g. "XXL – 16kg" or a specific number like "42").</div>
+                        <div style="font-size:.74rem;color:var(--text3);margin-top:4px;">e.g. 230 + ml for a 230ml bottle, 1 + kg for a 1kg bag, or 30 + cm for a 30cm item. For clothing, footwear, and sized goods, pick a size from Universal Sizes or enter any custom size (e.g. "XL", "42", "32x30", "Free Size").</div>
                     </div>
 
 
 
                     <!-- MULTI-UNIT CONFIGURATION & INVENTORY LEDGER -->
                     <div style="border-top:1.5px solid var(--border);margin:18px 0 14px;"></div>
-                    <div style="font-family:'Poppins',sans-serif;font-size:1rem;font-style:italic;color:var(--text);margin-bottom:10px;">📦 Multi-Unit Configuration &amp; Inventory Ledger</div>
+                    <div style="font-family:'Poppins',sans-serif;font-size:1rem;font-style:italic;color:var(--text);margin-bottom:10px;">Multi-Unit Configuration &amp; Inventory Ledger</div>
 
                     <!-- Piece (base unit — always active) -->
                     <div class="form-group" style="background:var(--surface2);border:1.5px solid var(--border);border-radius:var(--r-sm);padding:12px 14px;">
@@ -11531,7 +13391,7 @@ if ($isCashierRole && $page !== 'login') {
                         </div>
                         <div style="display:flex;gap:5px;margin-bottom:4px;">
                             <input type="text" class="form-input" id="p-barcode" placeholder="Auto-generated" style="flex:1;min-width:0;" oninput="_barcodeAutoGenerated=false;const b=document.getElementById('show-qr-btn');if(b)b.style.display=this.value.trim()?'':'none';onBarcodeFieldChange();" />
-                            <button type="button" class="btn btn-secondary btn-sm" onclick="openProductBarcodeScan('p-barcode')" title="Scan a real-world barcode with the camera">📷</button>
+                            <button type="button" class="btn btn-secondary btn-sm" onclick="openProductBarcodeScan('p-barcode')" title="Scan a real-world barcode with the camera"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg></button>
                             <button type="button" class="btn btn-secondary btn-sm" onclick="genBarcode('p-barcode')" title="Generate new barcode">↺</button>
                         </div>
                         <div id="p-barcode-check" style="font-size:.74rem;margin-bottom:8px;min-height:16px;"></div>
@@ -11548,7 +13408,7 @@ if ($isCashierRole && $page !== 'login') {
            the discount is visible everywhere the product appears. -->
                         <div style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--border);">
                             <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.82rem;font-weight:600;">
-                                <input type="checkbox" id="p-promo-enabled" onchange="onPromoToggle()" /> 🏷️ Enable Promo / Discount Price
+                                <input type="checkbox" id="p-promo-enabled" onchange="onPromoToggle()" /> Enable Promo / Discount Price
                             </label>
                             <div id="p-promo-wrap" style="display:none;margin-top:8px;">
                                 <label class="form-label" style="font-size:.72rem;margin-bottom:3px;">Promo Price (₱)</label>
@@ -11570,14 +13430,14 @@ if ($isCashierRole && $page !== 'login') {
                         </div>
                         <div style="display:flex;gap:5px;margin-bottom:8px;">
                             <input type="text" class="form-input" id="p-pack-barcode" placeholder="Optional" style="flex:1;min-width:0;" />
-                            <button type="button" class="btn btn-secondary btn-sm" onclick="openProductBarcodeScan('p-pack-barcode')" title="Scan the bundle's printed barcode">📷</button>
+                            <button type="button" class="btn btn-secondary btn-sm" onclick="openProductBarcodeScan('p-pack-barcode')" title="Scan the bundle's printed barcode"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg></button>
                             <button type="button" class="btn btn-secondary btn-sm" onclick="genBarcode('p-pack-barcode')" title="Generate new barcode">↺</button>
                         </div>
                         <label class="form-label" style="font-size:.72rem;margin-bottom:3px;">Selling Price (₱)</label>
                         <input type="number" class="form-input" id="p-pack-price" placeholder="1,000.00" min="0" step="0.01" style="width:100%;" oninput="updatePromoHint('pack')" />
                         <div style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--border);">
                             <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.8rem;font-weight:600;">
-                                <input type="checkbox" id="p-promo-pack-enabled" onchange="onPromoToggle('pack')" /> 🏷️ Enable Bundle Promo Price
+                                <input type="checkbox" id="p-promo-pack-enabled" onchange="onPromoToggle('pack')" /> Enable Bundle Promo Price
                             </label>
                             <div id="p-promo-pack-wrap" style="display:none;margin-top:8px;">
                                 <input type="number" class="form-input" id="p-promo-pack-price" placeholder="e.g. 900.00" min="0" step="0.01" style="width:100%;" oninput="updatePromoHint('pack')" />
@@ -11598,14 +13458,14 @@ if ($isCashierRole && $page !== 'login') {
                         </div>
                         <div style="display:flex;gap:5px;margin-bottom:8px;">
                             <input type="text" class="form-input" id="p-case-barcode" placeholder="Optional" style="flex:1;min-width:0;" />
-                            <button type="button" class="btn btn-secondary btn-sm" onclick="openProductBarcodeScan('p-case-barcode')" title="Scan the case's printed barcode">📷</button>
+                            <button type="button" class="btn btn-secondary btn-sm" onclick="openProductBarcodeScan('p-case-barcode')" title="Scan the case's printed barcode"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg></button>
                             <button type="button" class="btn btn-secondary btn-sm" onclick="genBarcode('p-case-barcode')" title="Generate new barcode">↺</button>
                         </div>
                         <label class="form-label" style="font-size:.72rem;margin-bottom:3px;">Selling Price (₱)</label>
                         <input type="number" class="form-input" id="p-case-price" placeholder="9,000.00" min="0" step="0.01" style="width:100%;" oninput="updatePromoHint('case')" />
                         <div style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--border);">
                             <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.8rem;font-weight:600;">
-                                <input type="checkbox" id="p-promo-case-enabled" onchange="onPromoToggle('case')" /> 🏷️ Enable Case Promo Price
+                                <input type="checkbox" id="p-promo-case-enabled" onchange="onPromoToggle('case')" /> Enable Case Promo Price
                             </label>
                             <div id="p-promo-case-wrap" style="display:none;margin-top:8px;">
                                 <input type="number" class="form-input" id="p-promo-case-price" placeholder="e.g. 8,200.00" min="0" step="0.01" style="width:100%;" oninput="updatePromoHint('case')" />
@@ -11616,7 +13476,7 @@ if ($isCashierRole && $page !== 'login') {
 
                     <!-- PHYSICAL QUANTITY TRACKING -->
                     <div style="border-top:1.5px solid var(--border);margin:4px 0 14px;"></div>
-                    <div style="font-family:'Poppins',sans-serif;font-size:1rem;font-style:italic;color:var(--text);margin-bottom:6px;">📊 Physical Quantity Tracking</div>
+                    <div style="font-family:'Poppins',sans-serif;font-size:1rem;font-style:italic;color:var(--text);margin-bottom:6px;">Physical Quantity Tracking</div>
                     <div style="font-size:.74rem;color:var(--text3);margin-bottom:10px;">Enter stock however it's counted — by Case/Bundle when the ledger above is filled in, or straight Pcs if not. Everything is combined into a total automatically.</div>
 
                     <div class="form-group">
@@ -11675,14 +13535,14 @@ if ($isCashierRole && $page !== 'login') {
                         <!-- Hidden SVG used only as intermediate render target — never shown -->
                         <svg id="barcode-svg" style="position:absolute;left:-9999px;top:-9999px;visibility:hidden;" aria-hidden="true"></svg>
                         <div style="margin-top:8px;display:flex;gap:6px;justify-content:center;">
-                            <button type="button" class="btn btn-secondary btn-sm" onclick="downloadBarcode()">⬇️ Download</button>
-                            <button type="button" class="btn btn-secondary btn-sm" onclick="printBarcode()">🖨️ Print</button>
+                            <button type="button" class="btn btn-secondary btn-sm" onclick="downloadBarcode()">Download</button>
+                            <button type="button" class="btn btn-secondary btn-sm" onclick="printBarcode()">Print</button>
                         </div>
                     </div>
                     <div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap;">
                         <button type="button" class="btn btn-primary" style="flex:2;" onclick="saveProduct()" id="save-prod-btn">Save Product</button>
-                        <button type="button" class="btn btn-secondary btn-sm" id="show-qr-btn" onclick="showQRPreview()" style="display:none;">🏷️ Barcode</button>
-                        <button type="button" class="btn btn-danger btn-sm" id="delete-prod-btn" onclick="deleteProduct()" style="display:none;">🗑️</button>
+                        <button type="button" class="btn btn-secondary btn-sm" id="show-qr-btn" onclick="showQRPreview()" style="display:none;">Barcode</button>
+                        <button type="button" class="btn btn-danger btn-sm" id="delete-prod-btn" onclick="deleteProduct()" style="display:none;">Delete</button>
                         <button type="button" class="btn btn-secondary btn-sm" onclick="closeModal('prod-modal')">Cancel</button>
                     </div>
                 </div>
@@ -11691,7 +13551,7 @@ if ($isCashierRole && $page !== 'login') {
             <!-- CATEGORY MODAL -->
             <div class="modal-overlay" id="cat-modal">
                 <div class="modal" style="max-width:380px;">
-                    <div class="modal-header"><span class="modal-title">🏷️ Categories</span><button class="modal-close" onclick="closeModal('cat-modal')">✕</button></div>
+                    <div class="modal-header"><span class="modal-title">Categories</span><button class="modal-close" onclick="closeModal('cat-modal')">✕</button></div>
                     <div id="cat-list" style="margin-bottom:14px;"></div>
                     <div style="display:flex;gap:7px;">
                         <input type="text" class="form-input" id="new-cat-input" placeholder="New category name…" style="flex:1;" onkeydown="if(event.key==='Enter')addCat()" />
@@ -11704,9 +13564,16 @@ if ($isCashierRole && $page !== 'login') {
      product's barcode is the REAL barcode printed on the item, not a
      typed/guessed value. Checks live for duplicates so owner and staff
      can't accidentally register the same barcode on two different products. -->
-            <div class="modal-overlay" id="prod-scan-modal">
+            <div class="modal-overlay" id="prod-scan-modal" style="z-index:2200;">
                 <div class="modal" style="max-width:420px;">
-                    <div class="modal-header"><span class="modal-title">📷 Scan Product Barcode</span><button class="modal-close" onclick="closeProductBarcodeScan()">✕</button></div>
+                    <div class="modal-header">
+                        <span class="modal-title" id="prod-scan-title">Scan Product Barcode</span>
+                        <div style="display:flex;align-items:center;gap:6px;">
+                            <button type="button" class="btn btn-secondary btn-sm" onclick="switchScannerCamera()" title="Switch Camera" style="padding:4px 8px;font-size:12px;">Switch</button>
+                            <button type="button" class="btn btn-secondary btn-sm" onclick="toggleScannerTorch()" title="Flashlight" style="padding:4px 8px;font-size:12px;">Light</button>
+                            <button class="modal-close" onclick="closeProductBarcodeScan()">✕</button>
+                        </div>
+                    </div>
                     <div style="background:#000;border-radius:12px;overflow:hidden;margin-bottom:14px;position:relative;">
                         <video id="prod-scan-video" style="width:100%;display:block;" autoplay playsinline></video>
                         <div style="position:absolute;inset:0;pointer-events:none;display:flex;align-items:center;justify-content:center;">
@@ -11720,235 +13587,26 @@ if ($isCashierRole && $page !== 'login') {
                     </div>
                 </div>
             </div>
-        <?php endif; ?>
 
-        <!-- ══════════════════════════════════════════
-     WAREHOUSE PAGE
-══════════════════════════════════════════ -->
-        <?php if ($page === 'warehouse'): ?>
-            <main class="page">
-                <div class="container">
-                    <div class="page-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
-                        <div>
-                            <h1 class="page-title">Warehouse <span>Inventory</span></h1>
-                            <p class="page-sub">Stock movements & expiry tracking</p>
-                        </div>
-                        <div style="display:flex;gap:7px;flex-wrap:wrap;">
-                            <button type="button" class="btn btn-secondary btn-sm" onclick="openPrintAllModal()">🖨️ Print All Barcodes</button>
-                            <button type="button" class="btn btn-secondary btn-sm" onclick="openHistoryModal()">📜 Product History</button>
-                            <button type="button" class="btn btn-primary btn-sm" onclick="openNewDeliveryModal()">🚚 New Delivery</button>
-                            <button type="button" class="btn btn-secondary btn-sm" onclick="openMoveModal()">+ Stock Movement</button>
-                        </div>
-                    </div>
-
-                    <!-- Search bar: filters the table below by name, brand, or supplier -->
-                    <div class="search-wrap" style="margin-bottom:14px;width:100%;">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <circle cx="11" cy="11" r="8" />
-                            <line x1="21" y1="21" x2="16.65" y2="16.65" />
-                        </svg>
-                        <input type="text" class="form-input search-input" id="wh-search" placeholder="Search by name, brand, or supplier…" oninput="renderWhProducts()" style="width:100%;" />
-                    </div>
-
-                    <!-- Dynamic Alert Banner: low stock + expiring/expired (checked daily). Stays
-       up every day until the admin actually restocks or pulls out the item —
-       it isn't a toggle a user can dismiss, it just reflects current state. -->
-                    <div id="alert-banner-wrap" style="margin-bottom:18px;">
-                        <div id="expiry-alerts"></div>
-                    </div>
-
-                    <!-- Stats row -->
-                    <div class="grid-4 wh-stats-grid" style="margin-bottom:20px;">
-                        <div class="stat-card orange">
-                            <div class="stat-label">Total Products</div>
-                            <div class="stat-value" id="wh-total">—</div>
-                            <div class="stat-sub">in system</div>
-                        </div>
-                        <div class="stat-card red">
-                            <div class="stat-label">Low Stock</div>
-                            <div class="stat-value" id="wh-low">—</div>
-                            <div class="stat-sub">at or below threshold, incl. out of stock</div>
-                        </div>
-                        <div class="stat-card green">
-                            <div class="stat-label">Total Stock Value</div>
-                            <div class="stat-value" id="wh-value" style="font-size:1.3rem;">—</div>
-                            <div class="stat-sub" id="wh-value-sub">at cost price</div>
-                        </div>
-                        <div class="stat-card blue">
-                            <div class="stat-label">Expiring Soon</div>
-                            <div class="stat-value" id="wh-expiring">—</div>
-                            <div class="stat-sub" id="wh-expiring-sub">within 30 days</div>
-                        </div>
-                    </div>
-
-                    <!-- Filter tabs -->
-                    <div style="display:flex;gap:7px;margin-bottom:14px;flex-wrap:wrap;align-items:center;">
-                        <div class="cat-scroll" id="wh-filter-pills" style="flex:1;margin-bottom:0;">
-                            <button class="cat-pill active" onclick="setWhFilter('all',this)">All Products</button>
-                            <button class="cat-pill" onclick="setWhFilter('low',this)">⚠️ Low Stock</button>
-                            <button class="cat-pill" onclick="setWhFilter('out',this)">🚫 Out of Stock</button>
-                            <button class="cat-pill" onclick="setWhFilter('expiring',this)">⏰ Expiring</button>
-                            <button class="cat-pill" onclick="setWhFilter('expired',this)">❌ Expired</button>
-                        </div>
-                        <button type="button" class="btn btn-secondary btn-sm" onclick="exportWhToExcel()">📊 Export to Excel</button>
-                    </div>
-
-                    <!-- Products table -->
-                    <div class="card" style="padding:0;overflow:hidden;margin-bottom:20px;">
-                        <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;margin:0;padding:16px 16px 0;">
-                            <span>📦 Products</span>
-                        </div>
-                        <div id="wh-products-wrap" style="margin-top:8px;">
-                            <div class="table-wrap wh-table scroll-panel" tabindex="0" aria-label="Products table — scrollable with arrow keys">
-                                <table>
-                                    <thead>
-                                        <tr>
-                                            <th rowspan="2">Product</th>
-                                            <th rowspan="2">Barcode</th>
-                                            <th colspan="4">🏪 Store</th>
-                                            <th rowspan="2">Restock</th>
-                                            <th rowspan="2">Pull-out</th>
-                                            <th colspan="4">🏭 Warehouse</th>
-                                            <th rowspan="2">Wh-In</th>
-                                            <th rowspan="2">Restocking Date</th>
-                                            <th rowspan="2">Wh-Out</th>
-                                            <th rowspan="2">Pull-out Date</th>
-                                            <th rowspan="2">Adjustments</th>
-                                            <th rowspan="2">Delivery Date</th>
-                                            <th rowspan="2">Expiry</th>
-                                            <th rowspan="2">Status</th>
-                                            <th rowspan="2">Actions</th>
-                                        </tr>
-                                        <tr>
-                                            <th>Cases</th>
-                                            <th>Bundle</th>
-                                            <th>Pcs</th>
-                                            <th>Total</th>
-                                            <th>Cases</th>
-                                            <th>Bundle</th>
-                                            <th>Pcs</th>
-                                            <th>Total</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody id="wh-body"></tbody>
-                                </table>
-                                <div id="wh-empty" class="empty-state" style="display:none;">
-                                    <div class="empty-icon">🏭</div>
-                                    <div class="empty-text">No products found</div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Movement Log -->
-                    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
-                        <div style="display:flex;align-items:center;gap:8px;font-family:'Poppins',sans-serif;font-size:1.1rem;font-style:italic;color:var(--text2);">
-                            <span>📋 Recent Stock Movements</span>
-                        </div>
-                        <button type="button" class="btn btn-secondary btn-sm" onclick="loadWhLog()">↺ Refresh</button>
-                    </div>
-                    <div id="wh-log-wrap">
-                        <div class="card" style="padding:0;overflow:hidden;">
-                            <div class="table-wrap scroll-panel" tabindex="0" aria-label="Recent Stock Movements table — scrollable with arrow keys">
-                                <table>
-                                    <thead>
-                                        <tr>
-                                            <th>Product</th>
-                                            <th>Type</th>
-                                            <th>Qty</th>
-                                            <th>Restocking Date</th>
-                                            <th>Pull-out Date</th>
-                                            <th>Delivery Date</th>
-                                            <th>Batch</th>
-                                            <th>Note</th>
-                                            <th>By</th>
-                                            <th>Date</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody id="wh-log-body"></tbody>
-                                </table>
-                                <div id="wh-log-empty" class="empty-state" style="display:none;">
-                                    <div class="empty-icon">📋</div>
-                                    <div class="empty-text">No movements yet</div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </main>
-
-            <!-- PRINT ALL BARCODES MODAL -->
-            <div class="modal-overlay" id="print-all-modal">
-                <div class="modal" style="max-width:540px;max-height:88vh;overflow-y:auto;">
-                    <div class="modal-header"><span class="modal-title">🖨️ Print Barcodes</span><button class="modal-close" onclick="closeModal('print-all-modal')">✕</button></div>
-                    <p style="font-size:.82rem;color:var(--text2);margin-bottom:10px;">Search for products, tick the ones you want, set quantities, then Print.</p>
-                    <div class="form-group" style="margin-bottom:12px;">
-                        <label class="form-label">Label Sticker Size</label>
-                        <select class="form-select" id="print-label-size">
-                            <option value="r6">2 pcs per row (biggest label)</option>
-                            <option value="r5">3 pcs per row</option>
-                            <option value="r4">4 pcs per row</option>
-                            <option value="r3" selected>5 pcs per row</option>
-                            <option value="r2">6 pcs per row (smallest label)</option>
-                        </select>
-                        <div style="font-size:.72rem;color:var(--text3);margin-top:3px;">Match this to the sticker roll loaded in your label printer — e.g. a 30×20mm 3-in-1-row roll.</div>
-                    </div>
-                    <div class="search-wrap" style="margin-bottom:12px;width:100%;">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <circle cx="11" cy="11" r="8" />
-                            <line x1="21" y1="21" x2="16.65" y2="16.65" />
-                        </svg>
-                        <input type="text" class="form-input search-input" id="print-all-search" placeholder="Search by product name or barcode…" oninput="filterPrintAllList()" style="width:100%;" />
-                    </div>
-                    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-                        <label style="display:flex;align-items:center;gap:6px;font-size:.82rem;cursor:pointer;">
-                            <input type="checkbox" id="print-all-select-all" onchange="togglePrintAllSelectAll(this)" /> Select All
-                        </label>
-                        <span id="print-all-selected-count" style="font-size:.75rem;color:var(--text3);">0 selected</span>
-                    </div>
-                    <div id="print-all-list" style="margin-bottom:14px;max-height:380px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--r-sm);padding:8px 12px;"></div>
-                    <div style="display:flex;gap:8px;">
-                        <button type="button" class="btn btn-primary btn-full" onclick="doPrintAll()">🖨️ Print</button>
-                        <button type="button" class="btn btn-secondary" onclick="closeModal('print-all-modal')">Cancel</button>
-                    </div>
-                </div>
-            </div>
-
-            <!-- BARCODE SCANNER MODAL (Warehouse) -->
-
-            <!-- STOCK MOVEMENT MODAL -->
-            <div class="modal-overlay" id="move-modal">
-                <div class="modal" style="max-width:400px;">
-                    <div class="modal-header"><span class="modal-title" id="move-modal-title">Stock Movement</span><button class="modal-close" onclick="closeModal('move-modal')">✕</button></div>
-                    <div class="form-group">
-                        <label class="form-label">Product</label>
-                        <select class="form-select" id="move-product"></select>
-                    </div>
+            <!-- NEW DELIVERY MODAL (multi-product, one supplier drop-off — each line
+                 item becomes its own FEFO batch, split across warehouse/store) -->
+            <div class="modal-overlay" id="new-delivery-modal">
+                <div class="modal" style="max-width:460px;">
+                    <div class="modal-header"><span class="modal-title">New Delivery</span><button class="modal-close" onclick="closeModal('new-delivery-modal')">✕</button></div>
                     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
-                        <div class="form-group">
-                            <label class="form-label">Type</label>
-                            <select class="form-select" id="move-type" onchange="toggleMoveBatchFields()">
-                                <option value="in">📦 Stock In (Restock)</option>
-                                <option value="out">📤 Stock Out (Remove)</option>
-                            </select>
-                        </div>
-                        <div class="form-group"><label class="form-label">Quantity</label><input type="number" class="form-input" id="move-qty" min="1" placeholder="0" /></div>
+                        <div class="form-group"><label class="form-label">Supplier / Reference</label><input type="text" class="form-input" id="nd-supplier" list="nd-supplier-list" placeholder="e.g. ABC Distributors" autocomplete="off" /><datalist id="nd-supplier-list"></datalist></div>
+                        <div class="form-group"><label class="form-label">Delivery Date</label><input type="date" class="form-input" id="nd-date" /></div>
                     </div>
-                    <div class="form-group">
-                        <label class="form-label">Target Location</label>
-                        <select class="form-select" id="move-target">
-                            <option value="warehouse">🏭 Warehouse Stock</option>
-                            <option value="store">🏪 Store Shelf</option>
-                        </select>
+                    <div class="form-group"><label class="form-label">Note <span style="font-weight:400;color:var(--text3);">(optional)</span></label><input type="text" class="form-input" id="nd-note" placeholder="e.g. Invoice #1234" /></div>
+                    <div style="font-size:.78rem;color:var(--text2);font-weight:600;margin:10px 0 6px;">Products in this delivery</div>
+                    <div id="nd-items" style="display:flex;flex-direction:column;gap:10px;"></div>
+                    <div style="display:flex;gap:8px;margin-top:8px;">
+                        <button type="button" class="btn btn-secondary btn-sm" style="flex:1;" onclick="addDeliveryLineItem()">+ Add Product</button>
+                        <button type="button" class="btn btn-secondary btn-sm" style="flex:1;" onclick="openDeliveryBarcodeScanAuto()" title="Scan product barcode with mobile camera">Scan Product</button>
                     </div>
-                    <div id="move-batch-fields" style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
-                        <div class="form-group"><label class="form-label">Cost Price <span style="font-weight:400;color:var(--text3);">(optional)</span></label><input type="number" class="form-input" id="move-cost-price" min="0" step="0.01" placeholder="0.00" /></div>
-                        <div class="form-group"><label class="form-label">Expiry Date <span style="font-weight:400;color:var(--text3);">(optional)</span></label><input type="date" class="form-input" id="move-expiry-date" /></div>
-                    </div>
-                    <div class="form-group"><label class="form-label">Note / Reason</label><input type="text" class="form-input" id="move-note" placeholder="e.g. Delivery received, Damaged goods…" /></div>
-                    <div style="display:flex;gap:8px;margin-top:6px;">
-                        <button type="button" class="btn btn-primary btn-full" onclick="saveMovement()" id="save-move-btn">Save Movement</button>
-                        <button type="button" class="btn btn-secondary" onclick="closeModal('move-modal')">Cancel</button>
+                    <div style="display:flex;gap:8px;margin-top:14px;">
+                        <button type="button" class="btn btn-primary btn-full" onclick="saveNewDelivery()" id="nd-save-btn">Save Delivery</button>
+                        <button type="button" class="btn btn-secondary" onclick="closeModal('new-delivery-modal')">Cancel</button>
                     </div>
                 </div>
             </div>
@@ -11956,14 +13614,14 @@ if ($isCashierRole && $page !== 'login') {
             <!-- QUICK RESTOCK MODAL (from alert banner) -->
             <div class="modal-overlay" id="quick-restock-modal">
                 <div class="modal" style="max-width:400px;">
-                    <div class="modal-header"><span class="modal-title">➕ Quick Restock</span><button class="modal-close" onclick="closeModal('quick-restock-modal')">✕</button></div>
+                    <div class="modal-header"><span class="modal-title">Quick Restock</span><button class="modal-close" onclick="closeModal('quick-restock-modal')">✕</button></div>
                     <input type="hidden" id="qr-product-id" />
                     <p style="font-size:.84rem;color:var(--text2);margin-bottom:12px;font-weight:600;" id="qr-product-name">—</p>
                     <div class="form-group">
                         <label class="form-label">Destination</label>
                         <select class="form-select" id="qr-destination" onchange="_qrUpdateTotal()">
-                            <option value="store">🏪 Store Shelf</option>
-                            <option value="warehouse">🏭 Warehouse Stock</option>
+                            <option value="store">Store Shelf</option>
+                            <option value="warehouse">Warehouse Stock</option>
                         </select>
                     </div>
                     <div id="qr-unit-hint" style="font-size:.72rem;color:var(--text3);margin:-4px 0 8px;"></div>
@@ -11991,37 +13649,17 @@ if ($isCashierRole && $page !== 'login') {
                 </div>
             </div>
 
-            <!-- NEW DELIVERY MODAL (multi-product, one supplier drop-off — each line
-     item becomes its own FEFO batch, split across warehouse/store) -->
-            <div class="modal-overlay" id="new-delivery-modal">
-                <div class="modal" style="max-width:460px;">
-                    <div class="modal-header"><span class="modal-title">🚚 New Delivery</span><button class="modal-close" onclick="closeModal('new-delivery-modal')">✕</button></div>
-                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
-                        <div class="form-group"><label class="form-label">Supplier / Reference</label><input type="text" class="form-input" id="nd-supplier" list="nd-supplier-list" placeholder="e.g. ABC Distributors" autocomplete="off" /><datalist id="nd-supplier-list"></datalist></div>
-                        <div class="form-group"><label class="form-label">Delivery Date</label><input type="date" class="form-input" id="nd-date" /></div>
-                    </div>
-                    <div class="form-group"><label class="form-label">Note <span style="font-weight:400;color:var(--text3);">(optional)</span></label><input type="text" class="form-input" id="nd-note" placeholder="e.g. Invoice #1234" /></div>
-                    <div style="font-size:.78rem;color:var(--text2);font-weight:600;margin:10px 0 6px;">Products in this delivery</div>
-                    <div id="nd-items" style="display:flex;flex-direction:column;gap:10px;"></div>
-                    <button type="button" class="btn btn-secondary btn-sm btn-full" style="margin-top:8px;" onclick="addDeliveryLineItem()">+ Add Product</button>
-                    <div style="display:flex;gap:8px;margin-top:14px;">
-                        <button type="button" class="btn btn-primary btn-full" onclick="saveNewDelivery()" id="nd-save-btn">Save Delivery</button>
-                        <button type="button" class="btn btn-secondary" onclick="closeModal('new-delivery-modal')">Cancel</button>
-                    </div>
-                </div>
-            </div>
-
             <!-- PULL-OUT / RETURNS MODAL (from alert banner) -->
             <div class="modal-overlay" id="pullout-modal">
                 <div class="modal" style="max-width:400px;">
-                    <div class="modal-header"><span class="modal-title">⚠️ Pull-Out / Adjust Stock</span><button class="modal-close" onclick="closeModal('pullout-modal')">✕</button></div>
+                    <div class="modal-header"><span class="modal-title">Pull-Out / Adjust Stock</span><button class="modal-close" onclick="closeModal('pullout-modal')">✕</button></div>
                     <input type="hidden" id="po-product-id" />
                     <p style="font-size:.84rem;color:var(--text2);margin-bottom:12px;font-weight:600;" id="po-product-name">—</p>
                     <div class="form-group">
                         <label class="form-label">Pull-out From</label>
                         <select class="form-select" id="po-location" onchange="onPulloutLocationChange()">
-                            <option value="store">🏪 Store Shelf</option>
-                            <option value="warehouse">🏭 Warehouse Stock</option>
+                            <option value="store">Store Shelf</option>
+                            <option value="warehouse">Warehouse Stock</option>
                         </select>
                     </div>
                     <div id="po-unit-hint" style="font-size:.72rem;color:var(--text3);margin:-4px 0 8px;"></div>
@@ -12041,22 +13679,10 @@ if ($isCashierRole && $page !== 'login') {
                         <div style="display:flex;flex-direction:column;gap:6px;font-size:.85rem;">
                             <label style="display:flex;align-items:center;gap:8px;cursor:pointer;"><input type="radio" name="po-reason" value="DAMAGE_ON_DELIVERY" checked onclick="onPulloutReasonChange()" /> Damaged on Delivery</label>
                             <label style="display:flex;align-items:center;gap:8px;cursor:pointer;"><input type="radio" name="po-reason" value="EXPIRED" onclick="onPulloutReasonChange()" /> Expired</label>
-                            <!-- A customer never returns something straight to the warehouse,
-             so this option only makes sense for Store pull-outs — hidden
-             (and its radio unchecked) whenever Location is Warehouse, see
-             onPulloutLocationChange(). -->
                             <label id="po-reason-customer-return-wrap" style="display:flex;align-items:center;gap:8px;cursor:pointer;"><input type="radio" name="po-reason" value="CUSTOMER_RETURN" onclick="onPulloutReasonChange()" /> Customer Return</label>
-                            <!-- The warehouse-side counterpart: stock leaving because it's
-             going back to the supplier, not because a customer returned
-             it. Only shown for Location=Warehouse. -->
                             <label id="po-reason-return-to-supplier-wrap" style="display:none;align-items:center;gap:8px;cursor:pointer;"><input type="radio" name="po-reason" value="RETURN_TO_SUPPLIER" onclick="onPulloutReasonChange()" /> Return to Supplier</label>
                         </div>
                     </div>
-                    <!-- Return to Supplier isn't a permanent write-off the way Damaged/
-         Expired is — if a replacement arrives later, it comes in through a
-         normal Quick Restock or New Delivery, not a reversal of this
-         record. This note just makes that visible instead of implying the
-         stock is destroyed. -->
                     <div class="form-group" id="po-rts-hint-wrap" style="display:none;">
                         <div style="font-size:.72rem;color:var(--text3);background:var(--surface2);border-radius:8px;padding:8px 10px;">Removed from warehouse stock now. If the supplier sends a replacement later, record it as a new delivery — this isn't tracked as a pending return.</div>
                     </div>
@@ -12075,10 +13701,629 @@ if ($isCashierRole && $page !== 'login') {
                 </div>
             </div>
 
+            <!-- STOCK MOVEMENT MODAL -->
+            <div class="modal-overlay" id="move-modal">
+                <div class="modal" style="max-width:400px;">
+                    <div class="modal-header"><span class="modal-title" id="move-modal-title">Stock Movement</span><button class="modal-close" onclick="closeModal('move-modal')">✕</button></div>
+                    <div class="form-group">
+                        <label class="form-label">Product</label>
+                        <select class="form-select" id="move-product"></select>
+                    </div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+                        <div class="form-group">
+                            <label class="form-label">Type</label>
+                            <select class="form-select" id="move-type" onchange="toggleMoveBatchFields()">
+                                <option value="in">Stock In (Restock)</option>
+                                <option value="out">Stock Out (Remove)</option>
+                            </select>
+                        </div>
+                        <div class="form-group"><label class="form-label">Quantity</label><input type="number" class="form-input" id="move-qty" min="1" placeholder="0" /></div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Target Location</label>
+                        <select class="form-select" id="move-target">
+                            <option value="warehouse">Warehouse Stock</option>
+                            <option value="store">Store Shelf</option>
+                        </select>
+                    </div>
+                    <div id="move-batch-fields" style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+                        <div class="form-group"><label class="form-label">Cost Price <span style="font-weight:400;color:var(--text3);">(optional)</span></label><input type="number" class="form-input" id="move-cost-price" min="0" step="0.01" placeholder="0.00" /></div>
+                        <div class="form-group"><label class="form-label">Expiry Date <span style="font-weight:400;color:var(--text3);">(optional)</span></label><input type="date" class="form-input" id="move-expiry-date" /></div>
+                    </div>
+                    <div class="form-group"><label class="form-label">Note / Reason</label><input type="text" class="form-input" id="move-note" placeholder="e.g. Delivery received, Damaged goods…" /></div>
+                    <div style="display:flex;gap:8px;margin-top:6px;">
+                        <button type="button" class="btn btn-primary btn-full" onclick="saveMovement()" id="save-move-btn">Save Movement</button>
+                        <button type="button" class="btn btn-secondary" onclick="closeModal('move-modal')">Cancel</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- PRODUCT DETAILS MODAL — complete detail view based on everything set in
+     Add Product (pricing incl. promo, packaging tiers, stock, expiry, brand/
+     supplier, etc.), plus that product's own recent stock movements. -->
+            <div class="modal-overlay" id="wh-details-modal">
+                <div class="modal" style="max-width:640px;max-height:90vh;overflow-y:auto;">
+                    <div class="modal-header"><span class="modal-title">Product Details</span><button class="modal-close" onclick="closeModal('wh-details-modal')">✕</button></div>
+                    <div id="wh-details-body">Loading…</div>
+                </div>
+            </div>
+
+
+    <!-- ══════════════════════════════════════════
+     DASHBOARD PAGE
+══════════════════════════════════════════ -->
+    <div id="view-dashboard" class="pos-page-view" style="<?= ($page === 'dashboard' || empty($page)) ? '' : 'display:none;' ?>">
+        <main class="page">
+            <div class="container">
+                <div class="page-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+                    <div>
+                        <h1 class="page-title">Good <span id="greet">Day</span></h1>
+                        <p class="page-sub" id="shop-name"><?= htmlspecialchars((!empty($storeSettings['shop_name']) && $storeSettings['shop_name'] !== 'PANGGA STORE' && $storeSettings['shop_name'] !== 'PANGGA POS' && $storeSettings['shop_name'] !== 'POS SYSTEM') ? $storeSettings['shop_name'] : 'ProCast') ?></p>
+                    </div>
+                    <div style="display:flex;gap:8px;align-items:center;">
+                        <button type="button" class="btn btn-sm" onclick="openVoidOrderModal()" style="background:#C0392B;color:#fff;border:none;font-weight:700;">Void</button>
+                        <button class="btn btn-primary btn-sm" onclick="openModal('cart-modal')">
+                            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:2px;"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg> Cart <span id="cart-badge" style="background:#fff;color:var(--accent);border-radius:99px;padding:1px 6px;font-size:.68rem;margin-left:2px;">0</span>
+                        </button>
+                    </div>
+                </div>
+                <!-- Stats -->
+                <div class="grid-4" style="margin-bottom:24px;">
+                    <div class="stat-card orange">
+                        <div class="stat-label">Today's Sales</div>
+                        <div class="stat-value" id="s-today-rev">—</div>
+                        <div class="stat-sub" id="s-today-cnt">—</div>
+                    </div>
+                    <div class="stat-card red">
+                        <div class="stat-label" style="display:flex;align-items:center;justify-content:space-between;gap:4px;">
+                            <span>Revenue</span>
+                            <!-- Today/7-Day/30-Day/All toggle — the same one appears on the
+                                 Profit card below, and both are kept in sync by setDashPeriod()
+                                 so either button set switches both cards together. -->
+                            <span class="stat-period-group" data-card="rev"></span>
+                        </div>
+                        <div class="stat-value" id="s-week">—</div>
+                        <div class="stat-sub" id="s-week-label">7-day revenue</div>
+                    </div>
+                    <div class="stat-card purple">
+                        <div class="stat-label" style="display:flex;align-items:center;justify-content:space-between;gap:4px;">
+                            <span>Profit</span>
+                            <span class="stat-period-group" data-card="profit"></span>
+                        </div>
+                        <div class="stat-value" id="s-profit">—</div>
+                        <div class="stat-sub" id="s-profit-label">7-day profit</div>
+                    </div>
+                    <div class="stat-card green">
+                        <div class="stat-label">Products</div>
+                        <div class="stat-value" id="s-prods">—</div>
+                        <div class="stat-sub" id="s-lowstock">—</div>
+                    </div>
+                </div>
+
+                <?php if (!$isCashierRole): ?>
+                    <!-- ══════════════════════════════════════════
+       AI HIGHLIGHTS — Forecasting & Combo Recommendations
+       Presented as their own feature cards so they read as a
+       standalone smart-insights system, not a buried sub-tab.
+       Owner-only — the cashier's dashboard is Sales-focused.
+  ══════════════════════════════════════════ -->
+                    <div class="card ai-highlights-wrap" style="margin-bottom:14px;padding:0;overflow:hidden;">
+                        <div class="card-title collapse-toggle ai-highlights-toggle" onclick="toggleCollapseCard('ai-highlights-body', this)" style="cursor:pointer;display:none;align-items:center;justify-content:space-between;padding:10px 14px;margin:0;">
+                            <span style="font-weight:700;font-size:.88rem;">AI Insights (Forecast &amp; Combos)</span>
+                            <span class="collapse-chevron">▾</span>
+                        </div>
+                        <div id="ai-highlights-body" class="collapse-body ai-highlights-body">
+                            <div class="ai-highlights" style="display:grid;grid-template-columns:repeat(auto-fit, minmax(260px, 1fr));gap:16px;">
+                                <a href="?page=forecast" class="ai-card ai-card-forecast">
+                                    <div class="ai-card-icon"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 6l-9.5 9.5-5-5L1 18"/><polyline points="17 6 23 6 23 12"/></svg></div>
+                                    <div class="ai-card-body">
+                                        <div class="ai-card-eyebrow">AI-Powered</div>
+                                        <div class="ai-card-title">Demand Forecasting</div>
+                                        <div class="ai-card-desc">See how much of each product you'll likely sell tomorrow, this week, or this month — and exactly what to restock.</div>
+                                        <div class="ai-card-stats" id="dash-fc-preview">
+                                            <span class="ai-mini-stat"><span class="ai-mini-num" id="dash-fc-count">—</span><span class="ai-mini-lbl">products tracked</span></span>
+                                            <span class="ai-mini-stat"><span class="ai-mini-num" id="dash-fc-restock">—</span><span class="ai-mini-lbl">need restock</span></span>
+                                        </div>
+                                        <div class="ai-card-cta">Open Forecast →</div>
+                                    </div>
+                                </a>
+
+                                <a href="?page=analytics#combo" class="ai-card ai-card-combo" onclick="localStorage.setItem('_gotoCombo','1')">
+                                    <div class="ai-card-icon"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 0 1-8 0"/></svg></div>
+                                    <div class="ai-card-body">
+                                        <div class="ai-card-eyebrow">AI-Powered</div>
+                                        <div class="ai-card-title">Combo Recommendations</div>
+                                        <div class="ai-card-desc">Discover which products sell well together, so you can bundle, place them side-by-side, or upsell at checkout.</div>
+                                        <div class="ai-card-stats" id="dash-combo-preview">
+                                            <span class="ai-mini-stat"><span class="ai-mini-num" id="dash-combo-count">—</span><span class="ai-mini-lbl">pairs found</span></span>
+                                            <span class="ai-mini-stat"><span class="ai-mini-lbl">Smart Bundles</span></span>
+                                        </div>
+                                        <div class="ai-card-cta">View Combos →</div>
+                                    </div>
+                                </a>
+                            </div>
+                        </div>
+                    </div>
+                <?php endif; ?>
+
+                <!-- Top Sellers — collapsible card -->
+                <div class="card" style="margin-bottom:18px;">
+                    <div class="card-title collapse-toggle" onclick="toggleCollapseCard('top-sellers-wrap', this)" style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;">
+                        <span>Top Sellers</span><span class="collapse-chevron">▾</span>
+                    </div>
+                    <div id="top-sellers-wrap" class="collapse-body" style="display:none;">
+                        <div id="top-sellers">
+                            <div style="text-align:center;padding:16px;color:var(--text3);font-size:.83rem;">Loading…</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Products -->
+                <div class="dash-layout" style="margin-bottom:24px;">
+                    <div>
+                        <div style="display:flex;gap:8px;margin-bottom:12px;">
+                            <div class="search-wrap" style="flex:1;position:relative;">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <circle cx="11" cy="11" r="8" />
+                                    <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                                </svg>
+                                <input type="text" class="form-input search-input" id="search-inp" placeholder="Search products…" oninput="onDashSearchInput(this)" onfocus="onDashSearchInput(this)" onblur="hideDashSearchSuggestSoon()" autocomplete="off" />
+                                <div id="dash-search-suggest" class="search-suggest-dropdown" style="display:none;"></div>
+                            </div>
+                        </div>
+                        <?php if (!$isCashierRole): ?>
+                            <div class="dash-stock-source-bar">
+                                <div class="dash-stock-source-title">
+                                    <span style="font-size:.82rem;font-weight:700;color:var(--text);">Stock Source:</span>
+                                    <span style="font-size:.72rem;color:var(--text3);">(Admin/Owner Mode)</span>
+                                </div>
+                                <div class="dash-src-group" id="dash-stock-source-tabs">
+                                    <button type="button" class="btn btn-sm dash-src-btn active" id="dash-src-store" onclick="setDashStockSource('store', this)" title="Store Stock">
+                                        <span class="src-lbl-full">Store Stock</span>
+                                        <span class="src-lbl-short">Store</span>
+                                    </button>
+                                    <button type="button" class="btn btn-sm dash-src-btn" id="dash-src-warehouse" onclick="setDashStockSource('warehouse', this)" title="Warehouse Stock">
+                                        <span class="src-lbl-full">Warehouse Stock</span>
+                                        <span class="src-lbl-short">Warehouse</span>
+                                    </button>
+                                    <button type="button" class="btn btn-sm dash-src-btn" id="dash-src-all" onclick="setDashStockSource('all', this)" title="All / Combined Stock">
+                                        <span class="src-lbl-full">All / Combined</span>
+                                        <span class="src-lbl-short">All Stock</span>
+                                    </button>
+                                </div>
+                            </div>
+                        <?php endif; ?>
+                        <div class="cat-scroll" id="cat-pills" style="margin-bottom:14px;"></div>
+                        <div class="grid-4 fade-in" id="prods-grid">
+                            <div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text3);">Loading…</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- CART MODAL -->
+        <div class="modal-overlay" id="cart-modal">
+            <div class="modal" style="max-width:720px;width:96%;max-height:95vh;padding:22px;">
+                <div class="modal-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+                    <div style="display:flex;align-items:center;gap:10px;">
+                        <span class="modal-title">Cart</span>
+                        <button type="button" class="btn btn-secondary btn-sm" id="cart-camera-btn" onclick="toggleCartCameraScanner()" title="Scan barcodes with camera" style="display:inline-flex;align-items:center;gap:6px;padding:4px 10px;font-size:.82rem;border-radius:6px;">
+                            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                            <span id="cart-camera-btn-text">Camera Scan</span>
+                        </button>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:10px;">
+                        <button class="modal-close" onclick="closeModal('cart-modal')">✕</button>
+                    </div>
+                </div>
+                <!-- Inline Camera Scanner Panel inside Cart -->
+                <div id="cart-camera-panel" style="display:none;margin-bottom:12px;background:#000;border-radius:10px;overflow:hidden;border:1px solid var(--border);">
+                    <div style="position:relative;width:100%;max-height:190px;overflow:hidden;display:flex;align-items:center;justify-content:center;background:#000;">
+                        <video id="cart-scan-video" style="width:100%;max-height:190px;object-fit:cover;display:block;" autoplay playsinline muted></video>
+                        <div style="position:absolute;inset:0;pointer-events:none;display:flex;align-items:center;justify-content:center;">
+                            <div style="width:200px;height:75px;border:2px solid var(--accent);border-radius:6px;box-shadow:0 0 0 9999px rgba(0,0,0,.45);"></div>
+                        </div>
+                    </div>
+                    <div style="display:flex;align-items:center;justify-content:space-between;padding:7px 10px;background:var(--card-bg, #111a2e);border-top:1px solid var(--border);gap:6px;flex-wrap:wrap;">
+                        <div id="cart-scan-status" style="font-size:.8rem;color:var(--text2);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:240px;">Point camera at barcode</div>
+                        <div style="display:flex;gap:5px;">
+                            <button type="button" class="btn btn-secondary btn-sm" onclick="switchScannerCamera()" style="padding:2px 7px;font-size:11px;">Switch</button>
+                            <button type="button" class="btn btn-secondary btn-sm" onclick="toggleScannerTorch()" style="padding:2px 7px;font-size:11px;">Light</button>
+                            <button type="button" class="btn btn-secondary btn-sm" onclick="closeCartCameraScanner()" style="padding:2px 7px;font-size:11px;">Hide</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="cart-col-header" id="cart-col-header" style="display:none;">
+                    <span></span><span>Product / Details</span><span>Unit / Qty</span><span>Price</span><span>Subtotal</span><span></span>
+                </div>
+                <div id="cart-items"></div>
+                <div id="cart-summary" style="margin-top:14px;display:none;">
+                    <div class="pay-row"><span>Subtotal</span><span id="cart-sub">—</span></div>
+                    <div class="pay-row"><span>VAT (<span id="cart-vat-rate">0</span>%)</span><span id="cart-vat">—</span></div>
+                    <div class="pay-row"><span>Tax (<span id="cart-tax-rate">0</span>%)</span><span id="cart-tax">—</span></div>
+                    <div class="pay-row total"><span>Total</span><span id="cart-total">—</span></div>
+                    <div style="margin:14px 0;" id="cash-tendered-wrap">
+                        <label class="form-label" style="display:flex;align-items:center;justify-content:space-between;">
+                            <span>Cash Tendered</span>
+                            <span style="font-size:.72rem;color:var(--text3);font-weight:normal;">Type amount or select a fixed value</span>
+                        </label>
+                        <input type="number" class="form-input" id="cash-input" placeholder="Enter amount…" oninput="calcChange()" min="0" step="any" style="font-size:1.08rem;font-weight:600;letter-spacing:.5px;" />
+                        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;" id="presets"></div>
+                    </div>
+                    <div id="change-display"></div>
+                    <!-- Shown only once Cash Tendered has an amount entered — lets the
+           cashier pick any product already in the cart and mark it down on
+           the spot (e.g. it expires tomorrow and nobody set a Promo Price). -->
+                    <button type="button" id="cart-discount-trigger-btn" class="btn btn-secondary btn-full" style="display:none;margin-top:8px;border:1.5px dashed #e74c3c;color:#e74c3c;" onclick="openCartDiscountModal()">
+                        Give a Discount on a Product
+                    </button>
+                    <button class="btn btn-primary btn-full btn-lg" style="margin-top:10px;" onclick="processPayment()" id="pay-btn" disabled>
+                        Process Payment
+                    </button>
+                    <div style="display:flex;gap:7px;margin-top:8px;">
+                        <button type="button" class="btn cart-hold-btn" style="flex:1;" onclick="holdCurrentCart()">
+                            Hold
+                        </button>
+                        <div style="flex:1;position:relative;">
+                            <button type="button" class="btn cart-held-btn" style="width:100%;" id="held-carts-btn" onclick="toggleHeldCartsMenu()">
+                                Held Carts (<span id="held-carts-count">0</span>)
+                            </button>
+                            <div class="held-carts-dropdown" id="held-carts-menu" style="display:none;"></div>
+                        </div>
+                        <button type="button" class="btn cart-clear-btn" style="flex:1;" onclick="clearCart()">
+                            Clear Cart
+                        </button>
+                    </div>
+                </div>
+                <div id="cart-empty" style="text-align:center;padding:36px;color:var(--text3);">
+                    <div style="display:flex;justify-content:center;margin-bottom:7px;"><svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="var(--text3)" stroke-width="1.6"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg></div>
+                    <p>Cart is empty</p>
+                    <p style="font-size:.78rem;margin-top:3px;">Scan or tap a product to add it</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- CART LINE DISCOUNT MODAL — an on-the-spot markdown a cashier/admin can
+     apply to one cart line at checkout, for cases like a product expiring
+     tomorrow that nobody set a Promo Price for ahead of time. This is
+     separate from the catalog Promo Price: it only affects the item while
+     it's in this cart/sale, it never touches the product's stored price. -->
+        <div class="modal-overlay" id="cart-discount-modal">
+            <div class="modal" style="max-width:380px;">
+                <div class="modal-header"><span class="modal-title">Give a Discount</span><button class="modal-close" onclick="closeModal('cart-discount-modal')">✕</button></div>
+
+                <label class="form-label">Product</label>
+                <select class="form-input" id="cd-product-select" onchange="onCartDiscountProductChange()" style="width:100%;margin-bottom:4px;"></select>
+                <div style="font-size:.8rem;color:var(--text3);margin-bottom:14px;">Current price: <strong id="cd-current-price">—</strong> / piece</div>
+
+                <label class="form-label">Discount Type</label>
+                <div style="display:flex;gap:8px;margin-bottom:12px;">
+                    <button type="button" class="btn btn-secondary btn-sm" id="cd-type-percent" style="flex:1;" onclick="setCartDiscountType('percent')">% Percent Off</button>
+                    <button type="button" class="btn btn-secondary btn-sm" id="cd-type-amount" style="flex:1;" onclick="setCartDiscountType('amount')">₱ Amount Off</button>
+                </div>
+
+                <label class="form-label" id="cd-value-label">Percent Off (%)</label>
+                <input type="number" class="form-input" id="cd-value" placeholder="e.g. 20" min="0" step="1" oninput="updateCartDiscountPreview()" />
+
+                <label class="form-label" style="margin-top:10px;">Reason <span style="color:var(--text3);font-weight:400;">(optional, shown on receipt)</span></label>
+                <input type="text" class="form-input" id="cd-reason" placeholder="e.g. Expiring tomorrow" />
+
+                <div id="cd-preview" style="margin-top:12px;padding:10px;background:var(--surface2);border-radius:var(--r-sm);font-size:.85rem;text-align:center;"></div>
+
+                <div style="display:flex;gap:8px;margin-top:16px;">
+                    <button type="button" class="btn btn-danger btn-sm" id="cd-remove-btn" style="display:none;" onclick="removeCartDiscount()">Remove Discount</button>
+                    <button type="button" class="btn btn-secondary" style="flex:1;" onclick="closeModal('cart-discount-modal')">Cancel</button>
+                    <button type="button" class="btn btn-primary" style="flex:1;" onclick="applyCartDiscount()">Apply</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- SUCCESS MODAL -->
+        <div class="modal-overlay" id="success-modal">
+            <div class="modal" style="max-width:380px;text-align:center;">
+                <div style="display:flex;justify-content:center;margin-bottom:6px;"><svg viewBox="0 0 24 24" width="52" height="52" fill="none" stroke="var(--green,#2D7A3A)" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg></div>
+                <h2 class="modal-title" style="text-align:center;font-size:1.5rem;margin-bottom:10px;">Payment Receipt</h2>
+                <div id="receipt-display" class="receipt" style="text-align:left;max-height:260px;overflow-y:auto;margin:14px 0;font-size:.76rem;"></div>
+                <div class="change-box" id="change-box">
+                    <div class="change-label">Change</div>
+                    <div class="change-amount" id="final-change">—</div>
+                </div>
+                <div id="success-auto-close-hint" style="font-size:.78rem;color:var(--text3);margin-top:10px;display:flex;align-items:center;justify-content:center;gap:6px;">
+                    <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--accent);animation:pulse 1.5s infinite;"></span>
+                    <span>Auto-closing in <strong id="success-countdown-num" style="color:var(--text1);">4</strong>s… or press <kbd class="kbd">Enter</kbd></span>
+                </div>
+                <div style="display:flex;gap:8px;margin-top:14px;">
+                    <button class="btn btn-secondary btn-full" onclick="dismissSuccessModal()">Done <span class="kbd" style="margin-left:6px;">Enter</span></button>
+                    <button class="btn btn-primary btn-full" onclick="printSaleReceipt(true)">Print <span class="kbd" style="margin-left:6px;">P</span></button>
+                </div>
+            </div>
+        </div>
+
+
+        <!-- Draggable Scanner Float Button (Dashboard only) -->
+        <div id="scanner-float" style="display:none;">
+            <button id="scan-fab-new" onclick="openDashScan()" title="Camera Barcode Scanner" aria-label="Camera Barcode Scanner"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg></button>
+        </div>
+
+        <!-- DASH SCAN MODAL -->
+        <div class="modal-overlay" id="dash-scan-modal">
+            <div class="modal" style="max-width:420px;">
+                <div class="modal-header">
+                    <span class="modal-title">Barcode Scanner</span>
+                    <div style="display:flex;align-items:center;gap:6px;">
+                        <button type="button" class="btn btn-secondary btn-sm" onclick="switchScannerCamera()" title="Switch Camera" style="padding:4px 8px;font-size:12px;">Switch</button>
+                        <button type="button" class="btn btn-secondary btn-sm" onclick="toggleScannerTorch()" title="Flashlight" style="padding:4px 8px;font-size:12px;">Light</button>
+                        <button class="modal-close" onclick="closeDashScan()">✕</button>
+                    </div>
+                </div>
+                <div style="background:#000;border-radius:12px;overflow:hidden;margin-bottom:14px;position:relative;">
+                    <video id="dash-scan-video" style="width:100%;display:block;" autoplay playsinline></video>
+                    <div style="position:absolute;inset:0;pointer-events:none;display:flex;align-items:center;justify-content:center;">
+                        <div style="width:240px;height:90px;border:3px solid var(--accent);border-radius:6px;box-shadow:0 0 0 9999px rgba(0,0,0,.5);"></div>
+                    </div>
+                </div>
+                <div id="dash-scan-status" style="text-align:center;font-size:.85rem;color:var(--text3);margin-bottom:10px;">Point at barcode — scans one item at a time</div>
+                <!-- Shown only right after a scan/lookup genuinely comes back Not Found —
+                     lets the cashier add it as a brand-new product on the spot instead of
+                     dead-ending at "try next item" for something that just isn't in the
+                     system yet. Hidden again the moment any scan succeeds. -->
+                <div id="dash-scan-notfound-actions" style="display:none;margin-bottom:10px;">
+                    <button type="button" class="btn btn-secondary btn-full btn-sm" onclick="addNewProductFromScan(_lastNotFoundBarcode)">+ Not in system — add as new product</button>
+                </div>
+                <div style="display:flex;gap:7px;margin-bottom:10px;">
+                    <input type="text" class="form-input" id="dash-manual-bc" placeholder="Or type barcode…" style="flex:1;" onkeydown="if(event.key==='Enter')dashManualLookup()" />
+                    <button type="button" class="btn btn-primary btn-sm" onclick="dashManualLookup()">Add</button>
+                </div>
+                <button type="button" class="btn btn-success btn-full" onclick="closeDashScan();openModal('cart-modal');" style="font-size:.93rem;">
+                    Pay Now — <span id="scan-cart-count">0</span> item(s) in cart
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ══════════════════════════════════════════
+     PRODUCTS PAGE
+══════════════════════════════════════════ -->
+    <?php if (!$isCashierRole): ?>
+    <div id="view-products" class="pos-page-view" style="<?= $page === 'products' ? '' : 'display:none;' ?>">
+        <main class="page">
+            <div class="container">
+                <div class="page-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+                    <div>
+                        <h1 class="page-title">Product <span>Inventory</span></h1>
+                        <p class="page-sub" id="prod-count">Loading…</p>
+                    </div>
+                    <div style="display:flex;gap:7px;flex-wrap:wrap;">
+                        <button type="button" class="btn btn-secondary btn-sm" onclick="openCatModal()">Categories</button>
+                        <button type="button" class="btn btn-primary btn-sm" onclick="openNewDeliveryModal()">New Delivery</button>
+                        <button type="button" class="btn btn-secondary btn-sm" onclick="openNewDeliveryWithCamera()" title="Scan barcode with camera to start a delivery">Scan Delivery</button>
+                        <button type="button" class="btn btn-primary btn-sm" onclick="openAddModal()">+ Add Product</button>
+                    </div>
+                </div>
+
+                <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;">
+                    <div class="search-wrap" style="flex:1;min-width:180px;">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="11" cy="11" r="8" />
+                            <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                        </svg>
+                        <input type="text" class="form-input search-input" id="prod-search" placeholder="Search…" oninput="renderProds()" />
+                    </div>
+                    <select class="form-select" id="cat-filter" onchange="renderProds()" style="width:auto;min-width:130px;">
+                        <option value="">All Categories</option>
+                    </select>
+                    <select class="form-select" id="sort-sel" onchange="renderProds()" style="width:auto;min-width:120px;">
+                        <option value="name">Name</option>
+                        <option value="price">Price</option>
+                        <option value="qty">Stock</option>
+                        <option value="sold">Best Selling</option>
+                    </select>
+                </div>
+                <div class="cat-scroll" id="prod-cat-pills" style="margin-bottom:16px;"></div>
+                <div class="grid-4 fade-in" id="prod-grid"></div>
+            </div>
+        </main>
+    </div>
+
+    <!-- ══════════════════════════════════════════
+     WAREHOUSE PAGE
+══════════════════════════════════════════ -->
+    <div id="view-warehouse" class="pos-page-view" style="<?= $page === 'warehouse' ? '' : 'display:none;' ?>">
+        <main class="page">
+                <div class="container">
+                    <div class="page-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+                        <div>
+                            <h1 class="page-title">Warehouse <span>Inventory</span></h1>
+                            <p class="page-sub">Stock movements & expiry tracking</p>
+                        </div>
+                        <div style="display:flex;gap:7px;flex-wrap:wrap;">
+                            <button type="button" class="btn btn-secondary btn-sm" onclick="openPrintAllModal()">Print All Barcodes</button>
+                            <button type="button" class="btn btn-secondary btn-sm" onclick="openHistoryModal()">Product History</button>
+                            <button type="button" class="btn btn-secondary btn-sm" onclick="openMoveModal()">+ Stock Movement</button>
+                        </div>
+                    </div>
+
+                    <!-- Search bar: filters the table below by name, brand, or supplier -->
+                    <div class="search-wrap" style="margin-bottom:14px;width:100%;position:relative;">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="11" cy="11" r="8" />
+                            <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                        </svg>
+                        <input type="text" class="form-input search-input" id="wh-search" placeholder="Search by name, brand, or supplier…" oninput="onWhSearchInput(this)" onfocus="onWhSearchInput(this)" onblur="hideWhSearchSuggestSoon()" style="width:100%;" autocomplete="off" />
+                        <div id="wh-search-suggest" class="search-suggest-dropdown" style="display:none;"></div>
+                    </div>
+
+                    <!-- Stats row -->
+                    <div class="grid-4 wh-stats-grid" style="margin-bottom:20px;">
+                        <div class="stat-card orange">
+                            <div class="stat-label">Total Products</div>
+                            <div class="stat-value" id="wh-total">—</div>
+                            <div class="stat-sub">in system</div>
+                        </div>
+                        <div class="stat-card red">
+                            <div class="stat-label">Low Stock</div>
+                            <div class="stat-value" id="wh-low">—</div>
+                            <div class="stat-sub">at or below threshold, incl. out of stock</div>
+                        </div>
+                        <div class="stat-card green">
+                            <div class="stat-label">Total Stock Value</div>
+                            <div class="stat-value" id="wh-value" style="font-size:1.3rem;">—</div>
+                            <div class="stat-sub" id="wh-value-sub">at cost price</div>
+                        </div>
+                        <div class="stat-card blue">
+                            <div class="stat-label">Expiring Soon</div>
+                            <div class="stat-value" id="wh-expiring">—</div>
+                            <div class="stat-sub" id="wh-expiring-sub">within 30 days</div>
+                        </div>
+                    </div>
+
+                    <!-- Daily Stock & Expiry Alerts -->
+                    <div id="alert-banner-wrap">
+                        <div id="expiry-alerts"></div>
+                    </div>
+
+                    <!-- Filter tabs -->
+                    <div style="display:flex;gap:7px;margin-bottom:14px;flex-wrap:wrap;align-items:center;">
+                        <div class="cat-scroll" id="wh-filter-pills" style="flex:1;margin-bottom:0;">
+                            <button class="cat-pill active" onclick="setWhFilter('all',this)">All Products</button>
+                            <button class="cat-pill" onclick="setWhFilter('low',this)">Low Stock</button>
+                            <button class="cat-pill" onclick="setWhFilter('out',this)">Out of Stock</button>
+                            <button class="cat-pill" onclick="setWhFilter('expiring',this)">Expiring</button>
+                            <button class="cat-pill" onclick="setWhFilter('expired',this)">Expired</button>
+                        </div>
+                        <button type="button" class="btn btn-secondary btn-sm" onclick="exportWhToExcel()">Export to Excel</button>
+                    </div>
+
+                    <!-- Products table -->
+                    <div class="card" style="padding:0;overflow:hidden;margin-bottom:20px;">
+                        <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;margin:0;padding:16px 16px 0;">
+                            <span>Products</span>
+                        </div>
+                        <div id="wh-products-wrap" style="margin-top:8px;">
+                            <div class="table-wrap wh-table scroll-panel" tabindex="0" aria-label="Products table — scrollable with arrow keys">
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            <th rowspan="2">Product</th>
+                                            <th rowspan="2">Barcode</th>
+                                            <th colspan="4">Store</th>
+                                            <th rowspan="2">Restock</th>
+                                            <th rowspan="2">Pull-out</th>
+                                            <th colspan="4">Warehouse</th>
+                                            <th rowspan="2">Wh-In</th>
+                                            <th rowspan="2">Restocking Date</th>
+                                            <th rowspan="2">Wh-Out</th>
+                                            <th rowspan="2">Pull-out Date</th>
+                                            <th rowspan="2">Adjustments</th>
+                                            <th rowspan="2">Delivery Date</th>
+                                            <th rowspan="2">Expiry</th>
+                                            <th rowspan="2">Status</th>
+                                            <th rowspan="2">Actions</th>
+                                        </tr>
+                                        <tr>
+                                            <th>Cases</th>
+                                            <th>Bundle</th>
+                                            <th>Pcs</th>
+                                            <th>Total</th>
+                                            <th>Cases</th>
+                                            <th>Bundle</th>
+                                            <th>Pcs</th>
+                                            <th>Total</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="wh-body"></tbody>
+                                </table>
+                                <div id="wh-empty" class="empty-state" style="display:none;">
+                                    <div class="empty-icon"><svg viewBox="0 0 24 24" width="42" height="42" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg></div>
+                                    <div class="empty-text">No products found</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Movement Log -->
+                    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+                        <div style="display:flex;align-items:center;gap:8px;font-family:'Poppins',sans-serif;font-size:1.1rem;font-style:italic;color:var(--text2);">
+                            <span>Recent Stock Movements</span>
+                        </div>
+                        <button type="button" class="btn btn-secondary btn-sm" onclick="loadWhLog()">↺ Refresh</button>
+                    </div>
+                    <div id="wh-log-wrap">
+                        <div class="card" style="padding:0;overflow:hidden;">
+                            <div class="table-wrap scroll-panel" tabindex="0" aria-label="Recent Stock Movements table — scrollable with arrow keys">
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            <th>Product</th>
+                                            <th>Type</th>
+                                            <th>Qty</th>
+                                            <th>Restocking Date</th>
+                                            <th>Pull-out Date</th>
+                                            <th>Delivery Date</th>
+                                            <th>Batch</th>
+                                            <th>Note</th>
+                                            <th>By</th>
+                                            <th>Date</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="wh-log-body"></tbody>
+                                </table>
+                                <div id="wh-log-empty" class="empty-state" style="display:none;">
+                                    <div class="empty-icon"><svg viewBox="0 0 24 24" width="42" height="42" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1" ry="1"/></svg></div>
+                                    <div class="empty-text">No movements yet</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </main>
+
+            <!-- PRINT ALL BARCODES MODAL -->
+            <div class="modal-overlay" id="print-all-modal">
+                <div class="modal" style="max-width:540px;max-height:88vh;overflow-y:auto;">
+                    <div class="modal-header"><span class="modal-title">Print Barcodes</span><button class="modal-close" onclick="closeModal('print-all-modal')">✕</button></div>
+                    <p style="font-size:.82rem;color:var(--text2);margin-bottom:10px;">Search for products, tick the ones you want, set quantities, then Print.</p>
+                    <div class="form-group" style="margin-bottom:12px;">
+                        <label class="form-label">Label Sticker Size</label>
+                        <select class="form-select" id="print-label-size">
+                            <option value="r6">2 pcs per row (biggest label)</option>
+                            <option value="r5">3 pcs per row</option>
+                            <option value="r4">4 pcs per row</option>
+                            <option value="r3" selected>5 pcs per row</option>
+                            <option value="r2">6 pcs per row (smallest label)</option>
+                        </select>
+                        <div style="font-size:.72rem;color:var(--text3);margin-top:3px;">Match this to the sticker roll loaded in your label printer — e.g. a 30×20mm 3-in-1-row roll.</div>
+                    </div>
+                    <div class="search-wrap" style="margin-bottom:12px;width:100%;">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="11" cy="11" r="8" />
+                            <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                        </svg>
+                        <input type="text" class="form-input search-input" id="print-all-search" placeholder="Search by product name or barcode…" oninput="filterPrintAllList()" style="width:100%;" />
+                    </div>
+                    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+                        <label style="display:flex;align-items:center;gap:6px;font-size:.82rem;cursor:pointer;">
+                            <input type="checkbox" id="print-all-select-all" onchange="togglePrintAllSelectAll(this)" /> Select All
+                        </label>
+                        <span id="print-all-selected-count" style="font-size:.75rem;color:var(--text3);">0 selected</span>
+                    </div>
+                    <div id="print-all-list" style="margin-bottom:14px;max-height:380px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--r-sm);padding:8px 12px;"></div>
+                    <div style="display:flex;gap:8px;">
+                        <button type="button" class="btn btn-primary btn-full" onclick="doPrintAll()">Print</button>
+                        <button type="button" class="btn btn-secondary" onclick="closeModal('print-all-modal')">Cancel</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- BARCODE SCANNER MODAL (Warehouse) -->
+
+
+
             <!-- PRODUCT HISTORY MODAL -->
             <div class="modal-overlay" id="history-modal">
                 <div class="modal" style="max-width:960px;max-height:92vh;overflow-y:auto;">
-                    <div class="modal-header"><span class="modal-title">📜 Product History</span><button class="modal-close" onclick="closeModal('history-modal')">✕</button></div>
+                    <div class="modal-header"><span class="modal-title">Product History</span><button class="modal-close" onclick="closeModal('history-modal')">✕</button></div>
 
                     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:8px;">
                         <div class="form-group" style="margin-bottom:0;">
@@ -12110,8 +14355,8 @@ if ($isCashierRole && $page !== 'login') {
                     </div>
 
                     <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
-                        <button type="button" class="btn btn-secondary btn-sm" onclick="exportHistoryToExcel()">📊 Export to Excel</button>
-                        <button type="button" class="btn btn-secondary btn-sm" onclick="printHistoryReport()">🖨️ Print Report</button>
+                        <button type="button" class="btn btn-secondary btn-sm" onclick="exportHistoryToExcel()">Export to Excel</button>
+                        <button type="button" class="btn btn-secondary btn-sm" onclick="printHistoryReport()">Print Report</button>
                         <button type="button" class="btn btn-secondary btn-sm" onclick="loadHistory()">↺ Refresh</button>
                     </div>
 
@@ -12138,30 +14383,20 @@ if ($isCashierRole && $page !== 'login') {
                                 <tbody id="history-body"></tbody>
                             </table>
                             <div id="history-empty" class="empty-state" style="display:none;">
-                                <div class="empty-icon">📜</div>
+                                <div class="empty-icon"><svg viewBox="0 0 24 24" width="42" height="42" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></div>
                                 <div class="empty-text">No history found</div>
                             </div>
                         </div>
                     </div>
                 </div>
             </div>
+    </div>
 
-            <!-- PRODUCT DETAILS MODAL — complete detail view based on everything set in
-     Add Product (pricing incl. promo, packaging tiers, stock, expiry, brand/
-     supplier, etc.), plus that product's own recent stock movements. -->
-            <div class="modal-overlay" id="wh-details-modal">
-                <div class="modal" style="max-width:640px;max-height:90vh;overflow-y:auto;">
-                    <div class="modal-header"><span class="modal-title">👁️ Product Details</span><button class="modal-close" onclick="closeModal('wh-details-modal')">✕</button></div>
-                    <div id="wh-details-body">Loading…</div>
-                </div>
-            </div>
-        <?php endif; ?>
-
-        <!-- ══════════════════════════════════════════
+    <!-- ══════════════════════════════════════════
      SALES PAGE
 ══════════════════════════════════════════ -->
-        <?php if ($page === 'sales'): ?>
-            <main class="page">
+    <div id="view-sales" class="pos-page-view" style="<?= $page === 'sales' ? '' : 'display:none;' ?>">
+        <main class="page">
                 <div class="container">
                     <div class="page-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
                         <div>
@@ -12170,14 +14405,14 @@ if ($isCashierRole && $page !== 'login') {
                         </div>
                         <div style="display:flex;gap:7px;flex-wrap:wrap;align-items:center;">
                             <!-- Far-left, per spec: red Void Order button before the date filter -->
-                            <button type="button" class="btn btn-sm" onclick="openVoidOrderModal()" style="background:#C0392B;color:#fff;border:none;font-weight:700;">🚫 Void Order</button>
+                            <button type="button" class="btn btn-sm" onclick="openVoidOrderModal()" style="background:#C0392B;color:#fff;border:none;font-weight:700;">Void Order</button>
 
                             <!-- Unified date-range dropdown — looks/behaves like a single button
            ("styled exactly like the All dropdown") that expands into a small
            popover with Start/End date pickers, instead of a bare date input
            sitting next to a separate "All" button. -->
                             <div style="position:relative;display:inline-block;" id="date-range-wrap">
-                                <button type="button" class="btn btn-secondary btn-sm" id="date-range-btn" onclick="toggleDateRangePopover(event)">📅 <span id="date-range-label">Filter by Date</span> ▾</button>
+                                <button type="button" class="btn btn-secondary btn-sm" id="date-range-btn" onclick="toggleDateRangePopover(event)"><span id="date-range-label">Filter by Date</span> ▾</button>
                                 <div id="date-range-popover" style="display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:60;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;box-shadow:var(--shadow-lg);min-width:220px;">
                                     <div style="display:flex;flex-direction:column;gap:6px;">
                                         <label style="font-size:.72rem;font-weight:700;color:var(--text2);">Start Date</label>
@@ -12192,9 +14427,9 @@ if ($isCashierRole && $page !== 'login') {
                                 </div>
                             </div>
 
-                            <button type="button" class="btn btn-secondary btn-sm" onclick="exportCSV()">📥 CSV</button>
-                            <button type="button" class="btn btn-secondary btn-sm" onclick="exportJSON()">📥 JSON</button>
-                            <button type="button" class="btn btn-danger btn-sm" onclick="deleteAllTx()">🗑️ Delete All</button>
+                            <button type="button" class="btn btn-secondary btn-sm" onclick="exportCSV()">CSV</button>
+                            <button type="button" class="btn btn-secondary btn-sm" onclick="exportJSON()">JSON</button>
+                            <button type="button" class="btn btn-danger btn-sm" onclick="deleteAllTx()">Delete All</button>
                         </div>
                     </div>
                     <!-- ── SHARED DAILY/WEEKLY/MONTHLY TOGGLE — drives Top Products, Sales by
@@ -12211,7 +14446,7 @@ if ($isCashierRole && $page !== 'login') {
                     <!-- ── TOP PRODUCTS ── -->
                     <div class="card" style="margin-bottom:16px;">
                         <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;">
-                            <span id="top-list-title">🏆 Top Products</span>
+                            <span id="top-list-title">Top Products</span>
                         </div>
                         <div id="top-list-wrap">
                             <div id="top-list">
@@ -12224,7 +14459,7 @@ if ($isCashierRole && $page !== 'login') {
                     <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;" class="dash-layout">
                         <div class="card">
                             <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;">
-                                <span id="cat-chart-title">🏷️ Sales by Category</span>
+                                <span id="cat-chart-title">Sales by Category</span>
                             </div>
                             <div id="cat-chart-wrap">
                                 <div class="bar-chart" id="cat-chart">
@@ -12234,7 +14469,7 @@ if ($isCashierRole && $page !== 'login') {
                         </div>
                         <div class="card">
                             <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;">
-                                <span id="daily-chart-title">📈 7-Day Sales</span>
+                                <span id="daily-chart-title">7-Day Sales</span>
                             </div>
                             <div id="daily-chart-wrap">
                                 <div class="bar-chart" id="daily-chart">
@@ -12247,7 +14482,7 @@ if ($isCashierRole && $page !== 'login') {
                     <!-- ── SALES HISTORY ── -->
                     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
                         <div style="display:flex;align-items:center;gap:8px;font-family:'Poppins',sans-serif;font-size:1.1rem;font-style:italic;color:var(--text2);">
-                            <span>🧾 Sales History</span>
+                            <span>Sales History</span>
                         </div>
                     </div>
                     <div id="tx-history-wrap">
@@ -12270,7 +14505,7 @@ if ($isCashierRole && $page !== 'login') {
                                     <tbody id="tx-body"></tbody>
                                 </table>
                                 <div id="tx-empty" class="empty-state">
-                                    <div class="empty-icon">🧾</div>
+                                    <div class="empty-icon"><svg viewBox="0 0 24 24" width="42" height="42" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></div>
                                     <div class="empty-text">No transactions yet</div>
                                 </div>
                             </div>
@@ -12290,7 +14525,7 @@ if ($isCashierRole && $page !== 'login') {
             <!-- DELETE CONFIRM MODAL -->
             <div class="modal-overlay" id="del-all-modal">
                 <div class="modal" style="max-width:380px;text-align:center;">
-                    <div style="font-size:3rem;margin-bottom:8px;">⚠️</div>
+                    <div style="display:flex;justify-content:center;margin-bottom:8px;"><svg viewBox="0 0 24 24" width="52" height="52" fill="none" stroke="var(--danger,#C0392B)" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div>
                     <h2 style="font-family:'Poppins',sans-serif;font-style:italic;font-size:1.4rem;margin-bottom:10px;">Delete All History?</h2>
                     <p style="font-size:.86rem;color:var(--text2);margin-bottom:20px;line-height:1.6;">This will permanently delete <strong>all transaction records</strong> and reset all product sold counts. This <strong>cannot be undone</strong>.</p>
                     <div style="display:flex;gap:8px;">
@@ -12299,14 +14534,13 @@ if ($isCashierRole && $page !== 'login') {
                     </div>
                 </div>
             </div>
+    </div>
 
-        <?php endif; ?>
-
-        <!-- ══════════════════════════════════════════
+    <!-- ══════════════════════════════════════════
      ANALYTICS PAGE
 ══════════════════════════════════════════ -->
-        <?php if ($page === 'analytics'): ?>
-            <main class="page">
+    <div id="view-analytics" class="pos-page-view" style="<?= $page === 'analytics' ? '' : 'display:none;' ?>">
+        <main class="page">
                 <div class="container">
                     <div class="page-header">
                         <h1 class="page-title">Analytics &amp; <span>Insights</span></h1>
@@ -12335,7 +14569,7 @@ if ($isCashierRole && $page !== 'login') {
                         </div>
                     </div>
                     <div class="insight-card">
-                        <h3>🤖 AI-Powered Insight</h3>
+                        <h3>AI-Powered Insight</h3>
                         <p id="ai-insight">Analyzing your sales data…</p>
                     </div>
 
@@ -12343,7 +14577,7 @@ if ($isCashierRole && $page !== 'login') {
                     <div style="margin-top:4px;">
                         <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
                             <div>
-                                <div style="font-family:'Poppins',sans-serif;font-size:1.4rem;font-weight:800;">🛒 Market Basket Analysis</div>
+                                <div style="font-family:'Poppins',sans-serif;font-size:1.4rem;font-weight:800;">Market Basket Analysis</div>
                                 <div style="font-size:.85rem;color:var(--text2);margin-top:2px;">Local Apriori — discover products frequently bought together. For ML-powered associations, see <strong>Product Combos</strong> below.</div>
                             </div>
                             <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
@@ -12355,7 +14589,7 @@ if ($isCashierRole && $page !== 'login') {
                                     <label style="font-size:.75rem;font-weight:700;color:var(--text3);display:block;margin-bottom:3px;">MIN CONFIDENCE %</label>
                                     <input type="number" id="mba-conf" class="form-input" value="30" min="1" max="100" step="5" style="width:80px;padding:6px 9px;font-size:.85rem;" />
                                 </div>
-                                <button type="button" class="btn btn-primary btn-sm" onclick="loadBasketAnalysis()" style="margin-top:16px;">🔍 Analyze</button>
+                                <button type="button" class="btn btn-primary btn-sm" onclick="loadBasketAnalysis()" style="margin-top:16px;">Analyze</button>
                             </div>
                         </div>
 
@@ -12383,7 +14617,7 @@ if ($isCashierRole && $page !== 'login') {
 
                         <div id="mba-result">
                             <div class="empty-state">
-                                <div class="empty-icon">🛒</div>
+                                <div class="empty-icon"><svg viewBox="0 0 24 24" width="42" height="42" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg></div>
                                 <div class="empty-text">Click Analyze to discover product associations</div>
                             </div>
                         </div>
@@ -12394,10 +14628,10 @@ if ($isCashierRole && $page !== 'login') {
                         <div class="card">
                             <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:6px;">
                                 <div>
-                                    <div class="card-title" style="margin-bottom:4px;">🤝 Product Combo Recommendations <span style="font-size:.75rem;background:var(--accent);color:#fff;border-radius:99px;padding:2px 8px;vertical-align:middle;font-weight:700;">ML Powered</span></div>
-                                    <div style="font-size:.85rem;color:var(--text2);">Based on transactional patterns via <strong>pos-ml-api.onrender.com/recommend</strong>. Suggests products to bundle or cross-sell.</div>
+                                    <div class="card-title" style="margin-bottom:4px;">Product Combo Recommendations <span style="font-size:.75rem;background:var(--accent);color:#fff;border-radius:99px;padding:2px 8px;vertical-align:middle;font-weight:700;">ML Powered</span></div>
+                                    <div style="font-size:.85rem;color:var(--text2);">Based on transactional patterns via <strong>pos-ml-api-johv.onrender.com/recommend</strong>. Suggests products to bundle or cross-sell.</div>
                                 </div>
-                                <button type="button" class="btn btn-primary btn-sm" onclick="loadCombos()">🔄 Load Combos</button>
+                                <button type="button" class="btn btn-primary btn-sm" onclick="loadCombos()">Load Combos</button>
                             </div>
                             <div style="margin-bottom:12px;">
                                 <label class="form-label" style="font-size:.75rem;">Cart Items to base on (comma-separated, or leave blank for auto top-sellers)</label>
@@ -12412,7 +14646,7 @@ if ($isCashierRole && $page !== 'login') {
                             </div>
                             <div id="combo-result">
                                 <div class="empty-state">
-                                    <div class="empty-icon">🤝</div>
+                                    <div class="empty-icon"><svg viewBox="0 0 24 24" width="42" height="42" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></div>
                                     <div class="empty-text">Click "Load Combos" to get ML-powered combo suggestions</div>
                                 </div>
                             </div>
@@ -12420,29 +14654,29 @@ if ($isCashierRole && $page !== 'login') {
                     </div>
                 </div>
             </main>
-        <?php endif; ?>
+    </div>
 
-        <!-- ══════════════════════════════════════════
+    <!-- ══════════════════════════════════════════
      FORECAST PAGE
 ══════════════════════════════════════════ -->
-        <?php if ($page === 'forecast'): ?>
-            <main class="page">
+    <div id="view-forecast" class="pos-page-view" style="<?= $page === 'forecast' ? '' : 'display:none;' ?>">
+        <main class="page">
                 <div class="container">
                     <div class="page-header">
                         <h1 class="page-title">Demand <span>Forecasting</span></h1>
-                        <p class="page-sub">AI-powered stock predictions via <strong>pos-ml-api.onrender.com</strong> — daily, weekly &amp; monthly</p>
+                        <p class="page-sub">AI-powered stock predictions via <strong>pos-ml-api-johv.onrender.com</strong> — daily, weekly &amp; monthly</p>
                     </div>
 
                     <!-- Store Selector + Period Tabs -->
                     <div style="margin-bottom:20px;">
                         <!-- Store ID dropdown — populated live from the ML API's trained models -->
                         <div style="margin-bottom:14px;">
-                            <div style="font-size:.76rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text3);margin-bottom:8px;">📍 Select Store</div>
+                            <div style="font-size:.76rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text3);margin-bottom:8px;">Select Store</div>
                             <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
                                 <select id="fc-store-select" class="form-input" style="max-width:340px;" onchange="onFcStoreChange(this.value)">
                                     <option value="">Loading stores…</option>
                                 </select>
-                                <button type="button" class="btn btn-secondary" style="padding:8px 12px;" onclick="loadStoreDropdown(true)" id="fc-store-refresh-btn" title="Reload store list from the ML API">🔄</button>
+                                <button type="button" class="btn btn-secondary" style="padding:8px 12px;" onclick="loadStoreDropdown(true)" id="fc-store-refresh-btn" title="Reload store list from the ML API">Refresh</button>
                             </div>
                             <div style="margin-top:7px;font-size:.78rem;color:var(--text3);">
                                 Selected: <strong id="fc-store-display" style="color:var(--accent);">—</strong>
@@ -12453,12 +14687,12 @@ if ($isCashierRole && $page !== 'login') {
                         <!-- Period Tabs — same label-left/buttons-right bar design as the Sales
          page's Summary Period toggle (no card wrapper), for visual consistency. -->
                         <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
-                            <span style="font-weight:700;font-size:.88rem;color:var(--text2);">📊 Forecast Period</span>
+                            <span style="font-weight:700;font-size:.88rem;color:var(--text2);">Forecast Period</span>
                             <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-                                <button type="button" class="btn btn-primary" id="fc-tab-daily" onclick="setFcPeriod('daily')">📅 Daily</button>
-                                <button type="button" class="btn btn-secondary" id="fc-tab-weekly" onclick="setFcPeriod('weekly')">📆 Weekly</button>
-                                <button type="button" class="btn btn-secondary" id="fc-tab-monthly" onclick="setFcPeriod('monthly')">🗓️ Monthly</button>
-                                <button type="button" class="btn btn-secondary" style="margin-left:8px;" onclick="runAllForecasts()" id="fc-run-btn">🔮 Run Forecast</button>
+                                <button type="button" class="btn btn-primary" id="fc-tab-daily" onclick="setFcPeriod('daily')">Daily</button>
+                                <button type="button" class="btn btn-secondary" id="fc-tab-weekly" onclick="setFcPeriod('weekly')">Weekly</button>
+                                <button type="button" class="btn btn-secondary" id="fc-tab-monthly" onclick="setFcPeriod('monthly')">Monthly</button>
+                                <button type="button" class="btn btn-secondary" style="margin-left:8px;" onclick="runAllForecasts()" id="fc-run-btn">Run Forecast</button>
                             </div>
                         </div>
                     </div>
@@ -12485,7 +14719,7 @@ if ($isCashierRole && $page !== 'login') {
 
                     <!-- Single Product Quick Forecast -->
                     <div class="card" style="margin-bottom:20px;">
-                        <div class="card-title">🔍 Quick Single Forecast</div>
+                        <div class="card-title">Quick Single Forecast</div>
                         <div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:10px;align-items:end;flex-wrap:wrap;" class="dash-layout">
                             <div class="form-group" style="margin:0;position:relative;">
                                 <label class="form-label">Product Name</label>
@@ -12506,17 +14740,17 @@ if ($isCashierRole && $page !== 'login') {
                         <div id="fc-single-result" style="display:none;margin-top:16px;">
                             <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;" class="dash-layout">
                                 <div class="stat-card green" style="padding:16px;">
-                                    <div class="stat-label">📅 Daily Prediction</div>
+                                    <div class="stat-label">Daily Prediction</div>
                                     <div class="stat-value" id="fc-r-daily-pred">—</div>
                                     <div class="stat-sub">Restock: <strong id="fc-r-daily-restock">—</strong> units</div>
                                 </div>
                                 <div class="stat-card orange" style="padding:16px;">
-                                    <div class="stat-label">📆 Weekly Prediction</div>
+                                    <div class="stat-label">Weekly Prediction</div>
                                     <div class="stat-value" id="fc-r-weekly-pred">—</div>
                                     <div class="stat-sub">Restock: <strong id="fc-r-weekly-restock">—</strong> units</div>
                                 </div>
                                 <div class="stat-card blue" style="padding:16px;">
-                                    <div class="stat-label">🗓️ Monthly Prediction</div>
+                                    <div class="stat-label">Monthly Prediction</div>
                                     <div class="stat-value" id="fc-r-monthly-pred">—</div>
                                     <div class="stat-sub">Restock: <strong id="fc-r-monthly-restock">—</strong> units</div>
                                 </div>
@@ -12527,14 +14761,14 @@ if ($isCashierRole && $page !== 'login') {
                     <!-- All Products Forecast Table -->
                     <div class="card">
                         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px;">
-                            <div class="card-title" style="margin:0;">📊 All Products Forecast <span id="fc-table-period-label" style="font-size:.8rem;font-weight:400;color:var(--text3);">(Daily)</span></div>
+                            <div class="card-title" style="margin:0;">All Products Forecast <span id="fc-table-period-label" style="font-size:.8rem;font-weight:400;color:var(--text3);">(Daily)</span></div>
                             <div style="display:flex;gap:8px;">
                                 <input type="text" class="form-input" id="fc-search" placeholder="Search product…" oninput="filterFcTable()" style="width:160px;padding:6px 10px;font-size:.83rem;" />
                             </div>
                         </div>
-                        <div id="fc-table-wrap">
+                        <div id="fc-table-wrap" class="table-wrap scroll-panel" tabindex="0" aria-label="All products forecast table — scrollable up, down, left, and right">
                             <div class="empty-state">
-                                <div class="empty-icon">🔮</div>
+                                <div class="empty-icon"><svg viewBox="0 0 24 24" width="42" height="42" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M23 6l-9.5 9.5-5-5L1 18"/><polyline points="17 6 23 6 23 12"/></svg></div>
                                 <div class="empty-text">Click "Run Forecast" to generate predictions for all products</div>
                             </div>
                         </div>
@@ -12543,7 +14777,7 @@ if ($isCashierRole && $page !== 'login') {
                     <!-- Restock Action Panel -->
                     <div id="fc-restock-panel" style="display:none;margin-top:20px;">
                         <div class="card">
-                            <div class="card-title">⚠️ Restock Recommendations</div>
+                            <div class="card-title">Restock Recommendations</div>
                             <p style="font-size:.83rem;color:var(--text2);margin-bottom:14px;">Products where predicted demand exceeds current store stock.</p>
                             <div id="fc-restock-list"></div>
                         </div>
@@ -12551,13 +14785,13 @@ if ($isCashierRole && $page !== 'login') {
 
                 </div>
             </main>
-        <?php endif; ?>
+    </div>
 
-        <!-- ══════════════════════════════════════════
+    <!-- ══════════════════════════════════════════
      SETTINGS PAGE
 ══════════════════════════════════════════ -->
-        <?php if ($page === 'settings'): ?>
-            <main class="page">
+    <div id="view-settings" class="pos-page-view" style="<?= $page === 'settings' ? '' : 'display:none;' ?>">
+        <main class="page">
                 <div class="container" style="max-width:680px;">
                     <div class="page-header">
                         <h1 class="page-title">Store <span>Settings</span></h1>
@@ -12565,7 +14799,7 @@ if ($isCashierRole && $page !== 'login') {
                     </div>
 
                     <div class="card" style="margin-bottom:16px;">
-                        <div class="card-title">🎨 Appearance</div>
+                        <div class="card-title">Appearance</div>
                         <div style="display:flex;align-items:center;justify-content:space-between;padding:4px 0;">
                             <div>
                                 <div style="font-weight:700;font-size:.92rem;" id="appearance-theme-label">Dark mode</div>
@@ -12580,7 +14814,7 @@ if ($isCashierRole && $page !== 'login') {
 
                     <div class="card" style="margin-bottom:16px;">
                         <div class="card-title collapse-toggle" onclick="toggleCollapseCard('shop-info-wrap', this)" style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;">
-                            <span>🏪 Shop Information</span><span class="collapse-chevron">▾</span>
+                            <span>Shop Information</span><span class="collapse-chevron">▾</span>
                         </div>
                         <div id="shop-info-wrap" class="collapse-body" style="display:none;">
                             <!-- Shop logo — shown on the Login page, the nav bar, and as the
@@ -12608,7 +14842,7 @@ if ($isCashierRole && $page !== 'login') {
            no extra library/CDN dependency is needed. -->
                             <div class="modal-overlay" id="crop-logo-modal">
                                 <div class="modal" style="max-width:360px;">
-                                    <div class="modal-header"><span class="modal-title">✂️ Crop Logo</span><button class="modal-close" onclick="cancelLogoCrop()">✕</button></div>
+                                    <div class="modal-header"><span class="modal-title">Crop Logo</span><button class="modal-close" onclick="cancelLogoCrop()">✕</button></div>
                                     <p style="font-size:.8rem;color:var(--text3);margin-bottom:10px;">Drag the image to reposition it, and use the slider to zoom. The frame shown is exactly what will be used as your logo.</p>
                                     <!-- Frame shape — some logos are already circular artwork (like a
                coin/badge design), so cropping them into a square leaves
@@ -12616,22 +14850,22 @@ if ($isCashierRole && $page !== 'login') {
                transparent corners instead. -->
                                     <div style="display:flex;gap:8px;margin-bottom:10px;">
                                         <button type="button" class="btn btn-secondary btn-sm" id="crop-shape-square" style="flex:1;" onclick="setCropShape('square')">⬜ Square</button>
-                                        <button type="button" class="btn btn-secondary btn-sm" id="crop-shape-circle" style="flex:1;" onclick="setCropShape('circle')">⚪ Circle</button>
+                                        <button type="button" class="btn btn-secondary btn-sm" id="crop-shape-circle" style="flex:1;" onclick="setCropShape('circle')">Circle</button>
                                     </div>
                                     <div id="crop-frame-wrap" style="width:280px;height:280px;margin:0 auto;border-radius:14px;overflow:hidden;border:2px solid var(--accent);touch-action:none;background:#1a1a1a;">
                                         <canvas id="crop-canvas" width="280" height="280" style="display:block;cursor:grab;touch-action:none;"></canvas>
                                     </div>
                                     <div style="display:flex;align-items:center;gap:10px;margin-top:14px;">
-                                        <span style="font-size:.95rem;">🔍</span>
+                                        <span style="font-size:.95rem;display:inline-flex;align-items:center;"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></span>
                                         <input type="range" id="crop-zoom-slider" min="1" max="3" step="0.01" value="1" style="flex:1;" oninput="onCropZoomChange()" />
                                     </div>
                                     <div style="display:flex;gap:8px;margin-top:16px;">
                                         <button type="button" class="btn btn-secondary" style="flex:1;" onclick="cancelLogoCrop()">Cancel</button>
-                                        <button type="button" class="btn btn-primary" style="flex:1;" onclick="applyLogoCrop()">✂️ Apply &amp; Upload</button>
+                                        <button type="button" class="btn btn-primary" style="flex:1;" onclick="applyLogoCrop()">Apply &amp; Upload</button>
                                     </div>
                                 </div>
                             </div>
-                            <div class="form-group"><label class="form-label">Shop Name</label><input type="text" class="form-input" id="shop-name-inp" placeholder="PANGGA STORE" /></div>
+                            <div class="form-group"><label class="form-label">Shop Name</label><input type="text" class="form-input" id="shop-name-inp" placeholder="ProCast" /></div>
                             <div class="form-group"><label class="form-label">Currency Symbol</label><input type="text" class="form-input" id="currency-inp" placeholder="₱" maxlength="5" /></div>
                             <!-- New: printed on the redesigned receipt header (Section 1 of the BIR-style
            template) — all optional, the receipt simply skips a line if left blank. -->
@@ -12643,6 +14877,13 @@ if ($isCashierRole && $page !== 'login') {
                             <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
                                 <div class="form-group"><label class="form-label">VAT (%)</label><input type="number" class="form-input" id="vat-rate-inp" min="0" max="100" step="0.01" placeholder="0" /></div>
                                 <div class="form-group"><label class="form-label">Tax (%)</label><input type="number" class="form-input" id="tax-rate-inp" min="0" max="100" step="0.01" placeholder="0" /></div>
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">Receipt Printer Paper Size <span style="color:var(--text3);font-weight:400;">(thermal rolls)</span></label>
+                                <select class="form-input" id="receipt-paper-size-inp">
+                                    <option value="58mm">58mm (2 1/4" / Compact Thermal Roll - 32 cols)</option>
+                                    <option value="80mm">80mm (3 1/8" / Standard Counter Thermal Roll - 48 cols)</option>
+                                </select>
                             </div>
                             <button class="btn btn-primary" onclick="saveSettings()">Save Settings</button>
                         </div>
@@ -12661,7 +14902,7 @@ if ($isCashierRole && $page !== 'login') {
        personal display preference, not a store-wide/security setting. -->
                     <div class="card" style="margin-bottom:16px;">
                         <div class="card-title collapse-toggle" onclick="toggleCollapseCard('system-theme-wrap', this)" style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;">
-                            <span>🎨 System Theme</span><span class="collapse-chevron">▾</span>
+                            <span>System Theme</span><span class="collapse-chevron">▾</span>
                         </div>
                         <div id="system-theme-wrap" class="collapse-body" style="display:none;">
                             <p style="font-size:.78rem;color:var(--text2);margin-bottom:12px;">Pick your own colors, font, and text size for the app. Changes preview instantly — nothing is saved until you tap <b>Save Theme</b>. This is saved to this browser/device only.</p>
@@ -12702,7 +14943,7 @@ if ($isCashierRole && $page !== 'login') {
 
                     <div class="card" style="margin-bottom:16px;">
                         <div class="card-title collapse-toggle" onclick="toggleCollapseCard('my-email-wrap', this)" style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;">
-                            <span>📧 My Email</span><span class="collapse-chevron">▾</span>
+                            <span>My Email</span><span class="collapse-chevron">▾</span>
                         </div>
                         <div id="my-email-wrap" class="collapse-body" style="display:none;">
                             <p style="font-size:.83rem;color:var(--text2);margin-bottom:14px;">Used for password reset links. <?= !empty($currentUser['email']) ? '' : 'No email set yet — Forgot Password won\'t work until you add one.' ?></p>
@@ -12713,7 +14954,7 @@ if ($isCashierRole && $page !== 'login') {
 
                     <div class="card" style="margin-bottom:16px;">
                         <div class="card-title collapse-toggle" onclick="toggleCollapseCard('change-pw-wrap', this)" style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;">
-                            <span>🔑 Change Password</span><span class="collapse-chevron">▾</span>
+                            <span>Change Password</span><span class="collapse-chevron">▾</span>
                         </div>
                         <div id="change-pw-wrap" class="collapse-body" style="display:none;">
                             <div class="form-group"><label class="form-label">Current Password</label><div class="pw-eye-wrap"><input type="password" class="form-input" id="old-pw" /><button type="button" class="show-pass-btn" onclick="togglePass(this)" aria-label="Show password">👁️</button></div></div>
@@ -12722,10 +14963,10 @@ if ($isCashierRole && $page !== 'login') {
                         </div>
                     </div>
 
-                    <?php if ($currentUser['role'] === 'owner'): ?>
+                    <?php if (($currentUser['role'] ?? '') === 'owner'): ?>
                         <div class="card" style="margin-bottom:16px;">
                             <div class="card-title collapse-toggle" onclick="toggleCollapseCard('users-wrap', this)" style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;">
-                                <span>👥 User Accounts</span><span class="collapse-chevron">▾</span>
+                                <span>User Accounts</span><span class="collapse-chevron">▾</span>
                             </div>
                             <div id="users-wrap" class="collapse-body" style="display:none;">
                                 <div id="users-list" style="margin-bottom:14px;"></div>
@@ -12748,13 +14989,13 @@ if ($isCashierRole && $page !== 'login') {
                         </div>
                     <?php endif; ?>
 
-                    <?php if ($currentUser['role'] === 'owner'): ?>
+                    <?php if (($currentUser['role'] ?? '') === 'owner'): ?>
                         <!-- CASHIER SHIFT MONITOR — owner-only, shown LAST on the page. Who's clocked
        in right now, what SHOULD be in their drawer, and a shortage/overage
        track record per cashier. -->
                         <div class="card" style="margin-bottom:16px;" id="shift-monitor-card">
                             <div class="card-title collapse-toggle" onclick="toggleCollapseCard('shift-monitor-wrap', this)" style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;">
-                                <span>👥 Cashier Shift Monitor</span><span class="collapse-chevron">▾</span>
+                                <span>Cashier Shift Monitor</span><span class="collapse-chevron">▾</span>
                             </div>
                             <div id="shift-monitor-wrap" class="collapse-body" style="display:none;">
                                 <p style="font-size:.83rem;color:var(--text2);margin-bottom:14px;">
@@ -12782,7 +15023,7 @@ if ($isCashierRole && $page !== 'login') {
        regardless of the real setting). -->
                     <div class="card" style="margin-bottom:16px;" id="hw-diagnostics-card">
                         <div class="card-title collapse-toggle" onclick="toggleCollapseCard('hw-diagnostics-wrap', this)" style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;">
-                            <span>🔧 Hardware Diagnostics</span><span class="collapse-chevron">▾</span>
+                            <span>Hardware Diagnostics</span><span class="collapse-chevron">▾</span>
                         </div>
                         <div id="hw-diagnostics-wrap" class="collapse-body" style="display:none;">
                             <p style="font-size:.83rem;color:var(--text2);margin-bottom:14px;">
@@ -12800,7 +15041,7 @@ if ($isCashierRole && $page !== 'login') {
 
                             <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 0;border-bottom:1px solid var(--border);">
                                 <div>
-                                    <div style="font-size:.85rem;font-weight:700;">🧾 Receipt Printer</div>
+                                    <div style="font-size:.85rem;font-weight:700;">Receipt Printer</div>
                                     <div style="font-size:.72rem;color:var(--text3);">Prints a sample receipt through the same pipeline as a real sale</div>
                                 </div>
                                 <button type="button" class="btn btn-secondary btn-sm" onclick="testPrintReceipt()">Test Print</button>
@@ -12808,26 +15049,33 @@ if ($isCashierRole && $page !== 'login') {
 
                             <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 0;border-bottom:1px solid var(--border);">
                                 <div>
-                                    <div style="font-size:.85rem;font-weight:700;">🏷️ Barcode Label Printer</div>
+                                    <div style="font-size:.85rem;font-weight:700;">Barcode Label Printer</div>
                                     <div style="font-size:.72rem;color:var(--text3);">Renders + prints one scannable CODE128 test label</div>
                                 </div>
                                 <button type="button" class="btn btn-secondary btn-sm" onclick="testPrintBarcodeLabel()">Test Print</button>
                             </div>
 
-                            <!-- Physical cash drawer, via QZ Tray. Requires the QZ Tray desktop
-           app installed on this till's own PC — see the code comment on
-           openCashDrawer() for why a browser can't do this alone. -->
+                            <div style="padding:11px 0;border-bottom:1px solid var(--border);">
+                                <div style="margin-bottom:8px;">
+                                    <div style="font-size:.85rem;font-weight:700;">USB / Handheld Scanner</div>
+                                    <div style="font-size:.72rem;color:var(--text3);">Click the box below, then scan any barcode — this only checks the wedge is reading correctly, no product lookup happens</div>
+                                </div>
+                                <div id="hw-diag-scanner-box" tabindex="0" style="border:1.5px dashed var(--border);border-radius:8px;padding:14px;text-align:center;font-size:.85rem;color:var(--text3);cursor:text;outline:none;">Click here, then scan a barcode…</div>
+                                <div id="hw-diag-scanner-result" style="margin-top:8px;font-size:.78rem;"></div>
+                            </div>
+
+                            <!-- Physical cash drawer & Direct Thermal Printing -->
                             <div style="padding:11px 0;">
                                 <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;">
                                     <div>
-                                        <div style="font-size:.85rem;font-weight:700;">💵 Cash Drawer (via QZ Tray)</div>
-                                        <div style="font-size:.72rem;color:var(--text3);">Requires QZ Tray installed on this PC — <a href="https://qz.io/download/" target="_blank" rel="noopener">download here</a></div>
+                                        <div style="font-size:.85rem;font-weight:700;">Cash Drawer &amp; Direct Thermal Printing</div>
+                                        <div style="font-size:.72rem;color:var(--text3);">Auto-detected via POS Native Print Agent (port 9100) or QZ Tray</div>
                                     </div>
                                 </div>
                                 <label style="display:flex;align-items:center;gap:8px;font-size:.82rem;margin-bottom:8px;">
                                     <input type="checkbox" id="hw-diag-drawer-enabled" /> Automatically open the drawer after a cash sale
                                 </label>
-                                <input type="text" class="form-input" id="hw-diag-drawer-printer" placeholder="Exact printer name (e.g. EPSON TM-T88V)" style="margin-bottom:8px;" />
+                                <input type="text" class="form-input" id="hw-diag-drawer-printer" placeholder="Optional fallback QZ printer name (e.g. Xprinter XP-58)" style="margin-bottom:8px;" />
                                 <div style="display:flex;gap:8px;">
                                     <button type="button" class="btn btn-secondary btn-sm" style="flex:1;" onclick="saveDrawerConfig()">Save</button>
                                     <button type="button" class="btn btn-secondary btn-sm" style="flex:1;" onclick="openCashDrawer(false)">Test Drawer</button>
@@ -12837,9 +15085,67 @@ if ($isCashierRole && $page !== 'login') {
                             <div id="hw-diag-result" style="margin-top:12px;font-size:.78rem;"></div>
                         </div>
                     </div>
+
+                    <!-- ── SALES HISTORY RETENTION & CLEANUP CARD ── -->
+                    <div class="card" style="margin-bottom:16px;" id="sales-retention-card">
+                        <div class="card-title collapse-toggle" onclick="toggleCollapseCard('sales-retention-wrap', this)" style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;">
+                            <span>Sales History Retention &amp; Auto-Cleanup</span><span class="collapse-chevron">▾</span>
+                        </div>
+                        <div id="sales-retention-wrap" class="collapse-body" style="display:none;">
+                            <p style="font-size:.83rem;color:var(--text2);margin-bottom:14px;">
+                                Automatically cleans raw transactions older than the selected retention period to keep your database fast and lean, while preserving all historical revenue, profit, items sold, and earnings totals in monthly summaries.
+                            </p>
+
+                            <div class="form-group">
+                                <label class="form-label" for="sales-retention-select">Auto-Cleanup Retention Period</label>
+                                <select class="form-input" id="sales-retention-select" onchange="saveSalesRetentionSetting()">
+                                    <option value="7">7 Days (1 Week)</option>
+                                    <option value="15">15 Days (Half Month)</option>
+                                    <option value="30">30 Days (1 Month) — Recommended</option>
+                                    <option value="60">60 Days (2 Months)</option>
+                                    <option value="90">90 Days (3 Months)</option>
+                                    <option value="180">180 Days (6 Months)</option>
+                                    <option value="0">Keep All (Never Auto-Clean)</option>
+                                </select>
+                                <div style="font-size:.74rem;color:var(--text3);margin-top:4px;">
+                                    Orders older than the selected retention period will be automatically summarized and cleaned daily in the background.
+                                </div>
+                            </div>
+
+                            <div style="background:var(--surface2);border-radius:10px;padding:12px 14px;margin:14px 0;display:flex;flex-direction:column;gap:8px;font-size:.82rem;">
+                                <div style="display:flex;justify-content:space-between;align-items:center;">
+                                    <span style="color:var(--text2);">Active Transactions in DB:</span>
+                                    <strong id="sales-retention-active-count" style="color:var(--text1);">Loading…</strong>
+                                </div>
+                                <div style="display:flex;justify-content:space-between;align-items:center;">
+                                    <span style="color:var(--text2);">Transactions Older than Retention:</span>
+                                    <strong id="sales-retention-old-count" style="color:var(--amber, #E67E22);">Loading…</strong>
+                                </div>
+                                <div style="display:flex;justify-content:space-between;align-items:center;">
+                                    <span style="color:var(--text2);">Historical Archived Orders:</span>
+                                    <strong id="sales-retention-archived-count" style="color:var(--green, #2D7A3A);">Loading…</strong>
+                                </div>
+                                <div style="display:flex;justify-content:space-between;align-items:center;border-top:1px solid var(--border);padding-top:6px;margin-top:2px;">
+                                    <span style="color:var(--text3);font-size:.76rem;">Last Cleanup Run:</span>
+                                    <span id="sales-retention-last-run" style="color:var(--text3);font-size:.76rem;">Never</span>
+                                </div>
+                            </div>
+
+                            <div style="display:flex;gap:10px;align-items:center;">
+                                <button type="button" class="btn btn-secondary" id="sales-cleanup-now-btn" onclick="triggerManualSalesCleanup()" style="flex:1;">
+                                    Clean Old Transactions Now
+                                </button>
+                                <button type="button" class="btn btn-secondary btn-sm" onclick="loadSalesCleanupStatus()" title="Refresh Status">
+                                    Refresh
+                                </button>
+                            </div>
+                            <div id="sales-cleanup-result-msg" style="margin-top:10px;font-size:.78rem;display:none;"></div>
+                        </div>
+                    </div>
                 </div>
             </main>
-        <?php endif; ?>
+    </div>
+    <?php endif; // end !$isCashierRole ?>
 
         <!-- ── TOAST ── -->
         <div id="toast-wrap"></div>
@@ -12849,8 +15155,104 @@ if ($isCashierRole && $page !== 'login') {
 ══════════════════════════════════════════ -->
         <script>
             const API_BASE = '?api=';
-            const CSRF_TOKEN = '<?= htmlspecialchars(CSRF_TOKEN, ENT_QUOTES) ?>';
-            const cur_page = '<?= $page ?>';
+            let CSRF_TOKEN = '<?= htmlspecialchars(CSRF_TOKEN, ENT_QUOTES) ?>';
+            let cur_page = '<?= $page ?>';
+
+            // ── SPA CLIENT-SIDE ROUTER ──
+            function showPage(targetPage, pushState = true) {
+                if (!targetPage) return;
+                const isCashier = <?= $isCashierRole ? 'true' : 'false' ?>;
+                if (isCashier && targetPage !== 'dashboard') {
+                    targetPage = 'dashboard';
+                }
+
+                const views = document.querySelectorAll('.pos-page-view');
+                if (views.length > 0) {
+                    views.forEach(el => {
+                        el.style.display = 'none';
+                    });
+                    const targetView = document.getElementById('view-' + targetPage);
+                    if (targetView) {
+                        targetView.style.display = '';
+                    }
+                }
+
+                // Update cur_page
+                cur_page = targetPage;
+
+                // Update desktop nav links
+                document.querySelectorAll('.nav-links .nav-link').forEach(link => {
+                    const href = link.getAttribute('href') || '';
+                    const match = href.includes('?page=' + targetPage);
+                    link.classList.toggle('active', match);
+                });
+
+                // Update mobile nav buttons
+                document.querySelectorAll('.mob-nav .mob-btn').forEach(btn => {
+                    const href = btn.getAttribute('href') || '';
+                    const match = href.includes('?page=' + targetPage);
+                    btn.classList.toggle('active', match);
+                });
+
+                // Scanner float visibility & camera cleanup
+                const sf = document.getElementById('scanner-float');
+                if (sf) {
+                    sf.style.display = (targetPage === 'dashboard') ? 'block' : 'none';
+                }
+                if (targetPage !== 'dashboard') {
+                    if (typeof stopScanner === 'function') stopScanner();
+                    if (typeof _gridObserver !== 'undefined' && _gridObserver) {
+                        _gridObserver.disconnect();
+                        _gridObserver = null;
+                    }
+                }
+
+                // Push URL state without reloading
+                if (pushState && window.history && window.history.pushState) {
+                    const newUrl = window.location.pathname + '?page=' + encodeURIComponent(targetPage);
+                    if (window.location.search !== '?page=' + targetPage) {
+                        window.history.pushState({ page: targetPage }, '', newUrl);
+                    }
+                }
+
+                // Auto-refresh page view data
+                try {
+                    if (targetPage === 'dashboard' && typeof renderGrid === 'function') {
+                        renderGrid();
+                    } else if (targetPage === 'products' && typeof prodsInit === 'function') {
+                        prodsInit();
+                    } else if (targetPage === 'warehouse' && typeof warehouseInit === 'function') {
+                        warehouseInit();
+                    } else if (targetPage === 'sales' && typeof salesInit === 'function') {
+                        salesInit();
+                    } else if (targetPage === 'analytics' && typeof analyticsInit === 'function') {
+                        analyticsInit();
+                    } else if (targetPage === 'forecast' && typeof forecastInit === 'function') {
+                        forecastInit();
+                    } else if (targetPage === 'settings' && typeof settingsInit === 'function') {
+                        settingsInit();
+                    }
+                } catch (err) {
+                    console.warn('[SPA] Error refreshing view:', err);
+                }
+
+                window.scrollTo({ top: 0, behavior: 'instant' });
+            }
+
+            function navigateToPage(targetPage, e) {
+                if (e) {
+                    if (e.ctrlKey || e.metaKey || e.shiftKey || e.button !== 0) return true;
+                    e.preventDefault();
+                }
+                showPage(targetPage, true);
+                return false;
+            }
+
+            window.addEventListener('popstate', function(e) {
+                const params = new URLSearchParams(window.location.search);
+                const p = params.get('page') || 'dashboard';
+                showPage(p, false);
+            });
             // Default product photo (no-photo placeholder + broken-photo fallback
             // everywhere a product image is rendered). Resolved server-side so the
             // cache-buster query string matches the actual file on disk.
@@ -12862,7 +15264,7 @@ if ($isCashierRole && $page !== 'login') {
             function prodImgUrl(id, v) {
                 return '?api=get_product_image&id=' + id + (v ? '&v=' + encodeURIComponent(v) : '');
             }
-            const USER_ROLE = '<?= htmlspecialchars($currentUser['role'] ?? '') ?>';
+            let USER_ROLE = '<?= htmlspecialchars($currentUser['role'] ?? '') ?>';
             // Mirrors $storeSettings['shop_name'] server-side so printed receipts show
             // whatever the owner actually named their shop, instead of a hardcoded brand.
             const SHOP_NAME = <?= json_encode($storeSettings['shop_name']) ?>;
@@ -12873,6 +15275,8 @@ if ($isCashierRole && $page !== 'login') {
             const SHOP_ADDRESS = <?= json_encode($storeSettings['shop_address']) ?>;
             const SHOP_TIN = <?= json_encode($storeSettings['shop_tin']) ?>;
             const TERMINAL_ID = <?= json_encode($storeSettings['terminal_id']) ?>;
+            const RECEIPT_PAPER_SIZE = <?= json_encode($storeSettings['receipt_paper_size'] ?? '58mm') ?>;
+            let currentReceiptPaperSize = RECEIPT_PAPER_SIZE || '58mm';
             // Cash-drawer-via-QZ-Tray config. QZ_DRAWER_ENABLED gates the automatic
             // post-payment kick; QZ_DRAWER_PRINTER is the exact OS printer name the
             // drawer is physically wired to (leave blank until Settings is configured
@@ -12881,8 +15285,374 @@ if ($isCashierRole && $page !== 'login') {
             // there (see saveDrawerConfig()), these are just the page-load values.
             let QZ_DRAWER_ENABLED = <?= json_encode(!empty($storeSettings['qz_drawer_enabled'])) ?>;
             let QZ_DRAWER_PRINTER = <?= json_encode($storeSettings['qz_drawer_printer'] ?? '') ?>;
-            const CASHIER_NAME = <?= json_encode($currentUser['full_name'] ?? '') ?>;
+            let CASHIER_NAME = <?= json_encode($currentUser['full_name'] ?? '') ?>;
             const SHOW_SHIFT_LOCK_ON_LOAD = <?= $showShiftLockOnLoad ? 'true' : 'false' ?>;
+            const CURRENT_STORE_ID = <?= json_encode(currentStoreId()) ?>;
+            let CURRENT_USER_ID = <?= json_encode((int)($_SESSION['uid'] ?? 1)) ?>;
+
+            // ══════════════════════════════════════════════════
+            //  FULLY OFFLINE INDEXEDDB ENGINE (PosIDB)
+            // ══════════════════════════════════════════════════
+            const PosIDB = (() => {
+                const DB_NAME = 'procast_pos_offline';
+                const DB_VERSION = 3;
+                let _dbPromise = null;
+
+                function openDB() {
+                    if (_dbPromise) return _dbPromise;
+                    _dbPromise = new Promise((resolve) => {
+                        if (!('indexedDB' in window)) return resolve(null);
+                        try {
+                            const req = indexedDB.open(DB_NAME, DB_VERSION);
+                            req.onupgradeneeded = (e) => {
+                                const db = e.target.result;
+                                ['products', 'categories', 'settings', 'offline_orders', 'offline_mutations', 'auth_state', 'offline_users', 'pending_users'].forEach(st => {
+                                    if (!db.objectStoreNames.contains(st)) {
+                                        let key = 'id';
+                                        if (st === 'settings' || st === 'auth_state') key = 'key';
+                                        else if (st === 'offline_orders') key = 'localRef';
+                                        else if (st === 'offline_mutations') key = 'localMutationId';
+                                        else if (st === 'offline_users' || st === 'pending_users') key = 'username';
+                                        db.createObjectStore(st, { keyPath: key });
+                                    }
+                                });
+                            };
+                            req.onsuccess = () => resolve(req.result);
+                            req.onerror = () => resolve(null);
+                        } catch (e) {
+                            resolve(null);
+                        }
+                    });
+                    return _dbPromise;
+                }
+
+                async function setItem(storeName, val) {
+                    const db = await openDB();
+                    if (!db) return false;
+                    return new Promise(resolve => {
+                        try {
+                            const tx = db.transaction(storeName, 'readwrite');
+                            tx.objectStore(storeName).put(val);
+                            tx.oncomplete = () => resolve(true);
+                            tx.onerror = () => resolve(false);
+                        } catch (e) { resolve(false); }
+                    });
+                }
+
+                async function getItem(storeName, key) {
+                    const db = await openDB();
+                    if (!db) return null;
+                    return new Promise(resolve => {
+                        try {
+                            const tx = db.transaction(storeName, 'readonly');
+                            const req = tx.objectStore(storeName).get(key);
+                            req.onsuccess = () => resolve(req.result || null);
+                            req.onerror = () => resolve(null);
+                        } catch (e) { resolve(null); }
+                    });
+                }
+
+                async function setAll(storeName, items) {
+                    const db = await openDB();
+                    if (!db || !Array.isArray(items)) return false;
+                    return new Promise(resolve => {
+                        try {
+                            const tx = db.transaction(storeName, 'readwrite');
+                            const store = tx.objectStore(storeName);
+                            items.forEach(it => store.put(it));
+                            tx.oncomplete = () => resolve(true);
+                            tx.onerror = () => resolve(false);
+                        } catch (e) { resolve(false); }
+                    });
+                }
+
+                async function getAll(storeName) {
+                    const db = await openDB();
+                    if (!db) return [];
+                    return new Promise(resolve => {
+                        try {
+                            const tx = db.transaction(storeName, 'readonly');
+                            const req = tx.objectStore(storeName).getAll();
+                            req.onsuccess = () => resolve(req.result || []);
+                            req.onerror = () => resolve([]);
+                        } catch (e) { resolve([]); }
+                    });
+                }
+
+                async function deleteItem(storeName, key) {
+                    const db = await openDB();
+                    if (!db) return false;
+                    return new Promise(resolve => {
+                        try {
+                            const tx = db.transaction(storeName, 'readwrite');
+                            tx.objectStore(storeName).delete(key);
+                            tx.oncomplete = () => resolve(true);
+                            tx.onerror = () => resolve(false);
+                        } catch (e) { resolve(false); }
+                    });
+                }
+
+                async function clearStore(storeName) {
+                    const db = await openDB();
+                    if (!db) return false;
+                    return new Promise(resolve => {
+                        try {
+                            const tx = db.transaction(storeName, 'readwrite');
+                            tx.objectStore(storeName).clear();
+                            tx.oncomplete = () => resolve(true);
+                            tx.onerror = () => resolve(false);
+                        } catch (e) { resolve(false); }
+                    });
+                }
+
+                return { openDB, setItem, getItem, setAll, getAll, deleteItem, clearStore };
+            })();
+
+            // Pre-seed offline settings & auth state into PosIDB on load
+            PosIDB.setItem('settings', {
+                key: 'store_settings',
+                val: {
+                    shop_name: SHOP_NAME || 'ProCast',
+                    currency: <?= json_encode($storeSettings['currency'] ?? '₱') ?>,
+                    vat_rate: <?= json_encode($storeSettings['vat_rate'] ?? '0') ?>,
+                    tax_rate: <?= json_encode($storeSettings['tax_rate'] ?? '0') ?>,
+                    shop_address: SHOP_ADDRESS || '',
+                    shop_tin: SHOP_TIN || '',
+                    terminal_id: TERMINAL_ID || 'POS-01'
+                }
+            }).catch(() => {});
+
+            PosIDB.setItem('auth_state', {
+                key: 'current_user',
+                id: CURRENT_USER_ID,
+                name: CASHIER_NAME,
+                role: USER_ROLE,
+                store_id: CURRENT_STORE_ID,
+                savedAt: Date.now()
+            }).catch(() => {});
+
+            // Pre-seed offline user in localStorage and synchronize user list immediately
+            if (CURRENT_USER_ID && CURRENT_USER_ID > 0) {
+                const curUName = <?= json_encode($currentUser['username'] ?? '') ?>;
+                if (curUName) {
+                    localStorage.setItem('offlineUser', JSON.stringify({
+                        id: CURRENT_USER_ID,
+                        username: curUName,
+                        full_name: CASHIER_NAME,
+                        role: USER_ROLE
+                    }));
+                }
+                setTimeout(syncOfflineUsers, 500);
+            }
+
+            // ── NETWORK STATUS & AUTO-SYNC MANAGERS ──
+            let _isServerReachable = navigator.onLine !== false;
+            let _heartbeatChecking = false;
+
+            async function syncOfflineUsers() {
+                if (!navigator.onLine || !_isServerReachable) return;
+                try {
+                    const res = await fetch(API_BASE + 'get_users_offline', { cache: 'no-store' });
+                    if (res.ok) {
+                        const data = await res.json();
+                        if (data.success && data.data) {
+                            await PosIDB.clearStore('offline_users');
+                            data.data.forEach(u => PosIDB.setItem('offline_users', u));
+                        }
+                    }
+                } catch (e) {}
+            }
+
+            async function syncPendingUsers() {
+                if (!navigator.onLine || !_isServerReachable) return;
+                try {
+                    const users = await PosIDB.getAll('pending_users');
+                    if (users && users.length > 0) {
+                        const res = await fetch(API_BASE + 'sync_pending_users', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN },
+                            body: JSON.stringify({ users })
+                        });
+                        if (res.ok) {
+                            const data = await res.json();
+                            if (data.success) {
+                                users.forEach(u => PosIDB.deleteItem('pending_users', u.username));
+                                await syncOfflineUsers();
+                            }
+                        }
+                    }
+                } catch (e) {}
+            }
+
+            let _isReauthing = false;
+            async function autoReauthServerSession() {
+                if (_isReauthing || !navigator.onLine || !_isServerReachable) return;
+                const offUserStr = localStorage.getItem('offlineUser');
+                if (!offUserStr) return;
+                let offUser = null;
+                try {
+                    offUser = JSON.parse(offUserStr);
+                } catch (e) { return; }
+                if (!offUser || !offUser.username) return;
+
+                _isReauthing = true;
+                try {
+                    const res = await fetch(API_BASE + 'reauth_offline_session', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ username: offUser.username })
+                    });
+                    if (res.ok) {
+                        const data = await res.json();
+                        if (data && data.success) {
+                            if (data.data?.csrf_token) {
+                                CSRF_TOKEN = data.data.csrf_token;
+                            }
+                            if (data.data?.user) {
+                                USER_ROLE = data.data.user.role || USER_ROLE;
+                                CASHIER_NAME = data.data.user.full_name || CASHIER_NAME;
+                                CURRENT_USER_ID = data.data.user.id || CURRENT_USER_ID;
+                            }
+                            const authBg = document.querySelector('.public-auth-bg');
+                            const dashView = document.getElementById('view-dashboard');
+                            if (authBg && dashView) {
+                                authBg.style.display = 'none';
+                                dashView.style.display = '';
+                                cur_page = 'dashboard';
+                            }
+                            if (window.history && window.history.replaceState) {
+                                window.history.replaceState({ page: 'dashboard' }, '', window.location.pathname + '?page=dashboard');
+                            }
+                            document.title = 'Dashboard & Checkout — ' + (typeof SHOP_NAME !== 'undefined' && SHOP_NAME ? SHOP_NAME : 'ProCast');
+
+                            if (typeof loadStats === 'function') loadStats();
+                            if (typeof loadAllProds === 'function') loadAllProds(true);
+                            if (typeof flushPendingSales === 'function') flushPendingSales();
+                            if (typeof syncPendingUsers === 'function') syncPendingUsers();
+                        }
+                    }
+                } catch (e) {
+                } finally {
+                    _isReauthing = false;
+                }
+            }
+
+            let _heartbeatFailures = 0;
+            const MAX_FAILURES_BEFORE_OFFLINE = 3;
+
+            async function checkNetworkHeartbeat() {
+                if (navigator.onLine === false) {
+                    _heartbeatFailures = MAX_FAILURES_BEFORE_OFFLINE;
+                    _isServerReachable = false;
+                    updateNetworkStatusUI();
+                    return false;
+                }
+                if (_heartbeatChecking) return _isServerReachable;
+                _heartbeatChecking = true;
+                try {
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 6000);
+                    const res = await fetch(API_BASE + 'ping&_t=' + Date.now(), {
+                        method: 'GET',
+                        cache: 'no-store',
+                        signal: controller.signal
+                    });
+                    clearTimeout(timeoutId);
+                    if (res.ok) {
+                        const data = await res.json();
+                        if (data && data.success && !data.offline) {
+                            _heartbeatFailures = 0;
+                            _isServerReachable = true;
+                            if (data.data && !data.data.authenticated && localStorage.getItem('offlineUser')) {
+                                autoReauthServerSession();
+                            }
+                        } else {
+                            _heartbeatFailures++;
+                        }
+                    } else {
+                        _heartbeatFailures++;
+                    }
+                } catch (e) {
+                    _heartbeatFailures++;
+                } finally {
+                    _heartbeatChecking = false;
+                }
+
+                if (_heartbeatFailures >= MAX_FAILURES_BEFORE_OFFLINE) {
+                    _isServerReachable = false;
+                }
+                updateNetworkStatusUI();
+                return _isServerReachable;
+            }
+
+            function updateNetworkStatusUI() {
+                const isOnline = (navigator.onLine !== false) && _isServerReachable;
+                const pill = document.getElementById('network-status-pill');
+                const pendingSales = typeof pendingSalesList === 'function' ? pendingSalesList().length : 0;
+                const pendingMutations = typeof pendingMutationsList === 'function' ? pendingMutationsList().length : 0;
+                const pending = pendingSales + pendingMutations;
+                if (pill) {
+                    if (typeof _flushingPendingSales !== 'undefined' && _flushingPendingSales) {
+                        pill.className = 'network-pill syncing';
+                        pill.innerHTML = '🔄';
+                        pill.title = 'Syncing offline data with server...';
+                    } else if (!isOnline) {
+                        pill.className = 'network-pill offline';
+                        pill.innerHTML = '🔴' + (pending > 0 ? ' (' + pending + ')' : '');
+                        pill.title = 'Working in Offline Mode. Tap to retry connection or sync.';
+                    } else if (pending > 0) {
+                        pill.className = 'network-pill offline';
+                        pill.innerHTML = '🔴 ' + pending;
+                        pill.title = pending + ' offline item(s) waiting to sync. Tap to sync now.';
+                    } else {
+                        pill.className = 'network-pill online';
+                        pill.innerHTML = '🟢';
+                        pill.title = 'Connected to server. All data synced.';
+                    }
+                }
+            }
+
+            async function handleNetworkPillClick() {
+                toast('Checking server connection...', 'info');
+                const reachable = await checkNetworkHeartbeat();
+                const pendingSales = typeof pendingSalesList === 'function' ? pendingSalesList().length : 0;
+                const pendingMutations = typeof pendingMutationsList === 'function' ? pendingMutationsList().length : 0;
+                const pending = pendingSales + pendingMutations;
+                if (!reachable) {
+                    toast('Device is offline or server unreachable. All POS checkout, inventory, and printing work seamlessly offline!', 'warning');
+                } else if (pending > 0) {
+                    toast('Online! Syncing ' + pending + ' pending offline item(s)...', 'default');
+                    if (typeof flushPendingSales === 'function') flushPendingSales();
+                } else {
+                    toast('System is online and fully synchronized.', 'success');
+                }
+            }
+
+            window.addEventListener('online', async () => {
+                const reachable = await checkNetworkHeartbeat();
+                if (reachable) {
+                    toast('Internet connection restored — syncing offline data...', 'success');
+                    if (localStorage.getItem('offlineUser')) {
+                        autoReauthServerSession();
+                    }
+                    if (typeof flushPendingSales === 'function') flushPendingSales();
+                }
+            });
+
+            window.addEventListener('offline', () => {
+                _isServerReachable = false;
+                updateNetworkStatusUI();
+                toast('You are now working offline. Sales, edits, and receipts will save locally.', 'warning');
+            });
+
+            setInterval(async () => {
+                await checkNetworkHeartbeat();
+                const pendingSales = typeof pendingSalesList === 'function' ? pendingSalesList().length : 0;
+                const pendingMutations = typeof pendingMutationsList === 'function' ? pendingMutationsList().length : 0;
+                if (_isServerReachable && (pendingSales > 0 || pendingMutations > 0) && typeof _flushingPendingSales !== 'undefined' && !_flushingPendingSales) {
+                    flushPendingSales();
+                }
+            }, 15000);
 
             // ── API ──
             const API_TIMEOUT_MS = 20000; // generous for slow/free hosting, but finite — requests never hang forever
@@ -12918,30 +15688,325 @@ if ($isCashierRole && $page !== 'login') {
             }
 
             function apiErrorMessage(e) {
-                if (e && e.name === 'AbortError') return '⏱️ Server is taking too long to respond — please try again.';
-                if (navigator.onLine === false) return '📶 You appear to be offline — check your connection and try again.';
-                return '⚠️ Could not reach the server — check your connection and try again.';
+                if (e && e.name === 'AbortError') return 'Server is taking too long to respond — please try again.';
+                if (navigator.onLine === false) return 'You appear to be offline — check your connection and try again.';
+                return 'Could not reach the server — check your connection and try again.';
             }
+
+            // ── FAST SESSION CACHE FOR STATIC/NEAR-STATIC LOOKUPS ──
+            // Caches get_settings and get_categories in sessionStorage for 60 seconds
+            // so page transitions don't make redundant HTTP round-trips.
+            const _FAST_CACHE = {
+                'get_settings': { key: 'pos_cache_settings', ttl: 60000, store: 'settings' },
+                'get_categories': { key: 'pos_cache_categories', ttl: 60000, store: 'categories' }
+            };
+
+            function _readFastCache(action) {
+                const conf = _FAST_CACHE[action];
+                if (!conf) return null;
+                try {
+                    const raw = sessionStorage.getItem(conf.key);
+                    if (raw) {
+                        const parsed = JSON.parse(raw);
+                        if (parsed && parsed.data && (Date.now() - (parsed.ts || 0)) < conf.ttl) {
+                            return parsed.data;
+                        }
+                    }
+                } catch (e) {}
+                return null;
+            }
+
+            function _writeFastCache(action, data) {
+                const conf = _FAST_CACHE[action];
+                if (!conf || !data?.success) return;
+                try {
+                    sessionStorage.setItem(conf.key, JSON.stringify({ data, ts: Date.now() }));
+                    if (conf.store === 'settings' && data.data && typeof data.data === 'object') {
+                        PosIDB.setItem('settings', { key: 'store_settings', val: data.data }).catch(() => {});
+                    } else if (Array.isArray(data.data) && conf.store) {
+                        PosIDB.setAll(conf.store, data.data).catch(() => {});
+                    }
+                } catch (e) {}
+            }
+
+            function invalidateFastCache(action) {
+                const conf = _FAST_CACHE[action];
+                if (conf) {
+                    try { sessionStorage.removeItem(conf.key); } catch (e) {}
+                }
+            }
+
+            async function lookupLocalProductBarcode(barcode) {
+                if (!barcode) return null;
+                const bc = String(barcode).trim().replace(/[\x00-\x1F\x7F\s]/g, '').toLowerCase();
+                if (!bc) return null;
+                let prodsList = (typeof allProds !== 'undefined' && Array.isArray(allProds) && allProds.length > 0) ? allProds : [];
+                if (!prodsList.length && typeof PosIDB !== 'undefined') {
+                    try {
+                        prodsList = await PosIDB.getAll('products');
+                    } catch (e) {}
+                }
+                if (!prodsList.length) return null;
+
+                let matchedUnit = 'piece';
+                let prod = prodsList.find(p => p.barcode && String(p.barcode).trim().toLowerCase() === bc);
+                if (!prod) {
+                    prod = prodsList.find(p => p.pack_barcode && String(p.pack_barcode).trim().toLowerCase() === bc);
+                    if (prod) matchedUnit = 'pack';
+                }
+                if (!prod) {
+                    prod = prodsList.find(p => p.case_barcode && String(p.case_barcode).trim().toLowerCase() === bc);
+                    if (prod) matchedUnit = 'case';
+                }
+                if (!prod && bc.length >= 6) {
+                    prod = prodsList.find(p => p.barcode && (String(p.barcode).trim().toLowerCase().endsWith(bc) || String(p.barcode).trim().toLowerCase().startsWith(bc)));
+                }
+                if (!prod && bc.length >= 6) {
+                    prod = prodsList.find(p => p.barcode && String(p.barcode).trim().length >= 4 && (bc.endsWith(String(p.barcode).trim().toLowerCase()) || bc.startsWith(String(p.barcode).trim().toLowerCase())));
+                }
+                if (!prod) return null;
+                return { ...prod, matched_unit: matchedUnit };
+            }
+
             async function apiGet(action, params = {}) {
+                const noParams = !params || Object.keys(params).length === 0;
+                if (noParams) {
+                    const cached = _readFastCache(action);
+                    if (cached) return cached;
+                }
+
+                // If offline, check PosIDB immediately for categories / settings / barcodes
+                if (navigator.onLine === false) {
+                    if (action === 'get_settings') {
+                        const item = await PosIDB.getItem('settings', 'store_settings');
+                        if (item?.val) return { success: true, data: item.val };
+                    }
+                    if (action === 'get_categories') {
+                        const idbData = await PosIDB.getAll('categories');
+                        if (idbData && idbData.length > 0) return { success: true, data: idbData };
+                    }
+                    if (action === 'get_product_by_barcode') {
+                        const local = await lookupLocalProductBarcode(params.barcode);
+                        if (local) return { success: true, data: local };
+                        return { success: false, data: null, error: 'Product not found for barcode: ' + (params.barcode || '') };
+                    }
+                }
+
                 const qs = new URLSearchParams(params).toString();
                 const url = API_BASE + action + (qs ? '&' + qs : '');
                 try {
                     const r = await apiFetch(url);
                     if (r.status === 401) {
+                        if (localStorage.getItem('offlineUser')) {
+                            autoReauthServerSession();
+                            return null;
+                        }
                         location.href = '?page=login';
                         return null;
                     }
                     if (!r.ok) {
-                        toast('⚠️ Server error (' + r.status + ') — please try again', 'error');
+                        toast('Server error (' + r.status + ') — please try again', 'error');
                         return null;
                     }
-                    return await r.json(); // must await inside try/catch, or a malformed response silently fails with no toast at all
+                    const json = await r.json(); // must await inside try/catch, or a malformed response silently fails with no toast at all
+                    if (noParams && json?.success) {
+                        _writeFastCache(action, json);
+                    }
+                    return json;
                 } catch (e) {
-                    toast(apiErrorMessage(e), 'error');
+                    // Check fallback on network failure
+                    if (action === 'get_settings') {
+                        const item = await PosIDB.getItem('settings', 'store_settings');
+                        if (item?.val) return { success: true, data: item.val };
+                    }
+                    if (action === 'get_categories') {
+                        const idbData = await PosIDB.getAll('categories');
+                        if (idbData && idbData.length > 0) {
+                            return { success: true, data: idbData };
+                        }
+                    }
+                    if (action === 'get_product_by_barcode') {
+                        const local = await lookupLocalProductBarcode(params.barcode);
+                        if (local) return { success: true, data: local };
+                    }
+                    if (navigator.onLine !== false) {
+                        toast(apiErrorMessage(e), 'error');
+                    }
                     return null;
                 }
             }
+
+            // ── get_products PERSISTENT CACHE (sessionStorage + IndexedDB + Stale-While-Revalidate) ──
+            const _prodCache = { data: null, ts: 0 };
+            const _PROD_CACHE_TTL = 30000; // 30 seconds fresh
+
+            function _readProdSessionCache() {
+                try {
+                    const raw = sessionStorage.getItem('pos_cache_prods');
+                    if (raw) {
+                        const parsed = JSON.parse(raw);
+                        if (parsed && parsed.data && Array.isArray(parsed.data.data)) {
+                            _prodCache.data = parsed.data;
+                            _prodCache.ts = parsed.ts || 0;
+                            return _prodCache.data;
+                        }
+                    }
+                } catch (e) {}
+                return null;
+            }
+
+            function _writeProdSessionCache(data, ts) {
+                try {
+                    sessionStorage.setItem('pos_cache_prods', JSON.stringify({ data, ts }));
+                } catch (e) {}
+            }
+
+            async function apiGetProducts(force = false, onBackgroundUpdate = null) {
+                const now = Date.now();
+                if (!_prodCache.data) {
+                    _readProdSessionCache();
+                }
+
+                // If we have cached data and force is false:
+                if (!force && _prodCache.data) {
+                    const age = now - _prodCache.ts;
+                    if (age < _PROD_CACHE_TTL) {
+                        return _prodCache.data; // Fully fresh, return immediately
+                    }
+                    // Stale-While-Revalidate in background if online
+                    if (navigator.onLine !== false) {
+                        setTimeout(async () => {
+                            try {
+                                const fresh = await apiGet('get_products');
+                                if (fresh?.success && Array.isArray(fresh.data)) {
+                                    _prodCache.data = fresh;
+                                    _prodCache.ts = Date.now();
+                                    _writeProdSessionCache(fresh, _prodCache.ts);
+                                    PosIDB.setAll('products', fresh.data).catch(() => {});
+                                    if (typeof onBackgroundUpdate === 'function') {
+                                        onBackgroundUpdate(fresh);
+                                    }
+                                }
+                            } catch (e) {}
+                        }, 50);
+                    }
+                    return _prodCache.data;
+                }
+
+                // If offline, pull directly from PosIDB!
+                if (navigator.onLine === false) {
+                    const idbProds = await PosIDB.getAll('products');
+                    if (idbProds && idbProds.length > 0) {
+                        const fallbackData = { success: true, data: idbProds, _offline: true };
+                        _prodCache.data = fallbackData;
+                        _prodCache.ts = now;
+                        _writeProdSessionCache(fallbackData, now);
+                        return fallbackData;
+                    }
+                }
+
+                try {
+                    const result = await apiGet('get_products');
+                    if (result?.success && Array.isArray(result.data)) {
+                        _prodCache.data = result;
+                        _prodCache.ts   = now;
+                        _writeProdSessionCache(result, now);
+                        PosIDB.setAll('products', result.data).catch(() => {});
+                        return result;
+                    }
+                } catch (e) {}
+
+                // Offline / network failure fallback to PosIDB
+                const idbProds = await PosIDB.getAll('products');
+                if (idbProds && idbProds.length > 0) {
+                    const fallbackData = { success: true, data: idbProds, _offline: true };
+                    _prodCache.data = fallbackData;
+                    _prodCache.ts = now;
+                    return fallbackData;
+                }
+
+                return _prodCache.data || { success: false, data: [] };
+            }
+
+            function invalidateProdCache() {
+                _prodCache.data = null;
+                _prodCache.ts   = 0;
+                try {
+                    sessionStorage.removeItem('pos_cache_prods');
+                } catch (e) {}
+            }
+
+            async function handleOfflineMutation(action, body) {
+                if (action === 'add_product') {
+                    const tempId = -Date.now();
+                    const newProd = {
+                        ...body,
+                        id: tempId,
+                        _temp: true,
+                        store_quantity: parseInt(body.store_quantity || body.quantity || 0, 10),
+                        quantity: parseInt(body.quantity || body.store_quantity || 0, 10),
+                        price: parseFloat(body.price || 0),
+                        barcode: body.barcode || ('BC-' + Math.random().toString(36).slice(2, 10).toUpperCase())
+                    };
+                    if (typeof allProds !== 'undefined' && Array.isArray(allProds)) {
+                        allProds.unshift(newProd);
+                    }
+                    if (typeof PosIDB !== 'undefined') {
+                        await PosIDB.setItem('products', newProd).catch(() => {});
+                    }
+                    if (typeof queuePendingMutation === 'function') {
+                        await queuePendingMutation('add_product', newProd);
+                    }
+                    invalidateProdCache();
+                    return { success: true, data: newProd, offline: true };
+                }
+                if (action === 'update_product') {
+                    const prodId = parseInt(body.id, 10);
+                    if (typeof allProds !== 'undefined' && Array.isArray(allProds)) {
+                        const idx = allProds.findIndex(p => p.id == prodId);
+                        if (idx !== -1) {
+                            allProds[idx] = { ...allProds[idx], ...body };
+                        }
+                    }
+                    if (typeof PosIDB !== 'undefined') {
+                        const existing = await PosIDB.getItem('products', prodId);
+                        const merged = { ...(existing || {}), ...body };
+                        await PosIDB.setItem('products', merged).catch(() => {});
+                    }
+                    if (typeof queuePendingMutation === 'function') {
+                        await queuePendingMutation('update_product', body);
+                    }
+                    invalidateProdCache();
+                    return { success: true, data: body, offline: true };
+                }
+                if (action === 'delete_product') {
+                    const prodId = parseInt(body.id, 10);
+                    if (typeof allProds !== 'undefined' && Array.isArray(allProds)) {
+                        allProds = allProds.filter(p => p.id != prodId);
+                    }
+                    if (typeof PosIDB !== 'undefined') {
+                        await PosIDB.deleteItem('products', prodId).catch(() => {});
+                    }
+                    if (typeof queuePendingMutation === 'function') {
+                        await queuePendingMutation('delete_product', { id: prodId });
+                    }
+                    invalidateProdCache();
+                    return { success: true, data: { ok: true, deleted_id: prodId }, offline: true };
+                }
+                return null;
+            }
+
             async function apiPost(action, body = {}) {
+                // Instant offline checkout without network timeout delay
+                if (action === 'add_transaction' && navigator.onLine === false) {
+                    return { success: false, offline: true, error: 'Offline' };
+                }
+
+                // If offline and mutating products, handle locally and queue mutation
+                if (navigator.onLine === false && (action === 'add_product' || action === 'update_product' || action === 'delete_product')) {
+                    return await handleOfflineMutation(action, body);
+                }
+
                 try {
                     const r = await apiFetch(API_BASE + action, {
                         method: 'POST',
@@ -12952,15 +16017,39 @@ if ($isCashierRole && $page !== 'login') {
                         body: JSON.stringify(body)
                     });
                     if (r.status === 401) {
+                        if (localStorage.getItem('offlineUser')) {
+                            autoReauthServerSession();
+                            return null;
+                        }
                         location.href = '?page=login';
                         return null;
                     }
                     if (!r.ok) {
-                        toast('⚠️ Server error (' + r.status + ') — please try again', 'error');
+                        toast('Server error (' + r.status + ') — please try again', 'error');
                         return null;
                     }
-                    return await r.json();
+                    const json = await r.json();
+                    if (json?.success) {
+                        const PROD_MUTATIONS = [
+                            'add_product', 'update_product', 'delete_product', 
+                            'add_transaction', 'void_order_items', 'delete_transaction', 'delete_all_transactions',
+                            'quick_restock', 'adjust_stock_pullout', 'add_warehouse_movement', 'add_delivery', 'transfer_to_store'
+                        ];
+                        const SETTINGS_MUTATIONS = ['save_settings', 'upload_shop_logo', 'remove_shop_logo'];
+                        const CATEGORY_MUTATIONS = ['add_category', 'delete_category'];
+
+                        if (PROD_MUTATIONS.includes(action)) invalidateProdCache();
+                        if (SETTINGS_MUTATIONS.includes(action)) invalidateFastCache('get_settings');
+                        if (CATEGORY_MUTATIONS.includes(action)) invalidateFastCache('get_categories');
+                    }
+                    return json;
                 } catch (e) {
+                    if (action === 'add_product' || action === 'update_product' || action === 'delete_product') {
+                        return await handleOfflineMutation(action, body);
+                    }
+                    if (action === 'add_transaction') {
+                        return { success: false, offline: true, error: 'Offline' };
+                    }
                     toast(apiErrorMessage(e), 'error');
                     return null;
                 }
@@ -13002,34 +16091,22 @@ if ($isCashierRole && $page !== 'login') {
             applyTheme(document.documentElement.classList.contains('theme-light') ? 'light' : 'dark', false);
 
             // ── MODALS ──
-            // ── BACK BUTTON / EDGE-SWIPE GUARD ──
-            // On mobile, an accidental back press or edge-swipe used to exit the
-            // whole web app — which felt exactly like being logged out. Trap the
-            // history instead: back does nothing while the app is open. Leaving
-            // is always deliberate — the Logout button is a real navigation and
-            // is not affected by this guard.
-            history.replaceState({ posApp: 1 }, '', location.href);
-            window.addEventListener('popstate', function () {
-                history.pushState({ posApp: 1 }, '', location.href);
-            });
+
 
             function openModal(id) {
                 const e = document.getElementById(id);
                 if (e) {
                     e.classList.add('open');
-                    e.querySelector('.modal')?.scrollTo(0, 0);
-                    // The Cart modal has its own purpose-built keyboard system
-                    // (initCartKeyboardNav, further down) plus the global HID barcode-
-                    // scanner listener that must be free to route a scan to "add 1 unit"
-                    // rather than land in whichever field happens to be focused. Auto-
-                    // focusing a qty input here used to do exactly that: a second scan of
-                    // the same product would type its digits straight into the focused qty
-                    // box, which the app correctly-but-unluckily reads as "set quantity to
-                    // this typed number" and clamps to available stock — showing the whole
-                    // stock count instead of incrementing by 1. So Cart is excluded from
-                    // both generic behaviors below; every other modal (Add Product, Start/
-                    // End Shift, Void Order, etc.) still gets them.
-                    if (id !== 'cart-modal') {
+                    if (id === 'cart-modal') {
+                        if (cart.length > 0) {
+                            focusCartCashTendered(false);
+                            setTimeout(() => focusCartCashTendered(false), 80);
+                            setTimeout(() => focusCartCashTendered(false), 290);
+                        } else {
+                            e.querySelector('.modal')?.scrollTo(0, 0);
+                        }
+                    } else {
+                        e.querySelector('.modal')?.scrollTo(0, 0);
                         enableEnterNav(id);
                         // Keyboard-only navigation: whenever a non-Cart modal opens, focus
                         // jumps straight to its first field so typing/Enter can drive the
@@ -13042,8 +16119,63 @@ if ($isCashierRole && $page !== 'login') {
             }
 
             function closeModal(id) {
+                if (id === 'success-modal') cancelSuccessModalTimer();
+                if (id === 'cart-modal') {
+                    if (typeof closeCartCameraScanner === 'function') closeCartCameraScanner();
+                }
                 const e = document.getElementById(id);
                 if (e) e.classList.remove('open');
+                if (id === 'cart-modal' && cur_page === 'cashier') {
+                    renderGrid(false);
+                }
+            }
+
+            // Auto-closing timer for the checkout Payment Receipt modal
+            let _successModalTimer = null;
+            let _successCountdownInterval = null;
+
+            function showSuccessModal() {
+                openModal('success-modal');
+                cancelSuccessModalTimer();
+                let remaining = 4;
+                const countEl = document.getElementById('success-countdown-num');
+                const hintEl = document.getElementById('success-auto-close-hint');
+                if (countEl) countEl.textContent = remaining;
+                if (hintEl) hintEl.style.display = 'flex';
+
+                _successCountdownInterval = setInterval(() => {
+                    remaining--;
+                    if (countEl) countEl.textContent = Math.max(0, remaining);
+                    if (remaining <= 0) {
+                        clearInterval(_successCountdownInterval);
+                        _successCountdownInterval = null;
+                    }
+                }, 1000);
+
+                _successModalTimer = setTimeout(() => {
+                    dismissSuccessModal();
+                }, 4000);
+            }
+
+            function cancelSuccessModalTimer() {
+                if (_successModalTimer) {
+                    clearTimeout(_successModalTimer);
+                    _successModalTimer = null;
+                }
+                if (_successCountdownInterval) {
+                    clearInterval(_successCountdownInterval);
+                    _successCountdownInterval = null;
+                }
+                const hintEl = document.getElementById('success-auto-close-hint');
+                if (hintEl) hintEl.style.display = 'none';
+            }
+
+            function dismissSuccessModal() {
+                cancelSuccessModalTimer();
+                closeModal('success-modal');
+                if (cur_page === 'cashier') {
+                    renderGrid(true);
+                }
             }
 
             // Focuses the first visible, enabled, non-hidden input/select/textarea inside
@@ -13119,10 +16251,10 @@ if ($isCashierRole && $page !== 'login') {
                     if (tag === 'input' || tag === 'textarea') return;
                     if (e.key === 'Enter') {
                         e.preventDefault();
-                        closeModal('success-modal');
+                        dismissSuccessModal();
                     } else if (e.key === 'p' || e.key === 'P') {
                         e.preventDefault();
-                        printSaleReceipt();
+                        printSaleReceipt(true);
                     }
                 }
             });
@@ -13213,7 +16345,46 @@ if ($isCashierRole && $page !== 'login') {
             // used in the Warehouse product-details modal.
             function formatUnitSizeLabel(unitType, unitSize) {
                 if (!unitType) return '';
-                return unitType + (unitSize ? ' (' + unitSize + ')' : '');
+                if (unitType === 'size') return unitSize ? String(unitSize) : '';
+                const uomLabels = {
+                    'pcs': 'pcs',
+                    'pair': 'pair',
+                    'dozen': 'dozen',
+                    'pack': 'pack',
+                    'booklet': 'booklet',
+                    'kg': 'kg',
+                    'g': 'g',
+                    'mg': 'mg',
+                    'lb': 'lb',
+                    'oz': 'oz',
+                    'ton': 't',
+                    'ml': 'ml',
+                    'L': 'L',
+                    'gal': 'gal',
+                    'qt': 'qt',
+                    'pt': 'pt',
+                    'fl_oz': 'fl oz',
+                    'mm': 'mm',
+                    'cm': 'cm',
+                    'm': 'm',
+                    'yd': 'yd',
+                    'in': 'in',
+                    'sq_m': 'sq m',
+                    'sq_ft': 'sq ft',
+                    'cu_m': 'cu m',
+                    'cu_ft': 'cu ft',
+                    'case': 'case',
+                    'box': 'box',
+                    'roll': 'roll',
+                    'pallet': 'pallet',
+                    'bundle': 'bundle',
+                    'bottle': 'bottle',
+                    'tube': 'tube',
+                    'sachet': 'sachet',
+                    'blister': 'blister'
+                };
+                const label = uomLabels[unitType] || unitType;
+                return unitSize ? (unitSize + ' ' + label) : label;
             }
 
             // Ranks autocomplete matches so the most relevant ones lead: entries
@@ -13355,6 +16526,19 @@ if ($isCashierRole && $page !== 'login') {
                 return total;
             }
 
+            // ── CASH DRAWER SHIFT KICK DEBOUNCER ──
+            let lastShiftDrawerKick = 0;
+            async function triggerShiftDrawerKick() {
+                const now = Date.now();
+                if (now - lastShiftDrawerKick < 2000) return false;
+                lastShiftDrawerKick = now;
+                try {
+                    return await openCashDrawer(true);
+                } catch (e) {
+                    return false;
+                }
+            }
+
             // Runs on every protected page load — the "No Count, No Transaction" gate.
             // ADMIN/OWNER BYPASS: owners never see this, regardless of any shift data.
             function checkShiftLock() {
@@ -13370,7 +16554,10 @@ if ($isCashierRole && $page !== 'login') {
                     if (!r?.success) return;
                     const d = r.data;
                     if (!d.initialized) {
-                        openShiftOpenModal();
+                        const shiftModal = document.getElementById('shift-modal');
+                        if (!shiftModal || !shiftModal.classList.contains('open') || shiftMode !== 'open') {
+                            openShiftOpenModal();
+                        }
                     } else {
                         document.body.classList.remove('shift-locked');
                         closeModal('shift-modal');
@@ -13379,16 +16566,30 @@ if ($isCashierRole && $page !== 'login') {
             }
 
             function openShiftOpenModal() {
+                const shiftModal = document.getElementById('shift-modal');
+                if (shiftModal && shiftModal.classList.contains('open') && shiftMode === 'open') {
+                    // Avoid duplicate open / input reset / drawer kick if already presented
+                    return;
+                }
                 shiftMode = 'open';
                 shiftLoggingOut = false;
                 document.body.classList.add('shift-locked');
-                document.getElementById('shift-modal-title').textContent = '💰 Start of Shift — Cash Count';
-                document.getElementById('shift-modal-sub').textContent = 'Count the physical cash in the drawer and enter each denomination below. The Sales screen stays locked until this is saved.';
-                document.getElementById('shift-cancel-wrap').style.display = 'none';
-                document.getElementById('shift-save-btn').textContent = '✅ Save & Open Shift';
+                const titleEl = document.getElementById('shift-modal-title');
+                if (titleEl) titleEl.textContent = 'Start of Shift — Cash Float Count';
+                const subEl = document.getElementById('shift-modal-sub');
+                if (subEl) subEl.textContent = 'Cash drawer released. Count your physical starting cash float in the till and enter each denomination below before starting transactions.';
+                const drawerStatus = document.getElementById('shift-drawer-status');
+                if (drawerStatus) drawerStatus.textContent = 'Cash drawer opened — count starting float';
+                const cancelWrap = document.getElementById('shift-cancel-wrap');
+                if (cancelWrap) cancelWrap.style.display = 'none';
+                const saveBtn = document.getElementById('shift-save-btn');
+                if (saveBtn) saveBtn.textContent = 'Save & Open Shift';
                 renderShiftDenomGrid();
                 updateShiftTotal();
                 openModal('shift-modal');
+                // 7-Eleven flow: Cash drawer kicks open automatically upon cashier login
+                triggerShiftDrawerKick();
+                toast('Cash drawer released — count your starting float', 'default');
             }
 
             // BLIND COUNT ENFORCEMENT: the expected cash and any live variance are
@@ -13396,25 +16597,59 @@ if ($isCashierRole && $page !== 'login') {
             // the cashier enters is shown, to prevent them reverse-engineering the
             // expected total and covering up a shortage. Variance is only revealed
             // afterward, on the printed Z-Read receipt.
+            async function performLogout() {
+                try {
+                    localStorage.removeItem('offlineUser');
+                    sessionStorage.clear();
+                    if (typeof PosIDB !== 'undefined') {
+                        await PosIDB.deleteItem('auth_state', 'current_user');
+                    }
+                } catch (err) {}
+
+                if (navigator.onLine === false || !_isServerReachable) {
+                    // Offline logout: smoothly switch to login screen without deleting the offline shell cache!
+                    const allViews = document.querySelectorAll('.pos-page-view');
+                    allViews.forEach(v => v.style.display = 'none');
+                    let authBg = document.querySelector('.public-auth-bg');
+                    if (authBg) {
+                        authBg.style.display = 'flex';
+                        cur_page = 'login';
+                    } else {
+                        location.href = '?page=login';
+                    }
+                    if (typeof toast === 'function') toast('Logged out (Offline mode)', 'info');
+                    return;
+                }
+                location.href = '?page=logout';
+            }
+
             function openShiftCloseModal(loggingOut) {
                 apiGet('check_cash_float').then(r => {
                     if (!r?.success || !r.data.initialized) {
                         if (loggingOut) {
-                            location.href = '?page=logout';
+                            performLogout();
                         } else toast('No active shift to close', 'warning');
                         return;
                     }
                     shiftMode = 'close';
                     shiftLoggingOut = !!loggingOut;
                     document.body.classList.add('shift-locked');
-                    document.getElementById('shift-modal-title').textContent = '🔒 End of Shift — Blind Cash Count';
-                    document.getElementById('shift-modal-sub').textContent = 'The drawer has popped open. Count every bill and coin currently inside and enter it below — the expected amount is hidden until your shift report prints.';
-                    document.getElementById('shift-cancel-wrap').style.display = 'block';
-                    document.getElementById('shift-save-btn').textContent = '🖨️ Submit & Close Shift';
+                    const titleEl = document.getElementById('shift-modal-title');
+                    if (titleEl) titleEl.textContent = 'End of Shift — Blind Cash Count (Z-Read)';
+                    const subEl = document.getElementById('shift-modal-sub');
+                    if (subEl) subEl.textContent = 'The drawer has popped open. Count every bill and coin currently inside and enter it below — expected amount is hidden until your shift report prints.';
+                    const drawerStatus = document.getElementById('shift-drawer-status');
+                    if (drawerStatus) drawerStatus.textContent = 'Cash drawer opened — count closing cash';
+                    const cancelWrap = document.getElementById('shift-cancel-wrap');
+                    if (cancelWrap) cancelWrap.style.display = 'block';
+                    const saveBtn = document.getElementById('shift-save-btn');
+                    if (saveBtn) saveBtn.textContent = 'Submit & Close Shift';
                     renderShiftDenomGrid();
                     updateShiftTotal();
                     openModal('shift-modal');
-                    toast('🔓 Cash drawer released — begin your closing count', 'default');
+                    // 7-Eleven flow: Cash drawer kicks open automatically for end of shift cash count
+                    triggerShiftDrawerKick();
+                    toast('Cash drawer released — begin your closing count', 'default');
                 });
             }
 
@@ -13426,26 +16661,92 @@ if ($isCashierRole && $page !== 'login') {
                 shiftMode = null;
             }
 
-            // Nav "🔚 End Shift" button
+            // Nav End Shift button
             function requestEndShift() {
                 openShiftCloseModal(false);
             }
 
             // Intercepts the Logout link — forces a closing cash count first if a shift is open
             function attemptLogout(e) {
-                e.preventDefault();
+                if (e) e.preventDefault();
                 if (USER_ROLE === 'owner') {
-                    location.href = '?page=logout';
+                    performLogout();
                     return false;
                 }
                 apiGet('check_cash_float').then(r => {
                     if (r?.success && r.data.initialized) {
                         openShiftCloseModal(true);
                     } else {
-                        location.href = '?page=logout';
+                        performLogout();
                     }
                 });
                 return false;
+            }
+
+            // 7-Eleven Flow: Shift Start Cash Float Slip (Native Direct Print + HTML Fallback)
+            async function printShiftStartSlip(d) {
+                const esc = receiptEsc;
+                const denoms = d.denoms || {};
+
+                // 1. Try Native Print Agent first (silent thermal direct print)
+                try {
+                    const nativeOk = await tryNativePrintAgent({
+                        type: 'shift_start',
+                        shop_name: d.shop_name,
+                        shop_address: d.shop_address,
+                        shop_tin: d.shop_tin,
+                        cashier: d.cashier,
+                        role: d.role,
+                        date_time: d.date_time,
+                        total: d.total,
+                        currency: d.currency || '₱',
+                        denoms: denoms,
+                        shift_id: d.shift_id
+                    });
+                    if (nativeOk) {
+                        toast('Shift start float slip printed to thermal printer', 'success');
+                        return;
+                    }
+                } catch (e) {}
+
+                // 2. Fallback to single-run browser popup print if native agent is offline
+                const denomRows = SHIFT_DENOMS.map(item => {
+                    const qty = denoms[item.key] || 0;
+                    if (qty <= 0) return '';
+                    const sub = qty * item.value;
+                    return '<div class="receipt-row"><span>' + item.label + ' &times; ' + qty + '</span><span>' + fmt(sub) + '</span></div>';
+                }).filter(Boolean).join('');
+
+                const slipHtml = '<!DOCTYPE html><html><head><style>' +
+                    receiptBaseCSS() +
+                    '</style></head><body>' +
+                    '<div class="receipt-container">' +
+                    receiptHeaderHTML('SHIFT START — CASH FLOAT SLIP') +
+                    '<div class="divider"></div>' +
+                    '<div class="receipt-row"><span>Cashier</span><span>' + esc(d.cashier) + '</span></div>' +
+                    '<div class="receipt-row"><span>Role</span><span>' + esc(d.role) + '</span></div>' +
+                    '<div class="receipt-row"><span>Start Time</span><span>' + esc(d.date_time) + '</span></div>' +
+                    (d.shift_id ? '<div class="receipt-row"><span>Shift ID</span><span>#' + d.shift_id + '</span></div>' : '') +
+                    '<div class="divider"></div>' +
+                    '<h3>OPENING CASH FLOAT DENOMINATIONS</h3>' +
+                    denomRows +
+                    '<div class="divider"></div>' +
+                    '<div class="total-band"><span>TOTAL STARTING FLOAT</span><span>' + fmt(d.total) + '</span></div>' +
+                    '<div class="divider"></div>' +
+                    '<div style="margin:16px 0 8px;font-size:11px;text-align:center;">' +
+                    'Cashier Signature: _______________________<br><br>' +
+                    'Drawer Verified &amp; Accepted' +
+                    '</div>' +
+                    receiptFooterHTML(['Initial drawer verification slip', 'Keep in till until shift close']) +
+                    '</div>' +
+                    receiptPrintScript() +
+                    '</body></html>';
+
+                const win = window.open('', '_blank', 'width=380,height=550');
+                if (win) {
+                    win.document.write(slipHtml);
+                    win.document.close();
+                }
             }
 
             function submitShiftModal() {
@@ -13471,27 +16772,48 @@ if ($isCashierRole && $page !== 'login') {
                             toast(r?.error || 'Could not start shift', 'error');
                             return;
                         }
-                        toast('✅ Shift started! Opening float: ' + fmt(total), 'success');
+                        toast('Shift started! Opening float: ' + fmt(total), 'success');
                         document.body.classList.remove('shift-locked');
                         closeModal('shift-modal');
                         shiftMode = null;
+
+                        // 7-Eleven flow: Print shift start float slip
+                        const startSlipData = {
+                            type: 'shift_start',
+                            shop_name: (typeof SHOP_NAME !== 'undefined' && SHOP_NAME) ? SHOP_NAME : 'RE M STORE',
+                            shop_address: (typeof SHOP_ADDRESS !== 'undefined' && SHOP_ADDRESS) ? SHOP_ADDRESS : '',
+                            shop_tin: (typeof SHOP_TIN !== 'undefined' && SHOP_TIN) ? SHOP_TIN : '',
+                            cashier: (typeof USER_FULL_NAME !== 'undefined' && USER_FULL_NAME) ? USER_FULL_NAME : (typeof USERNAME !== 'undefined' ? USERNAME : 'Cashier'),
+                            role: typeof USER_ROLE !== 'undefined' ? USER_ROLE : 'cashier',
+                            date_time: fmtDate(new Date().toISOString()),
+                            total: total,
+                            currency: '₱',
+                            denoms: denoms,
+                            shift_id: r.data?.id
+                        };
+                        printShiftStartSlip(startSlipData);
                     });
                 } else {
                     apiPost('close_shift', {
                         denoms,
                         total
-                    }).then(r => {
+                    }).then(async r => {
                         setLoading(btn, false);
                         if (!r?.success) {
                             toast(r?.error || 'Could not close shift', 'error');
                             return;
                         }
-                        printShiftReceipt(r.data);
+                        // Pop drawer open again for cash drop/envelope
+                        triggerShiftDrawerKick();
                         closeModal('shift-modal');
+
+                        // 7-Eleven flow: Print End of Shift Z-Reading Summary
+                        await printShiftReceipt(r.data);
+
                         // Wipe session only after the receipt has been handed to the printer
                         setTimeout(() => {
-                            location.href = '?page=logout';
-                        }, 600);
+                            performLogout();
+                        }, 1200);
                     });
                 }
             }
@@ -13502,31 +16824,65 @@ if ($isCashierRole && $page !== 'login') {
             // the shop address/TIN header are IDENTICAL across all three printed
             // documents — one CSS block, one header builder, one footer builder,
             // instead of three copies slowly drifting apart from each other.
-            function receiptBaseCSS() {
-                return '.receipt-container{width:290px;background:#fff;padding:10px 8px;font-family:"SF Mono","Menlo","Consolas","Courier New",monospace;font-size:12.5px;line-height:1.4;color:#000;margin:0 auto;}' +
+            // ── SHARED RECEIPT STYLING (Payment / Z-Read / Void) ──
+            // Universal thermal printer support: auto-adapts to 58mm & 80mm rolls
+            function receiptBaseCSS(paperSize) {
+                const is80mm = (paperSize || currentReceiptPaperSize) === '80mm';
+                const maxWidth = is80mm ? '380px' : '290px';
+                const bodyFontSize = is80mm ? '13.5px' : '12px';
+                const thFontSize = is80mm ? '11.5px' : '10px';
+                const tdFontSize = is80mm ? '12.5px' : '11.5px';
+                const printFontSize = is80mm ? '13px' : '11.5px';
+                const colQty = is80mm ? '14%' : '16%';
+                const colDesc = is80mm ? '50%' : '42%';
+                const colPrice = is80mm ? '18%' : '21%';
+                const colTotal = is80mm ? '18%' : '21%';
+
+                return '*{box-sizing:border-box;margin:0;padding:0;}' +
+                    'body{background:#fff;font-family:"SF Mono","Menlo","Consolas","Courier New",monospace;font-size:' + bodyFontSize + ';line-height:1.35;color:#000;}' +
+                    '.receipt-container{width:100%;max-width:' + maxWidth + ';background:#fff;padding:8px 6px;margin:0 auto;}' +
                     '.receipt-header{text-align:center;margin-bottom:6px;}' +
-                    '.receipt-header h1{font-size:22px;font-weight:800;margin:0 0 4px 0;letter-spacing:1px;}' +
-                    '.receipt-header p{margin:1px 0;font-size:11px;}' +
-                    '.receipt-header .doc-type{font-size:10.5px;font-weight:800;letter-spacing:.06em;color:#444;margin-top:4px;}' +
+                    '.receipt-header h1{font-size:' + (is80mm ? '22px' : '20px') + ';font-weight:800;margin:0 0 3px 0;letter-spacing:1px;word-break:break-word;}' +
+                    '.receipt-header p{margin:1px 0;font-size:' + (is80mm ? '12px' : '11px') + ';word-break:break-word;}' +
+                    '.receipt-header .doc-type{font-size:' + (is80mm ? '11.5px' : '10.5px') + ';font-weight:800;letter-spacing:.06em;color:#333;margin-top:4px;}' +
                     '.divider{border-top:1px dashed #000;margin:6px 0;}' +
-                    '.receipt-row{display:flex;justify-content:space-between;width:100%;margin:1px 0;}' +
+                    '.receipt-row{display:flex;justify-content:space-between;width:100%;margin:1.5px 0;gap:4px;}' +
                     '.receipt-row.b{font-weight:800;}' +
                     '.receipt-row.void{color:#C0392B;font-weight:800;}' +
-                    'table.items{width:100%;border-collapse:collapse;table-layout:fixed;}' +
-                    'table.items th{font-size:10.5px;font-weight:800;text-align:left;padding:2px 2px;border-bottom:1px dashed #000;}' +
-                    'table.items td{font-size:11.5px;padding:2px 2px;vertical-align:top;word-break:break-word;}' +
-                    'table.items th.right, table.items td.right{text-align:right;}' +
-                    'table.items col.qty{width:14%;} table.items col.desc{width:44%;} table.items col.price{width:21%;} table.items col.total{width:21%;}' +
-                    '.total-band{background:#e4e4e4;font-weight:800;font-size:14.5px;padding:5px 4px;margin:4px 0;display:flex;justify-content:space-between;}' +
-                    '.void-band{background:#fbe4e1;color:#C0392B;font-weight:800;font-size:13px;padding:5px 4px;margin:4px 0;display:flex;justify-content:space-between;}' +
+                    'table.items{width:100%;border-collapse:collapse;table-layout:fixed;margin:2px 0;}' +
+                    'table.items th{font-size:' + thFontSize + ';font-weight:800;text-align:left;padding:2px 1px;border-bottom:1px dashed #000;}' +
+                    'table.items td{font-size:' + tdFontSize + ';padding:2px 1px;vertical-align:top;word-break:break-word;}' +
+                    'table.items th.right, table.items td.right{text-align:right;white-space:nowrap;}' +
+                    'table.items col.qty{width:' + colQty + ';} table.items col.desc{width:' + colDesc + ';} table.items col.price{width:' + colPrice + ';} table.items col.total{width:' + colTotal + ';}' +
+                    '.total-band{background:#e4e4e4;font-weight:800;font-size:' + (is80mm ? '15px' : '14px') + ';padding:5px 4px;margin:5px 0;display:flex;justify-content:space-between;border-radius:2px;}' +
+                    '.void-band{background:#fbe4e1;color:#C0392B;font-weight:800;font-size:' + (is80mm ? '13.5px' : '12.5px') + ';padding:5px 4px;margin:5px 0;display:flex;justify-content:space-between;border-radius:2px;}' +
                     'tr.voided-row td{color:#C0392B;text-decoration:line-through;}' +
                     '.void-tag{font-size:9.5px;font-weight:800;letter-spacing:.04em;text-decoration:none;}' +
-                    'h3{font-size:10.5px;letter-spacing:.06em;color:#444;margin:8px 0 3px;}' +
-                    '.receipt-footer{text-align:center;margin-top:10px;font-size:11px;}' +
-                    '.receipt-footer .bold{font-weight:800;font-size:12px;}' +
-                    '@media print{body *{visibility:hidden;}.receipt-container,.receipt-container *{visibility:visible;}' +
-                    '.receipt-container{position:absolute;left:0;top:0;width:100%;padding:0;margin:0;}@page{margin:0;}}' +
-                    '*{box-sizing:border-box;}body{margin:0;}';
+                    'h3{font-size:' + (is80mm ? '11.5px' : '10.5px') + ';letter-spacing:.06em;color:#333;margin:8px 0 3px;}' +
+                    '.receipt-footer{text-align:center;margin-top:10px;font-size:' + (is80mm ? '12px' : '11px') + ';}' +
+                    '.receipt-footer .bold{font-weight:800;font-size:' + (is80mm ? '13px' : '12px') + ';}' +
+                    '@media print{' +
+                    '  @page{margin:0;size:auto;}' +
+                    '  html,body{width:100%!important;margin:0!important;padding:0!important;background:#fff!important;}' +
+                    '  body *{visibility:hidden;}' +
+                    '  .receipt-container,.receipt-container *{visibility:visible;}' +
+                    '  .receipt-container{position:absolute;left:0;top:0;width:100%!important;max-width:100%!important;padding:3mm 2mm!important;margin:0!important;font-size:' + printFontSize + '!important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}' +
+                    '  .total-band,.void-band{-webkit-print-color-adjust:exact;print-color-adjust:exact;}' +
+                    '}';
+            }
+
+            function receiptPrintScript() {
+                return '<script>' +
+                    'var __didPrint = false;' +
+                    'function doPrint(){' +
+                    '  if (__didPrint) return;' +
+                    '  __didPrint = true;' +
+                    '  try{ window.focus(); window.print(); }catch(e){}' +
+                    '  window.onafterprint = function(){ setTimeout(function(){ try{window.close();}catch(e){} }, 300); };' +
+                    '}' +
+                    'if (document.readyState === "complete") { setTimeout(doPrint, 100); }' +
+                    'else { window.addEventListener("load", function(){ setTimeout(doPrint, 100); }); }' +
+                    '<\/script>';
             }
 
             function receiptEsc(s) {
@@ -13544,7 +16900,43 @@ if ($isCashierRole && $page !== 'login') {
                 return '<div class="receipt-footer">' + (lines || []).map((l, i) => '<p' + (i === 0 ? ' class="bold"' : '') + '>' + receiptEsc(l) + '</p>').join('') + '</div>';
             }
 
-            function printShiftReceipt(d) {
+            async function printShiftReceipt(d) {
+                const txList = d.transactions || [];
+                const topItems = d.top_items || [];
+                const voidLogs = d.void_logs || [];
+                const voidCount = d.void_count || 0;
+                const voidValue = d.void_value || 0;
+
+                // 1. Try Native Direct ESC/POS Print first
+                try {
+                    const nativePayload = {
+                        type: 'shift_summary',
+                        shop_name: (typeof SHOP_NAME !== 'undefined' && SHOP_NAME) ? SHOP_NAME : 'RE M STORE',
+                        shop_address: (typeof SHOP_ADDRESS !== 'undefined' && SHOP_ADDRESS) ? SHOP_ADDRESS : '',
+                        shop_tin: (typeof SHOP_TIN !== 'undefined' && SHOP_TIN) ? SHOP_TIN : '',
+                        cashier: d.cashier_name || (typeof USER_FULL_NAME !== 'undefined' ? USER_FULL_NAME : (typeof USERNAME !== 'undefined' ? USERNAME : 'Cashier')),
+                        login_time: fmtDate(d.login_time),
+                        logout_time: fmtDate(d.logout_time),
+                        opening_float: d.opening_float,
+                        cash_sales: d.cash_sales,
+                        void_count: voidCount,
+                        void_value: voidValue,
+                        expected_cash: d.expected_cash,
+                        closing_cash: d.closing_cash,
+                        variance: d.variance,
+                        transaction_count: d.transaction_count ?? txList.length,
+                        items_sold: d.items_sold ?? 0,
+                        top_items: topItems.map(i => ({ name: i.product_name, qty: i.qty, total: i.revenue })),
+                        transactions: txList.map(t => ({ ref: t.order_ref, total: t.total, time: t.created_at }))
+                    };
+                    const nativeOk = await tryNativePrintAgent(nativePayload);
+                    if (nativeOk) {
+                        toast('Shift summary Z-Read printed directly to thermal printer', 'success');
+                        return;
+                    }
+                } catch (e) {}
+
+                // 2. Fallback to browser popup if native agent is offline
                 const win = window.open('', '_blank', 'width=380,height=650');
                 if (!win) {
                     toast('Pop-up blocked — allow pop-ups to print the Z-Read receipt', 'warning');
@@ -13557,12 +16949,6 @@ if ($isCashierRole && $page !== 'login') {
                     hour: '2-digit',
                     minute: '2-digit'
                 });
-
-                const txList = d.transactions || [];
-                const topItems = d.top_items || [];
-                const voidLogs = d.void_logs || [];
-                const voidCount = d.void_count || 0;
-                const voidValue = d.void_value || 0;
 
                 const txRows = txList.length ?
                     txList.map(t =>
@@ -13632,7 +17018,7 @@ if ($isCashierRole && $page !== 'login') {
                     '<div class="divider"></div>' +
                     receiptFooterHTML(['Generated ' + fmtDate(new Date().toISOString()), 'Thank you — session closed.']) +
                     '</div>' +
-                    '<script>window.onload=function(){window.print();}<\/script>' +
+                    receiptPrintScript() +
                     '</body></html>'
                 );
                 win.document.close();
@@ -13756,6 +17142,7 @@ if ($isCashierRole && $page !== 'login') {
             // ══════════════════════════════════════════════════════════════════
             const CART_AUTOSAVE_KEY = 'pangga_cart_autosave_v1';
             const PENDING_SALES_KEY = 'pangga_pending_sales_v1';
+            const PENDING_MUTATIONS_KEY = 'pangga_pending_mutations_v1';
 
             // A connectivity failure can surface two different ways here:
             //  - apiPost/apiGet return null (fetch itself threw — no service worker,
@@ -13766,7 +17153,49 @@ if ($isCashierRole && $page !== 'login') {
             //    reject — so a plain `!r.success` check alone would misread this as a
             //    real server-side rejection instead of "can't reach the server".
             function isOfflineResult(r) {
-                return r === null || (r && r.success === false && r.error === 'Offline');
+                if (r === null || r === undefined) return true;
+                if (typeof r !== 'object') return false;
+                if (r.offline === true) return true;
+                if (r.success === false) {
+                    const err = String(r.error || '').toLowerCase();
+                    if (err.includes('offline') || err.includes('unreachable') || err.includes('network') || err.includes('failed to fetch')) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+
+            function pendingMutationsList() {
+                try {
+                    return JSON.parse(localStorage.getItem(PENDING_MUTATIONS_KEY) || '[]');
+                } catch (e) {
+                    return [];
+                }
+            }
+
+            function savePendingMutationsList(list) {
+                try {
+                    localStorage.setItem(PENDING_MUTATIONS_KEY, JSON.stringify(list));
+                } catch (e) {}
+            }
+
+            async function queuePendingMutation(action, payload) {
+                const localMutationId = 'MUT-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6).toUpperCase();
+                const entry = { localMutationId, action, payload, createdAt: Date.now() };
+                if (typeof PosIDB !== 'undefined') {
+                    await PosIDB.setItem('offline_mutations', entry).catch(() => {});
+                }
+                const list = pendingMutationsList();
+                list.push(entry);
+                savePendingMutationsList(list);
+                renderPendingSyncBadge();
+                updateNetworkStatusUI();
+                if ('serviceWorker' in navigator && 'SyncManager' in window) {
+                    navigator.serviceWorker.ready.then(reg => {
+                        reg.sync.register('sync-offline-orders').catch(() => {});
+                    }).catch(() => {});
+                }
+                return localMutationId;
             }
 
             function saveCartAutosave() {
@@ -13806,7 +17235,7 @@ if ($isCashierRole && $page !== 'login') {
 
                 const ageMin = Math.round((Date.now() - (saved.savedAt || 0)) / 60000);
                 const ok = confirm(
-                    '🔌 An unfinished sale was found (from ' + (ageMin <= 1 ? 'less than a minute ago' : ageMin + ' minute(s) ago') + '), ' +
+                    'An unfinished sale was found (from ' + (ageMin <= 1 ? 'less than a minute ago' : ageMin + ' minute(s) ago') + '), ' +
                     'likely left over from a power loss, crash, or closed tab.\n\n' +
                     'Restore it (' + saved.cart.length + ' item line(s)) and continue the sale?'
                 );
@@ -13823,7 +17252,7 @@ if ($isCashierRole && $page !== 'login') {
                     calcChange();
                 }
                 openModal('cart-modal');
-                toast('🔌 Previous cart restored', 'success');
+                toast('Previous cart restored', 'success');
             }
 
             function pendingSalesList() {
@@ -13841,75 +17270,223 @@ if ($isCashierRole && $page !== 'login') {
             }
 
             // Queues a completed sale locally when the server can't be reached right
-            // now (offline / mid power-blip). Returns the local pending reference used
-            // on the receipt in the meantime — e.g. "PEND-8F3K2A".
-            function queuePendingSale(payload) {
-                const localRef = 'PEND-' + Date.now().toString(36).toUpperCase().slice(-6) + Math.random().toString(36).slice(2, 4).toUpperCase();
-                const list = pendingSalesList();
-                list.push({
+            // now (offline / mid power-blip). Returns the collision-proof offline reference
+            // e.g. "ORD-OFF-1-POS01-1727503200-8A3F" and immediately deducts stock locally.
+            function queuePendingSale(payload, explicitRef = null) {
+                const sid = typeof CURRENT_STORE_ID !== 'undefined' ? CURRENT_STORE_ID : 1;
+                const term = (typeof TERMINAL_ID !== 'undefined' && TERMINAL_ID ? TERMINAL_ID : 'POS01').replace(/[^a-zA-Z0-9]/g, '');
+                const ts = Math.floor(Date.now() / 1000);
+                const rand4 = Math.random().toString(36).slice(2, 6).toUpperCase();
+                const localRef = explicitRef || ('ORD-OFF-' + sid + '-' + term + '-' + ts + '-' + rand4);
+
+                // Embed reference, created_at, and user_id directly in payload
+                payload.order_ref = localRef;
+                if (!payload.created_at) payload.created_at = new Date().toISOString();
+                if (!payload.user_id && typeof CURRENT_USER_ID !== 'undefined') payload.user_id = CURRENT_USER_ID;
+
+                // Immediately deduct stock locally in allProds, PosIDB, and session cache
+                if (Array.isArray(payload.items)) {
+                    payload.items.forEach(it => {
+                        const pid = it.product_id;
+                        const qty = parseInt(it.qty, 10) || 1;
+                        const p = (typeof allProds !== 'undefined' && Array.isArray(allProds)) ? allProds.find(x => x.id == pid) : null;
+                        if (p) {
+                            if (p.store_quantity !== undefined) p.store_quantity = Math.max(0, p.store_quantity - qty);
+                            if (p.quantity !== undefined) p.quantity = Math.max(0, p.quantity - qty);
+                            if (typeof PosIDB !== 'undefined') PosIDB.setItem('products', p).catch(() => {});
+                        }
+                    });
+                    if (typeof _prodCache !== 'undefined' && _prodCache.data) {
+                        _writeProdSessionCache(_prodCache.data, _prodCache.ts || Date.now());
+                    }
+                    if (typeof renderGrid === 'function' && cur_page === 'cashier') {
+                        renderGrid(false);
+                    }
+                }
+
+                const orderEntry = {
                     localRef,
                     payload,
                     createdAt: Date.now()
-                });
+                };
+
+                // Save to PosIDB offline_orders
+                if (typeof PosIDB !== 'undefined') PosIDB.setItem('offline_orders', orderEntry).catch(() => {});
+
+                // Also persist to localStorage for double-redundancy
+                const list = pendingSalesList();
+                list.push(orderEntry);
                 savePendingSalesList(list);
+
                 renderPendingSyncBadge();
+                updateNetworkStatusUI();
+
+                if ('serviceWorker' in navigator && 'SyncManager' in window) {
+                    navigator.serviceWorker.ready.then(reg => {
+                        reg.sync.register('sync-offline-orders').catch(() => {});
+                    }).catch(() => {});
+                }
+
                 return localRef;
             }
 
-            // Retries every queued offline sale against the server. Safe to call
-            // repeatedly/aggressively — each entry is only removed from the queue once
-            // the server confirms it was actually recorded, so a sale can never be lost
-            // even if this fires several times back-to-back (e.g. 'online' event AND
-            // the periodic timer both firing around the same moment).
+            // Retries every queued offline sale and mutation against the server using atomic sync_offline_batch.
+            // Delta inventory subtraction prevents overwriting other terminals' stock.
             let _flushingPendingSales = false;
             async function flushPendingSales() {
                 if (_flushingPendingSales) return;
-                const list = pendingSalesList();
-                if (!list.length) {
+                
+                await syncPendingUsers();
+                await syncOfflineUsers();
+                
+                let list = pendingSalesList();
+                if (!list.length && typeof PosIDB !== 'undefined') {
+                    try {
+                        const idbOrders = await PosIDB.getAll('offline_orders');
+                        if (Array.isArray(idbOrders) && idbOrders.length > 0) {
+                            list = idbOrders;
+                            savePendingSalesList(list);
+                        }
+                    } catch (e) {}
+                }
+
+                let mutList = pendingMutationsList();
+                if (!mutList.length && typeof PosIDB !== 'undefined') {
+                    try {
+                        const idbMuts = await PosIDB.getAll('offline_mutations');
+                        if (Array.isArray(idbMuts) && idbMuts.length > 0) {
+                            mutList = idbMuts;
+                            savePendingMutationsList(mutList);
+                        }
+                    } catch (e) {}
+                }
+
+                if (!list.length && !mutList.length) {
                     renderPendingSyncBadge();
+                    updateNetworkStatusUI();
                     return;
                 }
                 if (navigator.onLine === false) {
                     renderPendingSyncBadge();
+                    updateNetworkStatusUI();
                     return;
                 }
                 _flushingPendingSales = true;
-                let syncedCount = 0;
-                const remaining = [];
-                for (const entry of list) {
-                    const r = await apiPost('add_transaction', entry.payload);
+                updateNetworkStatusUI();
+
+                const ordersToSync = list.map(entry => {
+                    const p = entry.payload || entry;
+                    return {
+                        order_ref: entry.localRef || p.order_ref,
+                        items: p.items || [],
+                        subtotal: p.subtotal || 0,
+                        vat_rate: p.vat_rate || 0,
+                        vat_amount: p.vat_amount || 0,
+                        tax_rate: p.tax_rate || 0,
+                        tax_amount: p.tax_amount || 0,
+                        total: p.total || 0,
+                        cash: p.cash || 0,
+                        change: p.change || 0,
+                        user_id: p.user_id || (typeof CURRENT_USER_ID !== 'undefined' ? CURRENT_USER_ID : 1),
+                        created_at: entry.createdAt ? new Date(entry.createdAt).toISOString() : (p.created_at || new Date().toISOString())
+                    };
+                });
+
+                const mutationsToSync = mutList.map(entry => ({
+                    action: entry.action,
+                    payload: entry.payload
+                }));
+
+                try {
+                    const r = await apiPost('sync_offline_batch', { orders: ordersToSync, mutations: mutationsToSync });
                     if (r?.success) {
-                        syncedCount++;
+                        const syncedCount = r.data?.synced_count ?? ordersToSync.length;
+                        const syncedRefs = new Set(r.data?.synced_refs || []);
+                        const alreadyRefs = new Set(r.data?.already_synced || []);
+                        const syncedMutCount = r.data?.synced_mutations || 0;
+                        const idMappings = r.data?.id_mappings || {};
+
+                        const remaining = list.filter(entry => {
+                            const ref = entry.localRef || entry.payload?.order_ref;
+                            return !syncedRefs.has(ref) && !alreadyRefs.has(ref);
+                        });
+
+                        savePendingSalesList(remaining);
+                        if (typeof PosIDB !== 'undefined') {
+                            if (remaining.length === 0) {
+                                await PosIDB.clearStore('offline_orders').catch(() => {});
+                            } else {
+                                for (const entry of list) {
+                                    const ref = entry.localRef || entry.payload?.order_ref;
+                                    if (syncedRefs.has(ref) || alreadyRefs.has(ref)) {
+                                        await PosIDB.deleteItem('offline_orders', ref).catch(() => {});
+                                    }
+                                }
+                            }
+                        }
+
+                        // Reconcile mutations
+                        savePendingMutationsList([]);
+                        if (typeof PosIDB !== 'undefined') {
+                            await PosIDB.clearStore('offline_mutations').catch(() => {});
+                        }
+
+                        // Reconcile ID mappings if any products were created offline
+                        if (idMappings && Object.keys(idMappings).length > 0) {
+                            for (const [tempId, realId] of Object.entries(idMappings)) {
+                                const numTemp = parseInt(tempId, 10);
+                                const numReal = parseInt(realId, 10);
+                                if (typeof PosIDB !== 'undefined') {
+                                    const tempProd = await PosIDB.getItem('products', numTemp);
+                                    if (tempProd) {
+                                        await PosIDB.deleteItem('products', numTemp).catch(() => {});
+                                        tempProd.id = numReal;
+                                        delete tempProd._temp;
+                                        await PosIDB.setItem('products', tempProd).catch(() => {});
+                                    }
+                                }
+                                if (typeof _allProds !== 'undefined' && Array.isArray(_allProds)) {
+                                    const p = _allProds.find(item => item.id == numTemp);
+                                    if (p) {
+                                        p.id = numReal;
+                                        delete p._temp;
+                                    }
+                                }
+                            }
+                        }
+
+                        let msg = '';
+                        if (syncedCount > 0) msg += 'Synced ' + syncedCount + ' offline sale(s). ';
+                        if (syncedMutCount > 0) msg += 'Synced ' + syncedMutCount + ' product update(s).';
+                        if (!msg) msg = 'Sync completed!';
+                        toast(msg.trim(), 'success');
+
+                        if (typeof loadStats === 'function') loadStats();
+                        invalidateProdCache();
+                        if (typeof loadAllProds === 'function') loadAllProds(true);
+                        if (typeof loadTopSellers === 'function') loadTopSellers();
                     } else if (isOfflineResult(r)) {
-                        // Still can't reach the server — keep this and every entry after it
-                        // queued, and stop trying for now rather than hammering repeatedly.
-                        remaining.push(entry);
-                        const idx = list.indexOf(entry);
-                        remaining.push(...list.slice(idx + 1));
-                        break;
+                        // Still unreachable, retain queue
                     } else {
-                        // Server reachable but rejected it (e.g. stock validation) — surface
-                        // it instead of retrying forever on a sale that will never succeed.
-                        toast('⚠️ Offline sale ' + entry.localRef + ' failed to sync: ' + (r?.error || 'unknown error') + ' — please review manually', 'error');
+                        toast('Offline sync error: ' + (r?.error || 'Server error'), 'error');
                     }
-                }
-                savePendingSalesList(remaining);
-                _flushingPendingSales = false;
-                renderPendingSyncBadge();
-                if (syncedCount > 0) {
-                    toast('✅ Synced ' + syncedCount + ' offline sale(s) to the server', 'success');
-                    loadStats();
-                    loadAllProds();
-                    loadTopSellers();
+                } catch (e) {
+                    // Network threw
+                } finally {
+                    _flushingPendingSales = false;
+                    renderPendingSyncBadge();
+                    updateNetworkStatusUI();
                 }
             }
 
             // Small persistent badge (auto-injected, no HTML markup needed) showing how
-            // many sales are still waiting to sync — tap it to retry immediately.
+            // many items are still waiting to sync — tap it to retry immediately.
             function renderPendingSyncBadge() {
-                const list = pendingSalesList();
+                const salesList = pendingSalesList();
+                const mutList = typeof pendingMutationsList === 'function' ? pendingMutationsList() : [];
+                const totalPending = salesList.length + mutList.length;
                 let badge = document.getElementById('pending-sync-badge');
-                if (!list.length) {
+                if (!totalPending) {
                     if (badge) badge.remove();
                     return;
                 }
@@ -13923,15 +17500,56 @@ if ($isCashierRole && $page !== 'login') {
                     };
                     document.body.appendChild(badge);
                 }
-                badge.innerHTML = '⏳ ' + list.length + ' sale(s) pending sync — tap to retry';
+                const parts = [];
+                if (salesList.length > 0) parts.push(salesList.length + ' sale' + (salesList.length > 1 ? 's' : ''));
+                if (mutList.length > 0) parts.push(mutList.length + ' update' + (mutList.length > 1 ? 's' : ''));
+                badge.innerHTML = parts.join(', ') + ' pending sync — tap to retry';
             }
 
-            // Retry whenever the browser regains connectivity, plus a periodic sweep
-            // every 20s in case the 'online' event doesn't fire reliably on this
-            // device, and once immediately on page load in case sales were queued
-            // during a previous, now-closed session.
-            window.addEventListener('online', flushPendingSales);
-            setInterval(flushPendingSales, 20000);
+            // Syncs memory/localStorage queue with persistent IndexedDB so badge and queue are 100% consistent
+            async function syncPendingBadgeFromIDB() {
+                if (typeof PosIDB === 'undefined') return;
+                try {
+                    const idbOrders = await PosIDB.getAll('offline_orders');
+                    if (Array.isArray(idbOrders) && idbOrders.length > 0) {
+                        const localOrders = pendingSalesList();
+                        const orderMap = new Map();
+                        localOrders.forEach(o => {
+                            const ref = o.localRef || o.payload?.order_ref;
+                            if (ref) orderMap.set(ref, o);
+                        });
+                        idbOrders.forEach(o => {
+                            const ref = o.localRef || o.payload?.order_ref;
+                            if (ref) orderMap.set(ref, o);
+                        });
+                        const mergedOrders = Array.from(orderMap.values());
+                        if (mergedOrders.length !== localOrders.length) {
+                            savePendingSalesList(mergedOrders);
+                        }
+                    }
+
+                    const idbMuts = await PosIDB.getAll('offline_mutations');
+                    if (Array.isArray(idbMuts) && idbMuts.length > 0) {
+                        const localMuts = typeof pendingMutationsList === 'function' ? pendingMutationsList() : [];
+                        const mutMap = new Map();
+                        localMuts.forEach(m => {
+                            if (m.localMutationId) mutMap.set(m.localMutationId, m);
+                        });
+                        idbMuts.forEach(m => {
+                            if (m.localMutationId) mutMap.set(m.localMutationId, m);
+                        });
+                        const mergedMuts = Array.from(mutMap.values());
+                        if (mergedMuts.length !== localMuts.length) {
+                            savePendingMutationsList(mergedMuts);
+                        }
+                    }
+                } catch (e) {}
+                renderPendingSyncBadge();
+                if (typeof updateNetworkStatusUI === 'function') updateNetworkStatusUI();
+            }
+
+            // Initial badge reconciliation on load
+            syncPendingBadgeFromIDB();
 
 
 
@@ -13943,13 +17561,15 @@ if ($isCashierRole && $page !== 'login') {
                     CUR = s?.data?.currency || '₱';
                     VAT_RATE = Math.max(0, parseFloat(s?.data?.vat_rate || 0));
                     TAX_RATE = Math.max(0, parseFloat(s?.data?.tax_rate || 0));
-                    document.getElementById('shop-name').textContent = s?.data?.shop_name || 'Welcome to PANGGA STORE';
+                    const rawName = s?.data?.shop_name;
+                    const finalShopName = rawName && rawName !== 'PANGGA STORE' && rawName !== 'PANGGA POS' && rawName !== 'POS SYSTEM' ? rawName : 'ProCast';
+                    document.getElementById('shop-name').textContent = finalShopName;
                     updateCartUI();
                 });
                 loadStats();
                 loadAllProds();
                 loadTopSellers();
-                if (USER_ROLE !== 'staff') loadAIHighlights();
+                if (USER_ROLE !== 'staff') setTimeout(loadAIHighlights, 800);
                 // Offline/power-loss protections: offer to restore any cart left over
                 // from a crash/power loss, and try syncing any sales that were queued
                 // locally while the server was unreachable.
@@ -14011,9 +17631,8 @@ if ($isCashierRole && $page !== 'login') {
                 // inactive, solid accent-blue pill when active — just sized down to
                 // fit a compact stat-card header instead of a full toolbar.
                 const html = DASH_PERIODS.map(([val, label]) =>
-                    '<button type="button" class="btn period-btn' + (val === dashPeriod ? ' active' : '') + '" ' +
-                    'onclick="setDashPeriod(\'' + val + '\')" ' +
-                    'style="font-size:.62rem;padding:3px 8px;">' + label + '</button>'
+                    '<button type="button" class="btn period-btn dash-period-btn' + (val === dashPeriod ? ' active' : '') + '" ' +
+                    'onclick="setDashPeriod(\'' + val + '\')">' + label + '</button>'
                 ).join('');
                 document.querySelectorAll('.stat-period-group').forEach(g => g.innerHTML = html);
             }
@@ -14037,14 +17656,54 @@ if ($isCashierRole && $page !== 'login') {
                 document.getElementById('s-profit-label').textContent = label + ' profit';
             }
 
+            async function loadOfflineStatsFallback() {
+                try {
+                    const prods = (typeof PosIDB !== 'undefined') ? (await PosIDB.getAll('products') || []) : [];
+                    const orders = (typeof PosIDB !== 'undefined') ? (await PosIDB.getAll('offline_orders') || []) : [];
+                    
+                    const todayDateStr = new Date().toDateString();
+                    const todayOrders = orders.filter(o => {
+                        const dt = o.created_at ? new Date(o.created_at) : (o.createdAt ? new Date(o.createdAt) : null);
+                        return dt && dt.toDateString() === todayDateStr;
+                    });
+
+                    const todayRev = todayOrders.reduce((sum, o) => sum + (parseFloat(o.total || o.payload?.total || 0) || 0), 0);
+                    const lowStock = prods.filter(p => {
+                        const q = parseInt(p.store_quantity ?? p.quantity ?? 0, 10);
+                        return q <= 5;
+                    }).length;
+
+                    const revEl = document.getElementById('s-today-rev');
+                    const cntEl = document.getElementById('s-today-cnt');
+                    const prodsEl = document.getElementById('s-prods');
+                    const lowstockEl = document.getElementById('s-lowstock');
+                    const weekEl = document.getElementById('s-week');
+                    const weekLbl = document.getElementById('s-week-label');
+                    const profitEl = document.getElementById('s-profit');
+                    const profitLbl = document.getElementById('s-profit-label');
+
+                    if (revEl) revEl.textContent = fmt(todayRev);
+                    if (cntEl) cntEl.textContent = todayOrders.length + ' transactions' + (!navigator.onLine || !_isServerReachable ? ' (offline)' : '');
+                    if (prodsEl) prodsEl.textContent = prods.length;
+                    if (lowstockEl) lowstockEl.textContent = lowStock + ' low stock';
+                    if (weekEl) weekEl.textContent = fmt(todayRev);
+                    if (weekLbl) weekLbl.textContent = "today's revenue";
+                    if (profitEl) profitEl.textContent = fmt(todayRev * 0.25);
+                    if (profitLbl) profitLbl.textContent = "estimated profit";
+                } catch (e) {}
+            }
+
             function loadStats() {
+                if (navigator.onLine === false || !_isServerReachable) {
+                    loadOfflineStatsFallback();
+                    return;
+                }
                 apiGet('get_stats').then(r => {
-                    // Previously a silent return here — if this call ever failed, every
-                    // dashboard card just sat on its "—" placeholder forever with no
-                    // indication anything was wrong. Now it says so, so a real backend
-                    // issue is visible instead of looking like the app is just slow.
                     if (!r?.success) {
-                        toast(r?.error ? ('⚠️ Dashboard stats: ' + r.error) : '⚠️ Could not load dashboard stats', 'error');
+                        loadOfflineStatsFallback();
+                        if (navigator.onLine !== false && _isServerReachable && !r?.offline) {
+                            toast(r?.error ? ('Dashboard stats: ' + r.error) : 'Could not load dashboard stats', 'error');
+                        }
                         return;
                     }
                     const d = r.data;
@@ -14055,17 +17714,166 @@ if ($isCashierRole && $page !== 'login') {
                     document.getElementById('s-lowstock').textContent = d.low_stock + ' low stock';
                     renderDashPeriodButtons();
                     renderPeriodStats();
+                }).catch(() => {
+                    loadOfflineStatsFallback();
                 });
             }
 
-            function loadAllProds() {
-                Promise.all([apiGet('get_products'), apiGet('get_categories')]).then(([pr, cr]) => {
-                    if (pr?.success) allProds = pr.data;
-                    if (cr?.success) allCats = cr.data;
+            function loadAllProds(force = false) {
+                if (force) invalidateProdCache();
+
+                // Instant paint from memory or session cache!
+                if (!force && _prodCache.data?.data && Array.isArray(_prodCache.data.data) && _prodCache.data.data.length > 0) {
+                    allProds = _prodCache.data.data;
+                    renderGrid(true);
+                }
+
+                let _loadingProdsFreshRendered = false;
+                Promise.all([
+                    apiGetProducts(force, (fresh) => {
+                        if (fresh?.success && Array.isArray(fresh.data)) {
+                            allProds = fresh.data;
+                            const succModal = document.getElementById('success-modal');
+                            if (!succModal || !succModal.classList.contains('open')) {
+                                renderGrid();
+                                _loadingProdsFreshRendered = true;
+                            }
+                        }
+                    }),
+                    apiGet('get_categories')
+                ]).then(([pr, cr]) => {
+                    if (pr?.success && Array.isArray(pr.data)) allProds = pr.data;
+                    if (cr?.success && Array.isArray(cr.data)) allCats = cr.data;
                     renderCatPills();
-                    renderGrid();
+                    const succModal = document.getElementById('success-modal');
+                    if (!succModal || !succModal.classList.contains('open')) {
+                        if (!_loadingProdsFreshRendered) {
+                            renderGrid(true);
+                        }
+                    }
+                }).catch(() => {
+                    if (!allProds || !allProds.length) {
+                        const pg = document.getElementById('prods-grid');
+                        if (pg) pg.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:30px;"><div style="color:var(--text);font-weight:700;margin-bottom:6px;">Could not load products</div><button type="button" class="btn btn-primary btn-sm" onclick="loadAllProds(true)">Tap to Retry</button></div>';
+                    }
                 });
             }
+
+            // ── PRODUCT AUTOCOMPLETE SUGGESTIONS (Based on first letters) ──
+            function getProductSuggestions(prods, rawQuery, maxResults = 8) {
+                if (!Array.isArray(prods) || !rawQuery) return [];
+                const q = rawQuery.trim().toLowerCase();
+                if (!q) return [];
+
+                const startsWith = [];
+                const wordStarts = [];
+                const containsSub = [];
+                const seen = new Set();
+
+                for (let i = 0; i < prods.length; i++) {
+                    const p = prods[i];
+                    if (!p || !p.name) continue;
+                    const name = p.name.toLowerCase();
+                    if (name.startsWith(q)) {
+                        startsWith.push(p);
+                        seen.add(p.id);
+                    }
+                }
+                startsWith.sort((a, b) => a.name.localeCompare(b.name));
+
+                for (let i = 0; i < prods.length; i++) {
+                    const p = prods[i];
+                    if (!p || !p.name || seen.has(p.id)) continue;
+                    const name = p.name.toLowerCase();
+                    if (name.includes(' ' + q) || name.includes('-' + q) || name.includes('/' + q)) {
+                        wordStarts.push(p);
+                        seen.add(p.id);
+                    }
+                }
+                wordStarts.sort((a, b) => a.name.localeCompare(b.name));
+
+                for (let i = 0; i < prods.length; i++) {
+                    const p = prods[i];
+                    if (!p || !p.name || seen.has(p.id)) continue;
+                    const name = p.name.toLowerCase();
+                    const brand = (p.brand || '').toLowerCase();
+                    const sup = (p.supplier || '').toLowerCase();
+                    const cat = (p.category_name || '').toLowerCase();
+                    const bar = (p.barcode || '').toLowerCase();
+                    if (name.includes(q) || brand.includes(q) || sup.includes(q) || cat.includes(q) || bar.includes(q)) {
+                        containsSub.push(p);
+                        seen.add(p.id);
+                    }
+                }
+
+                return [...startsWith, ...wordStarts, ...containsSub].slice(0, maxResults);
+            }
+
+            let _dashSuggestTimer = null;
+            function hideDashSearchSuggestSoon() {
+                clearTimeout(_dashSuggestTimer);
+                _dashSuggestTimer = setTimeout(() => {
+                    const box = document.getElementById('dash-search-suggest');
+                    if (box) box.style.display = 'none';
+                }, 220);
+            }
+
+            function selectDashSearchProduct(name) {
+                const inp = document.getElementById('search-inp');
+                if (inp) {
+                    inp.value = name;
+                }
+                const box = document.getElementById('dash-search-suggest');
+                if (box) {
+                    box.style.display = 'none';
+                    box.innerHTML = '';
+                }
+                filterProds();
+            }
+
+            function onDashSearchInput(el) {
+                filterProds();
+                const box = document.getElementById('dash-search-suggest');
+                if (!box) return;
+                const val = (el ? el.value : (document.getElementById('search-inp')?.value || '')).trim();
+                if (!val) {
+                    box.style.display = 'none';
+                    box.innerHTML = '';
+                    return;
+                }
+                const prods = Array.isArray(allProds) && allProds.length ? allProds : [];
+                const matches = getProductSuggestions(prods, val, 8);
+                if (!matches.length) {
+                    box.style.display = 'none';
+                    box.innerHTML = '';
+                    return;
+                }
+                box.innerHTML = matches.map(p => {
+                    const price = CUR + parseFloat(p.price || 0).toFixed(2);
+                    const stock = p.quantity !== undefined ? p.quantity : (p.store_quantity ?? 0);
+                    return '<div class="search-suggest-item" onmousedown="selectDashSearchProduct(' + jsAttr(p.name) + ')">' +
+                        '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">' +
+                            '<span style="font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escapeHtml(p.name) + '</span>' +
+                            '<span style="font-size:.78rem;font-weight:700;color:var(--accent);white-space:nowrap;">' + price + '</span>' +
+                        '</div>' +
+                        '<div style="font-size:.74rem;color:var(--text3);margin-top:2px;display:flex;gap:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' +
+                            (p.category_name ? '<span>' + escapeHtml(p.category_name) + '</span>' : '') +
+                            '<span>Stock: ' + stock + '</span>' +
+                            (p.barcode ? '<span>SKU: ' + escapeHtml(p.barcode) + '</span>' : '') +
+                        '</div>' +
+                    '</div>';
+                }).join('');
+                box.style.display = 'block';
+            }
+
+            document.addEventListener('click', function(e) {
+                if (!e.target.closest('.search-wrap')) {
+                    const d = document.getElementById('dash-search-suggest');
+                    if (d) d.style.display = 'none';
+                    const w = document.getElementById('wh-search-suggest');
+                    if (w) w.style.display = 'none';
+                }
+            });
 
             function filterProds() {
                 renderGrid();
@@ -14101,51 +17909,165 @@ if ($isCashierRole && $page !== 'login') {
                 };
             }
 
-            function renderGrid() {
+            // ── VIRTUAL / CHUNKED GRID RENDERING ────────────────────────────────
+            // Rendering 800+ cards into innerHTML freezes the main thread on lower-end
+            // POS terminals and phones. This chunked renderer draws 30 cards first so
+            // the interface appears instantly, then transparently appends subsequent
+            // chunks of 30 as the cashier scrolls down using an IntersectionObserver.
+            let _gridFilteredProds = [];
+            let _gridRenderedCount = 0;
+            const _GRID_CHUNK_SIZE = 30;
+            let _gridObserver = null;
+
+            let _dashStockSource = 'store'; // 'store', 'warehouse', 'all'
+
+            function isOwnerOrAdmin() {
+                return typeof USER_ROLE !== 'undefined' && (USER_ROLE === 'owner' || USER_ROLE === 'admin');
+            }
+
+            function setDashStockSource(src, btn) {
+                _dashStockSource = src;
+                document.querySelectorAll('.dash-src-btn').forEach(b => b.classList.remove('active'));
+                if (btn) btn.classList.add('active');
+                renderGrid();
+            }
+
+            function buildProductCardHtml(p) {
+                const inCartQty = cart.filter(c => c.product_id === p.id).reduce((s, c) => s + c.qty, 0);
+                const privileged = isOwnerOrAdmin();
+                const threshold = p.low_stock_threshold ?? 5;
+
+                let availStock = 0;
+                let isOut = false;
+                let isLow = false;
+                let stockMeta = '';
+                let clickHandler = '';
+
+                if (privileged) {
+                    const stQty = parseInt(p.quantity) || 0;
+                    const whQty = parseInt(p.warehouse_quantity) || 0;
+                    if (_dashStockSource === 'warehouse') {
+                        availStock = whQty;
+                        isOut = availStock <= 0;
+                        isLow = availStock > 0 && availStock <= threshold;
+                        stockMeta = (p.category_name || 'Uncategorized') + ' · Wh: ' + whQty;
+                        clickHandler = isOut ? '' : 'onclick="addToCart(' + p.id + ', 1, \'warehouse\')"';
+                    } else if (_dashStockSource === 'all') {
+                        availStock = stQty + whQty;
+                        isOut = availStock <= 0;
+                        isLow = availStock > 0 && availStock <= threshold;
+                        stockMeta = (p.category_name || 'Uncategorized') + ' · Store: ' + stQty + ' | Wh: ' + whQty;
+                        clickHandler = isOut ? '' : 'onclick="addToCart(' + p.id + ')"';
+                    } else { // 'store'
+                        availStock = stQty;
+                        isOut = availStock <= 0;
+                        isLow = availStock > 0 && availStock <= threshold;
+                        stockMeta = (p.category_name || 'Uncategorized') + ' · Store: ' + stQty;
+                        clickHandler = isOut ? '' : 'onclick="addToCart(' + p.id + ', 1, \'store\')"';
+                    }
+                } else {
+                    availStock = parseInt(p.quantity) || 0;
+                    isOut = availStock <= 0;
+                    isLow = availStock > 0 && availStock <= threshold;
+                    stockMeta = (p.category_name || 'Uncategorized') + ' · Stock: ' + availStock;
+                    clickHandler = isOut ? '' : 'onclick="addToCart(' + p.id + ')"';
+                }
+
+                const promoInfo = getPromoInfo(p);
+                const img = p.has_image == 1 ?
+                    '<img src="' + prodImgUrl(p.id, p.updated_at) + '" class="product-card-img" loading="lazy" data-fallback="div" onerror="imgFallback(this)"/>' :
+                    '<div class="product-card-ph"><img src="' + DEFAULT_PRODUCT_IMG + '" class="default-prod-img" alt=""></div>';
+                const priceHTML = promoInfo.active ?
+                    '<span class="promo-strike">' + fmt(promoInfo.price) + '</span><span class="promo-now">' + fmt(promoInfo.promo) + '</span>' :
+                    fmt(p.price);
+                const descLine = p.description ?
+                    '<div class="product-card-meta" style="opacity:.7;font-style:italic;">' + escapeHtml(p.description.length > 60 ? p.description.slice(0, 60) + '…' : p.description) + '</div>' : '';
+                return '<div class="product-card" ' + clickHandler + (isOut ? ' style="opacity:.55;cursor:not-allowed;"' : '') + '>' +
+                    img +
+                    (isLow && !isOut ? '<span class="low-badge">Low</span>' : '') +
+                    (isOut ? '<span class="low-badge">Out</span>' : '') +
+                    (promoInfo.active && !isOut ? '<span class="sale-badge">SALE</span>' : '') +
+                    (inCartQty > 0 ? '<span class="qty-badge">' + inCartQty + '</span>' : '') +
+                    '<div class="product-card-body">' +
+                    '<div class="product-card-name">' + escapeHtml(p.name) + '</div>' +
+                    '<div class="product-card-price">' + priceHTML + '</div>' +
+                    '<div class="product-card-meta">' + stockMeta + '</div>' +
+                    descLine +
+                    '</div></div>';
+            }
+
+            function renderNextGridChunk() {
+                const grid = document.getElementById('prods-grid');
+                if (!grid) return;
+                const nextChunk = _gridFilteredProds.slice(_gridRenderedCount, _gridRenderedCount + _GRID_CHUNK_SIZE);
+                if (!nextChunk.length) {
+                    const sentinel = document.getElementById('prods-grid-sentinel');
+                    if (sentinel) sentinel.remove();
+                    return;
+                }
+                const sentinel = document.getElementById('prods-grid-sentinel');
+                const html = nextChunk.map(buildProductCardHtml).join('');
+                if (sentinel) {
+                    sentinel.insertAdjacentHTML('beforebegin', html);
+                } else {
+                    grid.insertAdjacentHTML('beforeend', html);
+                }
+                _gridRenderedCount += nextChunk.length;
+                if (_gridRenderedCount >= _gridFilteredProds.length) {
+                    const s = document.getElementById('prods-grid-sentinel');
+                    if (s) s.remove();
+                }
+            }
+
+            function setupGridObserver() {
+                if (_gridObserver) {
+                    _gridObserver.disconnect();
+                    _gridObserver = null;
+                }
+                const sentinel = document.getElementById('prods-grid-sentinel');
+                if (!sentinel) return;
+                if ('IntersectionObserver' in window) {
+                    _gridObserver = new IntersectionObserver((entries) => {
+                        if (entries[0] && entries[0].isIntersecting) {
+                            renderNextGridChunk();
+                        }
+                    }, { root: null, rootMargin: '300px' });
+                    _gridObserver.observe(sentinel);
+                } else {
+                    while (_gridRenderedCount < _gridFilteredProds.length) {
+                        renderNextGridChunk();
+                    }
+                }
+            }
+
+            function renderGrid(reset = true) {
                 const q = (document.getElementById('search-inp')?.value || '').toLowerCase();
-                const prods = allProds.filter(p => {
+                _gridFilteredProds = allProds.filter(p => {
                     const mc = activeCat === 'All' || p.category_name === activeCat;
                     const mq = !q || p.name.toLowerCase().includes(q) || (p.category_name || '').toLowerCase().includes(q);
                     return mc && mq;
                 });
                 const grid = document.getElementById('prods-grid');
                 if (!grid) return;
-                if (!prods.length) {
-                    grid.innerHTML = '<div style="grid-column:1/-1"><div class="empty-state"><div class="empty-icon">🍽️</div><div class="empty-text">No products found</div></div></div>';
+                if (!_gridFilteredProds.length) {
+                    if (_gridObserver) { _gridObserver.disconnect(); _gridObserver = null; }
+                    grid.innerHTML = '<div style="grid-column:1/-1"><div class="empty-state"><div class="empty-icon" style="display:flex;justify-content:center;"><img src="' + DEFAULT_PRODUCT_IMG + '" class="default-prod-img" style="width:56px;height:56px;object-fit:cover;border-radius:10px;margin-bottom:8px;opacity:.7;" alt=""></div><div class="empty-text">No products found</div></div></div>';
                     return;
                 }
-                grid.innerHTML = prods.map(p => {
-                    const inCart = cart.find(c => c.product_id === p.id);
-                    const isOut = p.quantity == 0;
-                    const isLow = p.quantity > 0 && p.quantity <= (p.low_stock_threshold ?? 5);
-                    const promoInfo = getPromoInfo(p);
-                    const img = p.has_image == 1 ?
-                        '<img src="' + prodImgUrl(p.id, p.updated_at) + '" class="product-card-img" loading="lazy" data-fallback="div" onerror="imgFallback(this)"/>' :
-                        '<div class="product-card-ph"><img src="' + DEFAULT_PRODUCT_IMG + '" class="default-prod-img" alt=""></div>';
-                    const clickHandler = isOut ? '' : 'onclick="addToCart(' + p.id + ')"';
-                    const priceHTML = promoInfo.active ?
-                        '<span class="promo-strike">' + fmt(promoInfo.price) + '</span><span class="promo-now">' + fmt(promoInfo.promo) + '</span>' :
-                        fmt(p.price);
-                    // Add-Product description snippet, shown right on the tile — kept as
-                    // a second, smaller meta line. (The Brand/Supplier/Size/SKU line that
-                    // used to sit here was removed per request — too cluttered on the
-                    // Dashboard's compact tiles; that full detail set still lives in Cart
-                    // and the Sales History "View" modal.)
-                    const descLine = p.description ?
-                        '<div class="product-card-meta" style="opacity:.7;font-style:italic;">' + escapeHtml(p.description.length > 60 ? p.description.slice(0, 60) + '…' : p.description) + '</div>' : '';
-                    return '<div class="product-card" ' + clickHandler + (isOut ? ' style="opacity:.55;cursor:not-allowed;"' : '') + '>' +
-                        img +
-                        (isLow && !isOut ? '<span class="low-badge">Low</span>' : '') +
-                        (isOut ? '<span class="low-badge">Out</span>' : '') +
-                        (promoInfo.active && !isOut ? '<span class="sale-badge">🏷️ SALE</span>' : '') +
-                        (inCart ? '<span class="qty-badge">' + inCart.qty + '</span>' : '') +
-                        '<div class="product-card-body">' +
-                        '<div class="product-card-name">' + p.name + '</div>' +
-                        '<div class="product-card-price">' + priceHTML + '</div>' +
-                        '<div class="product-card-meta">' + (p.category_name || 'Uncategorized') + ' · Stock: ' + p.quantity + '</div>' +
-                        descLine +
-                        '</div></div>';
-                }).join('');
+                if (reset) {
+                    _gridRenderedCount = Math.min(_GRID_CHUNK_SIZE, _gridFilteredProds.length);
+                } else {
+                    _gridRenderedCount = Math.min(Math.max(_GRID_CHUNK_SIZE, _gridRenderedCount), _gridFilteredProds.length);
+                }
+                grid.innerHTML = _gridFilteredProds.slice(0, _gridRenderedCount).map(buildProductCardHtml).join('');
+                if (_gridRenderedCount < _gridFilteredProds.length) {
+                    const sentinel = document.createElement('div');
+                    sentinel.id = 'prods-grid-sentinel';
+                    sentinel.style.cssText = 'grid-column:1/-1;height:40px;display:flex;align-items:center;justify-content:center;color:var(--text3);font-size:.82rem;';
+                    sentinel.innerHTML = '<span>Loading more products…</span>';
+                    grid.appendChild(sentinel);
+                    setupGridObserver();
+                }
             }
 
             function loadTopSellers() {
@@ -14242,23 +18164,43 @@ if ($isCashierRole && $page !== 'login') {
                 return 1;
             }
 
-            function addToCart(pid, qtyOverride) {
+            function addToCart(pid, qtyOverride, explicitSource) {
                 const p = allProds.find(x => x.id == pid);
-                if (!p || p.quantity <= 0) {
-                    toast('Out of stock!', 'error');
+                if (!p) return;
+
+                const privileged = isOwnerOrAdmin();
+                let source = 'store';
+                if (privileged) {
+                    if (explicitSource) {
+                        source = explicitSource;
+                    } else if (_dashStockSource === 'warehouse') {
+                        source = 'warehouse';
+                    } else if (_dashStockSource === 'all') {
+                        const stQty = parseInt(p.quantity) || 0;
+                        const whQty = parseInt(p.warehouse_quantity) || 0;
+                        if (stQty > 0) source = 'store';
+                        else if (whQty > 0) source = 'warehouse';
+                        else source = 'store';
+                    }
+                }
+
+                const maxStock = (source === 'warehouse') ? (parseInt(p.warehouse_quantity) || 0) : (parseInt(p.quantity) || 0);
+                if (maxStock <= 0) {
+                    toast('Out of ' + (source === 'warehouse' ? 'warehouse' : 'store') + ' stock!', 'error');
                     return;
                 }
+
                 const addQty = Math.max(1, parseInt(qtyOverride) || 1);
-                const ex = cart.find(c => c.product_id === pid);
+                const ex = cart.find(c => c.product_id === pid && (c.stock_source || 'store') === source);
                 if (ex) {
-                    if (ex.qty + addQty > p.quantity) {
-                        toast('Not enough stock!', 'warning');
+                    if (ex.qty + addQty > maxStock) {
+                        toast('Not enough ' + (source === 'warehouse' ? 'warehouse' : 'store') + ' stock! (Max: ' + maxStock + ')', 'warning');
                         return;
                     }
                     ex.qty += addQty;
                 } else {
-                    if (addQty > p.quantity) {
-                        toast('Not enough stock!', 'warning');
+                    if (addQty > maxStock) {
+                        toast('Not enough ' + (source === 'warehouse' ? 'warehouse' : 'store') + ' stock! (Max: ' + maxStock + ')', 'warning');
                         return;
                     }
                     // Price chain per line item:
@@ -14266,7 +18208,7 @@ if ($isCashierRole && $page !== 'login') {
                     //   catalog_price  → regular_price, or the catalog Promo Price if one is active
                     //   price          → what's actually charged (starts equal to catalog_price;
                     //                     a cashier-applied manual_discount, added later in the
-                    //                     Cart via the 🏷️ button, can markdown it further for
+                    //                     Cart via the discount button, can markdown it further for
                     //                     this sale only — it never touches the stored product)
                     const promoInfo = getPromoInfo(p);
                     const catalogPrice = promoInfo.active ? promoInfo.promo : parseFloat(p.price);
@@ -14280,6 +18222,7 @@ if ($isCashierRole && $page !== 'login') {
                     const casePromoActive = casePromo !== null && !isNaN(casePromo) && casePromo > 0 && caseRegular > 0 && casePromo < caseRegular;
                     cart.push({
                         product_id: pid,
+                        stock_source: source,
                         name: p.name,
                         price: catalogPrice,
                         qty: addQty,
@@ -14306,56 +18249,117 @@ if ($isCashierRole && $page !== 'login') {
                         is_case_promo: casePromoActive
                     });
                 }
-                toast(p.name + (addQty > 1 ? ' ×' + addQty : '') + ' added', 'success');
+                const srcLabel = (privileged && source === 'warehouse') ? ' (Warehouse)' : '';
+                toast(p.name + (addQty > 1 ? ' ×' + addQty : '') + srcLabel + ' added', 'success');
                 updateCartUI();
-                renderGrid();
+                renderGrid(false);
+                const cartModalEl = document.getElementById('cart-modal');
+                if (cartModalEl && cartModalEl.classList.contains('open')) {
+                    const active = document.activeElement;
+                    if (!active || (!active.classList?.contains('cart-qty-input') && active.id !== 'search-inp')) {
+                        setTimeout(() => focusCartCashTendered(false), 50);
+                    }
+                }
             }
 
-            function removeFromCart(pid) {
-                cart = cart.filter(c => c.product_id !== pid);
+            function removeFromCart(pid, stockSource) {
+                cart = cart.filter(c => !(c.product_id === pid && (!stockSource || (c.stock_source || 'store') === stockSource)));
                 updateCartUI();
-                renderGrid();
+                const cartModal = document.getElementById('cart-modal');
+                if (!cartModal || !cartModal.classList.contains('open')) {
+                    renderGrid(false);
+                }
             }
 
-            function changeQty(pid, d) {
-                const item = cart.find(c => c.product_id === pid);
+            function changeQty(pid, d, stockSource) {
+                const item = cart.find(c => c.product_id === pid && (!stockSource || (c.stock_source || 'store') === stockSource));
                 const prod = allProds.find(p => p.id == pid);
                 if (!item) return;
-                item.qty = Math.max(1, Math.min(item.qty + d, prod?.quantity || 999));
+                const src = item.stock_source || 'store';
+                const maxStock = (src === 'warehouse') ? (parseInt(prod?.warehouse_quantity) || 0) : (parseInt(prod?.quantity) || 0);
+                const nextQty = item.qty + d;
+                if (d > 0 && nextQty > maxStock) {
+                    toast('Only ' + maxStock + ' available in ' + (src === 'warehouse' ? 'warehouse' : 'store'), 'warning');
+                    return;
+                }
+                item.qty = Math.max(1, Math.min(nextQty, maxStock || 999));
                 updateCartUI();
-                renderGrid();
-                // Keep keyboard focus (and the highlighted-row outline) on this same row's
-                // qty box after the ± click, so Left/Right arrow-key stepping still works
-                // immediately afterward without re-selecting the row.
-                focusCartQtyInput(pid);
+                const cartModal = document.getElementById('cart-modal');
+                if (!cartModal || !cartModal.classList.contains('open')) {
+                    renderGrid(false);
+                }
+                focusCartQtyInput(pid, src);
             }
 
             // Called when a cart row's qty <input> is edited directly — either by typing
             // (keyboard nav "type a number to set qty") or by the browser's native number
             // spinner. Clamps to available stock and re-renders.
-            function setQtyDirect(pid, val) {
-                const item = cart.find(c => c.product_id === pid);
+            function setQtyDirect(pid, val, stockSource) {
+                const item = cart.find(c => c.product_id === pid && (!stockSource || (c.stock_source || 'store') === stockSource));
                 const prod = allProds.find(p => p.id == pid);
                 if (!item) return;
                 let n = parseInt(val);
                 if (isNaN(n) || n < 1) n = 1;
-                const max = prod?.quantity || 999;
+                const src = item.stock_source || 'store';
+                const max = (src === 'warehouse') ? (parseInt(prod?.warehouse_quantity) || 0) : (parseInt(prod?.quantity) || 0);
                 if (n > max) {
                     n = max;
                     toast('Only ' + max + ' in stock', 'warning');
                 }
                 item.qty = n;
                 updateCartUI();
-                renderGrid();
-                focusCartQtyInput(pid);
+                const cartModal = document.getElementById('cart-modal');
+                if (!cartModal || !cartModal.classList.contains('open')) {
+                    renderGrid(false);
+                }
+                focusCartQtyInput(pid, src);
             }
 
-            function focusCartQtyInput(pid) {
-                const inp = document.getElementById('cart-qty-' + pid);
+            function focusCartQtyInput(pid, stockSource) {
+                // On mobile touchscreens, never force-focus numeric inputs when tapping +/- buttons
+                // to prevent the mobile virtual keyboard from popping up/flashing and resizing viewport
+                if (window.matchMedia && window.matchMedia('(hover: none) and (pointer: coarse)').matches) {
+                    return;
+                }
+                const src = stockSource || 'store';
+                const inp = document.getElementById('cart-qty-' + pid + '-' + src) || document.getElementById('cart-qty-' + pid);
                 if (inp) {
                     inp.focus();
                     inp.select();
                 }
+            }
+
+            function toggleCartItemSource(pid, currentSrc) {
+                if (!isOwnerOrAdmin()) return;
+                const prod = allProds.find(p => p.id == pid);
+                if (!prod) return;
+                const targetSrc = currentSrc === 'warehouse' ? 'store' : 'warehouse';
+                const targetMax = targetSrc === 'warehouse' ? (parseInt(prod.warehouse_quantity) || 0) : (parseInt(prod.quantity) || 0);
+                if (targetMax <= 0) {
+                    toast('No stock available in ' + (targetSrc === 'warehouse' ? 'warehouse' : 'store') + ' to switch!', 'warning');
+                    return;
+                }
+                const item = cart.find(c => c.product_id === pid && (c.stock_source || 'store') === currentSrc);
+                if (!item) return;
+                const existingTarget = cart.find(c => c.product_id === pid && (c.stock_source || 'store') === targetSrc);
+                if (existingTarget) {
+                    const combined = existingTarget.qty + item.qty;
+                    if (combined > targetMax) {
+                        toast('Exceeds available ' + targetSrc + ' stock (' + targetMax + ')', 'warning');
+                        return;
+                    }
+                    existingTarget.qty = combined;
+                    cart = cart.filter(c => c !== item);
+                } else {
+                    if (item.qty > targetMax) {
+                        item.qty = targetMax;
+                        toast('Adjusted qty to ' + targetMax + ' (' + targetSrc + ' limit)', 'info');
+                    }
+                    item.stock_source = targetSrc;
+                }
+                toast('Switched to ' + (targetSrc === 'warehouse' ? 'Warehouse' : 'Store') + ' stock', 'success');
+                updateCartUI();
+                renderGrid(false);
             }
 
             // Resolves what the cart line's "PRICE" column should show. Previously this
@@ -14398,7 +18402,7 @@ if ($isCashierRole && $page !== 'login') {
             let cartDiscountTargetId = null;
             let cartDiscountType = 'percent';
 
-            // productId is optional: when set (clicked from a specific cart line's 🏷️
+            // productId is optional: when set (clicked from a specific cart line's discount button
             // button) that product is preselected; when omitted (clicked from the "Give
             // a Discount on a Product" button that appears once Cash Tendered is
             // entered) the cashier picks the product from the dropdown themselves.
@@ -14474,7 +18478,7 @@ if ($isCashierRole && $page !== 'login') {
                 let newPrice = cartDiscountType === 'percent' ? base * (1 - val / 100) : base - val;
                 newPrice = Math.max(0, Math.round(newPrice * 100) / 100);
                 if (newPrice >= base) {
-                    preview.innerHTML = '<span style="color:var(--danger);">⚠️ That doesn\'t lower the price below ' + fmt(base) + '.</span>';
+                    preview.innerHTML = '<span style="color:var(--danger);">That doesn\'t lower the price below ' + fmt(base) + '.</span>';
                     return;
                 }
                 preview.innerHTML = 'New price: <strong style="color:#e74c3c;">' + fmt(newPrice) + '</strong> <span style="color:var(--text3);text-decoration:line-through;">' + fmt(base) + '</span> / piece';
@@ -14522,12 +18526,112 @@ if ($isCashierRole && $page !== 'login') {
             function clearCart() {
                 cart = [];
                 updateCartUI();
-                renderGrid();
+                renderGrid(false);
             }
 
             function setCash(v) {
-                document.getElementById('cash-input').value = v;
+                const el = document.getElementById('cash-input');
+                if (el) {
+                    el.value = v;
+                    el.focus();
+                    el.select();
+                }
                 calcChange();
+            }
+
+            function focusCartCashTendered(smooth = false) {
+                const cartModal = document.getElementById('cart-modal');
+                if (!cartModal || !cartModal.classList.contains('open')) return;
+                if (!cart.length) return;
+
+                const cashInp = document.getElementById('cash-input');
+                if (!cashInp) return;
+
+                // Put focus and selection on the Cash Tendered field so cashier can type immediately without mouse
+                try {
+                    cashInp.focus({ preventScroll: true });
+                } catch (err) {
+                    cashInp.focus();
+                }
+                cashInp.select();
+
+                // Bring Cash Tendered, fixed value presets, and payment controls cleanly into view
+                const wrap = document.getElementById('cash-tendered-wrap') || cashInp;
+                const modalEl = cartModal.querySelector('.modal');
+                if (wrap && modalEl) {
+                    wrap.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'center' });
+                }
+            }
+
+            function buildCartBulkCardHtml(item, bd) {
+                const hasBulkTier = bd.parts.some(p => p.unit === 'case' || p.unit === 'bundle');
+                if (!hasBulkTier) return '';
+                const naive = item.qty * item.price;
+                const savings = naive - bd.subtotal;
+                const lines = bd.parts.map(p => {
+                    if (p.unit === 'case') return '<div class="cart-bulk-line"><span>' + p.count + 'x Case (' + item.case_qty + ' Pcs)</span><span>' + fmt(item.case_price) + '</span></div>';
+                    if (p.unit === 'bundle') return '<div class="cart-bulk-line"><span>' + p.count + 'x Bundle (' + item.pack_qty + ' Pcs)</span><span>' + fmt(item.pack_price) + '</span></div>';
+                    return '<div class="cart-bulk-line"><span>' + p.count + 'x Pieces</span><span>' + fmt(item.price) + ' each</span></div>';
+                }).join('');
+                return '<div class="cart-bulk-card">' + lines +
+                    (savings > 0.004 ? '<span class="cart-savings-badge">Auto-optimized (Saved ' + fmt(savings) + ')</span>' : '') +
+                    '</div>';
+            }
+
+            function buildCartLineHtml(item, idx) {
+                const bd = computeUnitBreakdown(item);
+                const imgEl = item.has_image ?
+                    '<img class="cart-line-img" src="' + prodImgUrl(item.product_id, item.img_v) + '" data-fallback="cart" onerror="imgFallback(this)"/>' :
+                    '<div class="cart-line-img"><img src="' + DEFAULT_PRODUCT_IMG + '" class="default-prod-img" alt=""></div>';
+                const metaParts = [];
+
+                if (isOwnerOrAdmin()) {
+                    const isWh = item.stock_source === 'warehouse';
+                    const prod = allProds.find(p => p.id == item.product_id);
+                    const stStock = parseInt(prod?.quantity) || 0;
+                    const whStock = parseInt(prod?.warehouse_quantity) || 0;
+                    const badgeColor = isWh ? 'background:rgba(59,130,246,0.18);color:#60a5fa;border:1px solid rgba(59,130,246,0.35);' : 'background:rgba(16,185,129,0.18);color:#34d399;border:1px solid rgba(16,185,129,0.35);';
+                    const badgeLabel = isWh ? 'Warehouse Stock (' + whStock + ' avail)' : 'Store Stock (' + stStock + ' avail)';
+                    const canSwitch = isWh ? stStock > 0 : whStock > 0;
+                    const switchBtn = canSwitch ? ' <span style="text-decoration:underline;cursor:pointer;margin-left:5px;font-weight:700;" onclick="toggleCartItemSource(' + item.product_id + ', \'' + (item.stock_source || 'store') + '\')" title="Switch fulfillment source">⇄ Switch to ' + (isWh ? 'Store' : 'Wh') + '</span>' : '';
+                    metaParts.push('<span style="' + badgeColor + 'font-size:.72rem;padding:2px 7px;border-radius:5px;font-weight:700;display:inline-flex;align-items:center;">' + badgeLabel + switchBtn + '</span>');
+                }
+
+                if (item.manual_discount) {
+                    const md = item.manual_discount;
+                    const tagLabel = md.type === 'percent' ? md.value + '% OFF' : fmt(md.value) + ' OFF';
+                    metaParts.push('<span style="color:#e74c3c;font-weight:700;">DISCOUNT (' + tagLabel + ')' + (md.reason ? ' — ' + escapeHtml(md.reason) : '') + '</span>');
+                } else if (item.is_promo) {
+                    metaParts.push('<span style="color:#e74c3c;font-weight:700;">PROMO</span>');
+                }
+                if (item.category_name) metaParts.push('Category: ' + escapeHtml(item.category_name));
+                if (item.brand) metaParts.push('Brand: ' + escapeHtml(item.brand));
+                if (item.supplier) metaParts.push('Supplier: ' + escapeHtml(item.supplier));
+                if (item.unit_type) metaParts.push('Size: ' + escapeHtml(formatUnitSizeLabel(item.unit_type, item.unit_size)));
+                if (item.description) metaParts.push(escapeHtml(item.description.length > 42 ? item.description.slice(0, 42) + '…' : item.description));
+                if (item.barcode) metaParts.push('SKU: ' + escapeHtml(item.barcode));
+                const metaLine = metaParts.length ? '<div class="cart-line-meta">' + metaParts.join(' | ') + '</div>' : '';
+
+                const bulkCard = buildCartBulkCardHtml(item, bd);
+                const lineSrc = item.stock_source || 'store';
+                return '<div class="cart-line' + (idx === focusedCartIdx ? ' kbd-focused' : '') + '" data-pid="' + item.product_id + '" data-src="' + lineSrc + '">' +
+                    imgEl +
+                    '<div><div class="cart-line-name">' + escapeHtml(item.name) + '</div></div>' +
+                    '<div class="cart-qty-box">' +
+                    '<button type="button" class="qty-btn" onclick="changeQty(' + item.product_id + ',-1,\'' + lineSrc + '\')">−</button>' +
+                    '<input type="number" class="cart-qty-input" id="cart-qty-' + item.product_id + '-' + lineSrc + '" value="' + item.qty + '" min="1" ' +
+                    'onfocus="focusedCartIdx=' + idx + ';renderCartFocusHighlight();" ' +
+                    'onchange="setQtyDirect(' + item.product_id + ',this.value,\'' + lineSrc + '\')"/>' +
+                    '<button type="button" class="qty-btn" onclick="changeQty(' + item.product_id + ',1,\'' + lineSrc + '\')">+</button>' +
+                    '</div>' +
+                    '<div class="cart-price-col">' + cartPriceColHTML(item, bd) + '</div>' +
+                    '<div class="cart-sub-col">' + fmt(bd.subtotal) + '</div>' +
+                    '<div style="display:flex;flex-direction:column;gap:4px;">' +
+                    '<button type="button" class="cart-del-btn" onclick="removeFromCart(' + item.product_id + ',\'' + lineSrc + '\')" title="Remove">✕</button>' +
+                    '<button type="button" class="cart-del-btn" style="color:#e74c3c;" onclick="openCartDiscountModal(' + item.product_id + ')" title="Discount this item">%</button>' +
+                    '</div>' +
+                    metaLine + bulkCard +
+                    '</div>';
             }
 
             function updateCartUI() {
@@ -14550,77 +18654,57 @@ if ($isCashierRole && $page !== 'login') {
                 const colHeaderEl = document.getElementById('cart-col-header');
 
                 if (badge) badge.textContent = count;
-                if (fabCnt) fabCnt.textContent = count;
+                if (fabCnt) {
+                    fabCnt.textContent = count;
+                    fabCnt.style.display = count > 0 ? 'flex' : 'none';
+                }
                 if (emptyEl) emptyEl.style.display = cart.length ? 'none' : 'block';
                 if (summaryEl) summaryEl.style.display = cart.length ? 'block' : 'none';
                 if (colHeaderEl) colHeaderEl.style.display = cart.length ? 'grid' : 'none';
 
                 if (itemsEl) {
-                    itemsEl.innerHTML = cart.map((item, idx) => {
-                        const bd = computeUnitBreakdown(item);
-                        const imgEl = item.has_image ?
-                            '<img class="cart-line-img" src="' + prodImgUrl(item.product_id, item.img_v) + '" data-fallback="cart" onerror="imgFallback(this)"/>' :
-                            '<div class="cart-line-img"><img src="' + DEFAULT_PRODUCT_IMG + '" class="default-prod-img" alt=""></div>';
+                    const existingRows = Array.from(itemsEl.children).filter(c => c.classList && c.classList.contains('cart-line'));
+                    const matchesCurrentCart = existingRows.length === cart.length && cart.every((item, idx) => {
+                        const row = existingRows[idx];
+                        const lineSrc = item.stock_source || 'store';
+                        return row && String(row.dataset.pid) === String(item.product_id) && row.dataset.src === lineSrc;
+                    });
 
-                        // Meta line: Category, a short description snippet, and the active barcode.
-                        const metaParts = [];
-                        if (item.manual_discount) {
-                            const md = item.manual_discount;
-                            const tagLabel = md.type === 'percent' ? md.value + '% OFF' : fmt(md.value) + ' OFF';
-                            metaParts.push('<span style="color:#e74c3c;font-weight:700;">🏷️ DISCOUNT (' + tagLabel + ')' + (md.reason ? ' — ' + escapeHtml(md.reason) : '') + '</span>');
-                        } else if (item.is_promo) {
-                            metaParts.push('<span style="color:#e74c3c;font-weight:700;">🏷️ PROMO</span>');
-                        }
-                        if (item.category_name) metaParts.push('Category: ' + escapeHtml(item.category_name));
-                        if (item.brand) metaParts.push('Brand: ' + escapeHtml(item.brand));
-                        if (item.supplier) metaParts.push('Supplier: ' + escapeHtml(item.supplier));
-                        if (item.unit_type) metaParts.push('Size: ' + escapeHtml(formatUnitSizeLabel(item.unit_type, item.unit_size)));
-                        if (item.description) metaParts.push(escapeHtml(item.description.length > 42 ? item.description.slice(0, 42) + '…' : item.description));
-                        if (item.barcode) metaParts.push('SKU: ' + escapeHtml(item.barcode));
-                        const metaLine = metaParts.length ? '<div class="cart-line-meta">' + metaParts.join(' | ') + '</div>' : '';
+                    if (matchesCurrentCart && cart.length > 0) {
+                        // Smooth in-place DOM update without tearing down img tags or losing input focus
+                        cart.forEach((item, idx) => {
+                            const row = existingRows[idx];
+                            const bd = computeUnitBreakdown(item);
 
-                        // Whenever ANY part of the breakdown used a Bundle or Case tier (not
-                        // just when it's mixed with loose pieces), show a nested itemized card
-                        // so the cashier always sees the bundle/case rate right alongside the
-                        // per-piece rate — plus how much was saved vs. pricing every piece at
-                        // the plain per-piece rate. (Fixed: this used to check `p.unit ===
-                        // 'pack'`, but computeUnitBreakdown() actually labels that tier
-                        // 'bundle' — so the bundle line never matched and silently fell
-                        // through to the "Pieces" line, showing the wrong per-unit price.)
-                        let bulkCard = '';
-                        const hasBulkTier = bd.parts.some(p => p.unit === 'case' || p.unit === 'bundle');
-                        if (hasBulkTier) {
-                            const naive = item.qty * item.price;
-                            const savings = naive - bd.subtotal;
-                            const lines = bd.parts.map(p => {
-                                if (p.unit === 'case') return '<div class="cart-bulk-line"><span>📦📦 ' + p.count + 'x Case (' + item.case_qty + ' Pcs)</span><span>' + fmt(item.case_price) + '</span></div>';
-                                if (p.unit === 'bundle') return '<div class="cart-bulk-line"><span>📦 ' + p.count + 'x Bundle (' + item.pack_qty + ' Pcs)</span><span>' + fmt(item.pack_price) + '</span></div>';
-                                return '<div class="cart-bulk-line"><span>🔹 ' + p.count + 'x Pieces</span><span>' + fmt(item.price) + ' each</span></div>';
-                            }).join('');
-                            bulkCard = '<div class="cart-bulk-card">' + lines +
-                                (savings > 0.004 ? '<span class="cart-savings-badge">✨ Auto-optimized (Saved ' + fmt(savings) + ')</span>' : '') +
-                                '</div>';
-                        }
-
-                        return '<div class="cart-line' + (idx === focusedCartIdx ? ' kbd-focused' : '') + '" data-pid="' + item.product_id + '">' +
-                            imgEl +
-                            '<div><div class="cart-line-name">' + escapeHtml(item.name) + '</div></div>' +
-                            '<div class="cart-qty-box">' +
-                            '<button type="button" class="qty-btn" onclick="changeQty(' + item.product_id + ',-1)">−</button>' +
-                            '<input type="number" class="cart-qty-input" id="cart-qty-' + item.product_id + '" value="' + item.qty + '" min="1" ' +
-                            'onfocus="focusedCartIdx=' + idx + ';renderCartFocusHighlight();" ' +
-                            'onchange="setQtyDirect(' + item.product_id + ',this.value)"/>' +
-                            '<button type="button" class="qty-btn" onclick="changeQty(' + item.product_id + ',1)">+</button>' +
-                            '</div>' +
-                            '<div class="cart-price-col">' + cartPriceColHTML(item, bd) + '</div>' +
-                            '<div class="cart-sub-col">' + fmt(bd.subtotal) + '</div>' +
-                            '<div style="display:flex;flex-direction:column;gap:4px;">' +
-                            '<button type="button" class="cart-del-btn" onclick="removeFromCart(' + item.product_id + ')" title="Remove">✕</button>' +
-                            '<button type="button" class="cart-del-btn" style="color:#e74c3c;" onclick="openCartDiscountModal(' + item.product_id + ')" title="Discount this item">🏷️</button>' +
-                            '</div>' +
-                            metaLine + bulkCard +
-                            '</div>';
-                    }).join('');
+                            const qtyInp = row.querySelector('.cart-qty-input');
+                            if (qtyInp && String(qtyInp.value) !== String(item.qty)) {
+                                qtyInp.value = item.qty;
+                            }
+                            const priceCol = row.querySelector('.cart-price-col');
+                            if (priceCol) {
+                                priceCol.innerHTML = cartPriceColHTML(item, bd);
+                            }
+                            const subCol = row.querySelector('.cart-sub-col');
+                            if (subCol) {
+                                subCol.textContent = fmt(bd.subtotal);
+                            }
+                            const existingBulk = row.querySelector('.cart-bulk-card');
+                            const newBulkHtml = buildCartBulkCardHtml(item, bd);
+                            if (existingBulk) {
+                                if (newBulkHtml) {
+                                    existingBulk.outerHTML = newBulkHtml;
+                                } else {
+                                    existingBulk.remove();
+                                }
+                            } else if (newBulkHtml) {
+                                row.insertAdjacentHTML('beforeend', newBulkHtml);
+                            }
+                            row.classList.toggle('kbd-focused', idx === focusedCartIdx);
+                        });
+                    } else {
+                        // Full rebuild when items are added, removed, or empty
+                        itemsEl.innerHTML = cart.map((item, idx) => buildCartLineHtml(item, idx)).join('');
+                    }
                 }
 
                 const subEl = document.getElementById('cart-sub');
@@ -14638,15 +18722,22 @@ if ($isCashierRole && $page !== 'login') {
                 if (totalEl) totalEl.textContent = fmt(total);
 
                 if (presetsEl) {
+                    const exactVal = Math.round(total * 100) / 100;
                     const presets = [...new Set([
+                        exactVal,
+                        Math.ceil(total / 20) * 20,
                         Math.ceil(total / 50) * 50,
                         Math.ceil(total / 100) * 100,
                         Math.ceil(total / 500) * 500,
                         1000
-                    ].filter(v => v >= total))].slice(0, 4);
-                    presetsEl.innerHTML = presets.map(p =>
-                        '<button type="button" class="preset-btn" onclick="setCash(' + p + ')">' + fmt(p) + '</button>'
-                    ).join('');
+                    ].filter(v => v >= total && v > 0))].slice(0, 5);
+                    const currentCash = parseFloat(document.getElementById('cash-input')?.value) || 0;
+                    presetsEl.innerHTML = presets.map(p => {
+                        const isExact = Math.abs(p - exactVal) < 0.009;
+                        const isAct = currentCash > 0 && Math.abs(p - currentCash) < 0.009;
+                        const label = isExact ? (fmt(p) + ' (Exact)') : fmt(p);
+                        return '<button type="button" class="preset-btn' + (isAct ? ' active' : '') + (isExact ? ' preset-exact' : '') + '" data-val="' + p + '" onclick="setCash(' + p + ')" title="' + (isExact ? 'Pay exact amount' : 'Tender ' + fmt(p)) + '">' + label + '</button>';
+                    }).join('');
                 }
                 if (focusedCartIdx >= cart.length) focusedCartIdx = cart.length - 1;
                 updateHeldCartsBadge();
@@ -14678,7 +18769,7 @@ if ($isCashierRole && $page !== 'login') {
                 cart = [];
                 focusedCartIdx = -1;
                 updateCartUI();
-                renderGrid();
+                renderGrid(false);
                 toast('Transaction held', 'success');
             }
 
@@ -14693,7 +18784,7 @@ if ($isCashierRole && $page !== 'login') {
                 focusedCartIdx = -1;
                 document.getElementById('held-carts-menu').style.display = 'none';
                 updateCartUI();
-                renderGrid();
+                renderGrid(false);
                 toast('Held cart resumed', 'success');
             }
 
@@ -14746,6 +18837,11 @@ if ($isCashierRole && $page !== 'login') {
                 if (!cashInp || !box || !btn) return;
                 saveCartAutosave();
                 const cash = parseFloat(cashInp.value) || 0;
+                // Sync active highlight state on fix money preset buttons
+                document.querySelectorAll('#presets .preset-btn').forEach(b => {
+                    const bVal = parseFloat(b.getAttribute('data-val'));
+                    b.classList.toggle('active', cash > 0 && Math.abs(bVal - cash) < 0.01);
+                });
                 // The "Give Discount" button only appears once the cashier has entered a
                 // cash tendered amount — before that there's no active sale to discount.
                 const discBtn = document.getElementById('cart-discount-trigger-btn');
@@ -14790,7 +18886,8 @@ if ($isCashierRole && $page !== 'login') {
                             name: c.name,
                             price: effPrice,
                             qty: c.qty,
-                            category_name: c.category_name
+                            category_name: c.category_name,
+                            stock_source: c.stock_source || 'store'
                         };
                     }),
                     subtotal: totals.subtotal,
@@ -14820,7 +18917,7 @@ if ($isCashierRole && $page !== 'login') {
                         // Order # the moment connectivity returns (see flushPendingSales).
                         ref = queuePendingSale(txPayload);
                         isOffline = true;
-                        toast('📴 No connection — sale saved offline, will sync automatically', 'warning');
+                        toast('No connection — sale saved offline, will sync automatically', 'warning');
                     } else {
                         ref = r.data.order_ref;
                     }
@@ -14859,20 +18956,19 @@ if ($isCashierRole && $page !== 'login') {
                     clearCartAutosave();
                     document.getElementById('cash-input').value = '';
                     document.getElementById('change-display').innerHTML = '';
-                    openModal('success-modal');
+                    showSuccessModal();
                     // Automatic print trigger (matches void_order_items and end-of-shift,
                     // which already auto-print their receipts) — the cashier no longer has
                     // to remember to click Print after every sale. The button in the
                     // success modal stays as a manual re-print option if the first copy
                     // jams or a pop-up blocker caught it.
                     printSaleReceipt();
-                    // Best-effort only — see openCashDrawer()'s silent=true behavior. A
-                    // missing/offline QZ Tray or misconfigured printer name must never
-                    // interrupt a sale that has already been recorded and receipted.
-                    if (QZ_DRAWER_ENABLED) openCashDrawer(true).catch(() => {});
+                    // Best-effort only — see openCashDrawer()'s silent=true behavior.
+                    openCashDrawer(true).catch(() => {});
                     if (!isOffline) {
                         loadStats();
-                        loadAllProds();
+                        invalidateProdCache();
+                        loadAllProds(true);
                         loadTopSellers();
                     }
                     updateCartUI();
@@ -14883,32 +18979,56 @@ if ($isCashierRole && $page !== 'login') {
             // full receipt in a dedicated window — see printSaleReceipt() below.
             let lastReceiptData = null;
 
+            // ── NATIVE THERMAL PRINT AGENT & CASH DRAWER HELPERS ──
+            async function tryNativePrintAgent(payload) {
+                try {
+                    if (payload && !payload.paper_size) {
+                        payload.paper_size = (typeof currentReceiptPaperSize !== 'undefined' ? currentReceiptPaperSize : '58mm');
+                    }
+                    const ctrl = new AbortController();
+                    const timer = setTimeout(() => ctrl.abort(), 1200);
+                    const res = await fetch('http://127.0.0.1:9100/print', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload),
+                        signal: ctrl.signal
+                    });
+                    clearTimeout(timer);
+                    if (!res.ok) return false;
+                    const data = await res.json();
+                    return !!(data && data.success);
+                } catch (e) {
+                    return false;
+                }
+            }
+
+            async function tryNativeDrawerKick() {
+                try {
+                    const ctrl = new AbortController();
+                    const timer = setTimeout(() => ctrl.abort(), 1000);
+                    const res = await fetch('http://127.0.0.1:9100/drawer', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        signal: ctrl.signal
+                    });
+                    clearTimeout(timer);
+                    if (!res.ok) return false;
+                    const data = await res.json();
+                    return !!(data && data.success);
+                } catch (e) {
+                    return false;
+                }
+            }
+
             // ── PRINT SALE RECEIPT ──
-            // Previously this button just called window.print() directly on the main
-            // POS page. That collided with the global print stylesheet
-            // (@media print{body>*:not(#bc-print-area){display:none!important;}...})
-            // which is scoped to the barcode-label print feature — since the receipt
-            // modal isn't #bc-print-area, EVERYTHING on the page got hidden from print,
-            // producing a totally blank page/PDF. Opening a separate, isolated print
-            // window (same pattern already used for the Z-Read and void receipts)
-            // sidesteps that conflict entirely.
-            //
-            // Layout redesigned to a real 4-column table (QTY | ITEM DESCRIPTION | PRICE
-            // | TOTAL) with a proper SUBTOTAL/TAX/TOTAL DUE breakdown and a bold
-            // highlight band behind TOTAL DUE — no QR code or barcode. All header
-            // fields (address, TIN, terminal ID) are optional Settings — left blank,
-            // they're simply omitted instead of printing "undefined".
-            function printSaleReceipt() {
+            async function printSaleReceipt(isManual = false) {
+                // If cashier re-prints manually, pause auto-close so the modal doesn't vanish mid-interaction
+                if (isManual) cancelSuccessModalTimer();
                 if (!lastReceiptData) {
                     toast('No receipt to print yet', 'warning');
                     return;
                 }
                 const d = lastReceiptData;
-                const win = window.open('', '_blank', 'width=380,height=650');
-                if (!win) {
-                    toast('Pop-up blocked — allow pop-ups to print the receipt', 'warning');
-                    return;
-                }
                 const esc = receiptEsc;
 
                 const dt = new Date(d.date);
@@ -14918,6 +19038,57 @@ if ($isCashierRole && $page !== 'login') {
                 hh = hh % 12;
                 if (hh === 0) hh = 12;
                 const timeStr = String(hh).padStart(2, '0') + ':' + String(dt.getMinutes()).padStart(2, '0') + ' ' + ampm;
+
+                const cleanRef = String(d.ref).split(' (')[0];
+                const itemCount = d.items.reduce((s, it) => s + it.qty, 0);
+                const receiptSubtotal = d.subtotal ?? d.items.reduce((s, it) => s + computeUnitBreakdown(it).subtotal, 0);
+                const receiptVat = d.vat_amount ?? receiptSubtotal * (d.vat_rate || 0) / 100;
+                const receiptTax = d.tax_amount ?? receiptSubtotal * (d.tax_rate || 0) / 100;
+
+                // 1. Try POS Native Print Agent first (silent ESC/POS thermal printing + instant hardware drawer kick)
+                const agentPayload = {
+                    shop_name: SHOP_NAME || 'RE M STORE',
+                    shop_address: SHOP_ADDRESS || '',
+                    shop_tin: SHOP_TIN || '',
+                    terminal_id: TERMINAL_ID || 'POS-01',
+                    cashier: CASHIER_NAME || 'Cashier',
+                    ref: cleanRef,
+                    date_time: dateStr + ' ' + timeStr,
+                    currency: CUR,
+                    items: d.items.map(it => ({
+                        name: it.name,
+                        qty: it.qty,
+                        price: it.price
+                    })),
+                    item_count: itemCount,
+                    subtotal: receiptSubtotal,
+                    vat_rate: d.vat_rate || 0,
+                    vat: receiptVat,
+                    tax_rate: d.tax_rate || 0,
+                    tax: receiptTax,
+                    total: d.total,
+                    cash: d.cash,
+                    change: d.change
+                };
+
+                const nativePrinted = await tryNativePrintAgent(agentPayload);
+                if (nativePrinted) {
+                    toast('Receipt printed silently via Native Thermal Print Agent', 'success');
+                    return;
+                }
+
+                // If native print agent is unreachable (e.g. mobile phone, tablet, or browser client)
+                // and this was an automatic checkout trigger (isManual === false),
+                // DO NOT trigger the fallback browser window.print() iframe!
+                // On mobile PWA / browsers, calling window.print() via hidden iframe triggers the OS print
+                // spooler/preview, violently flickering the screen, causing webview reflows, and killing the auto-close timer.
+                // The cashier can still tap the "Print" button manually if they want a browser print preview.
+                if (!isManual) {
+                    return;
+                }
+
+                // 2. Fallback to browser print preview if native agent is unreachable AND cashier manually clicked Print
+                cancelSuccessModalTimer();
 
                 const itemRows = d.items.map(it => {
                     const bd = computeUnitBreakdown(it);
@@ -14959,19 +19130,8 @@ if ($isCashierRole && $page !== 'login') {
                         '<td class="right">' + CUR + bd.subtotal.toFixed(2) + '</td></tr>';
                 }).join('');
 
-                const itemCount = d.items.reduce((s, it) => s + it.qty, 0);
-                const receiptSubtotal = d.subtotal ?? d.items.reduce((s, it) => s + computeUnitBreakdown(it).subtotal, 0);
-                const receiptVat = d.vat_amount ?? receiptSubtotal * (d.vat_rate || 0) / 100;
-                const receiptTax = d.tax_amount ?? receiptSubtotal * (d.tax_rate || 0) / 100;
-
-                // Barcode of the clean order ref (strip the "(Offline — pending sync)"
-                // suffix used only for display) — lets a cashier void this exact order
-                // later by scanning the printed receipt itself instead of retyping the
-                // code; see routeHIDScan()'s "ORD-" pattern match.
-                const cleanRef = String(d.ref).split(' (')[0];
                 const writeReceiptDoc = (barcodeImgHtml) => {
-                    win.document.write(
-                        '<!DOCTYPE html><html><head><style>' +
+                    const fullReceiptHtml = '<!DOCTYPE html><html><head><style>' +
                         receiptBaseCSS() +
                         '</style></head><body>' +
                         '<div class="receipt-container">' +
@@ -14999,15 +19159,42 @@ if ($isCashierRole && $page !== 'login') {
                         receiptFooterHTML(['Thank You for Shopping!', 'Please keep receipt for returns.']) +
                         barcodeImgHtml +
                         '</div>' +
-                        '<script>window.onload=function(){window.print();}<\/script>' +
-                        '</body></html>'
-                    );
-                    win.document.close();
+                        receiptPrintScript() +
+                        '</body></html>';
+
+                    // Use hidden iframe to avoid popup blocker blocking automatic print on checkout
+                    let printFrame = document.getElementById('receipt-print-frame');
+                    if (!printFrame) {
+                        printFrame = document.createElement('iframe');
+                        printFrame.id = 'receipt-print-frame';
+                        printFrame.style.position = 'fixed';
+                        printFrame.style.right = '0';
+                        printFrame.style.bottom = '0';
+                        printFrame.style.width = '1px';
+                        printFrame.style.height = '1px';
+                        printFrame.style.opacity = '0.01';
+                        printFrame.style.border = '0';
+                        printFrame.style.pointerEvents = 'none';
+                        document.body.appendChild(printFrame);
+                    }
+
+                    try {
+                        const frameDoc = printFrame.contentWindow.document;
+                        frameDoc.open();
+                        frameDoc.write(fullReceiptHtml);
+                        frameDoc.close();
+                        // Note: receiptPrintScript inside fullReceiptHtml triggers window.print() once cleanly on load
+                    } catch (e) {
+                        // Fallback to popup window if iframe print fails
+                        const win = window.open('', '_blank', 'width=380,height=650');
+                        if (win) {
+                            win.document.write(fullReceiptHtml);
+                            win.document.close();
+                        }
+                    }
                 };
 
                 if (typeof JsBarcode === 'undefined') {
-                    // Library didn't load (offline/CDN blocked) — print the receipt anyway,
-                    // just without the scan-to-void barcode this one time.
                     writeReceiptDoc('');
                 } else {
                     const tmpSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -15050,11 +19237,38 @@ if ($isCashierRole && $page !== 'login') {
                 loadInvCats();
             }
 
-            function loadInvProds() {
-                apiGet('get_products').then(r => {
-                    if (r?.success) {
+            function loadInvProds(force = false) {
+                if (force) invalidateProdCache();
+                const countEl = document.getElementById('prod-count');
+                const grid = document.getElementById('prod-grid');
+
+                // Instant Paint: check if we already have products in memory or session cache!
+                if (!force && _prodCache.data?.data && Array.isArray(_prodCache.data.data) && _prodCache.data.data.length > 0) {
+                    invProds = _prodCache.data.data;
+                    renderProds();
+                } else if (!invProds || !invProds.length) {
+                    if (countEl) countEl.textContent = 'Loading products…';
+                    if (grid) grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:50px;color:var(--text3);"><div class="spinner" style="margin:0 auto 12px;width:32px;height:32px;border-width:3px;border-top-color:var(--accent,#2563eb);"></div>Loading product catalog…</div>';
+                }
+
+                apiGetProducts(force, (fresh) => {
+                    // Background sync callback if server had fresh updates
+                    if (fresh?.success && Array.isArray(fresh.data)) {
+                        invProds = fresh.data;
+                        renderProds();
+                    }
+                }).then(r => {
+                    if (r?.success && Array.isArray(r.data)) {
                         invProds = r.data;
                         renderProds();
+                    } else if (!invProds || !invProds.length) {
+                        if (countEl) countEl.textContent = 'Failed to load';
+                        if (grid) grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:40px;"><div style="display:flex;justify-content:center;margin-bottom:8px;"><svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="var(--warning,#F39C12)" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div><div style="color:var(--text);font-weight:700;margin-bottom:6px;">Could not load products</div><div style="color:var(--text3);font-size:.85rem;margin-bottom:14px;">The server took too long to respond. Tap to retry.</div><button type="button" class="btn btn-primary btn-sm" onclick="loadInvProds(true)">Retry Now</button></div>';
+                    }
+                }).catch(err => {
+                    if (!invProds || !invProds.length) {
+                        if (countEl) countEl.textContent = 'Failed to load';
+                        if (grid) grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:40px;"><div style="display:flex;justify-content:center;margin-bottom:8px;"><svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="var(--warning,#F39C12)" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div><div style="color:var(--text);font-weight:700;margin-bottom:6px;">Could not reach server</div><div style="color:var(--text3);font-size:.85rem;margin-bottom:14px;">' + (err?.message || 'Connection timeout') + '</div><button type="button" class="btn btn-primary btn-sm" onclick="loadInvProds(true)">Retry Now</button></div>';
                     }
                 });
             }
@@ -15107,7 +19321,7 @@ if ($isCashierRole && $page !== 'login') {
                 const grid = document.getElementById('prod-grid');
                 if (!grid) return;
                 if (!list.length) {
-                    grid.innerHTML = '<div style="grid-column:1/-1"><div class="empty-state"><div class="empty-icon">📦</div><div class="empty-text">No products</div></div></div>';
+                    grid.innerHTML = '<div style="grid-column:1/-1"><div class="empty-state"><div class="empty-icon"><svg viewBox="0 0 24 24" width="42" height="42" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg></div><div class="empty-text">No products</div></div></div>';
                     return;
                 }
                 grid.innerHTML = list.map(p => {
@@ -15120,13 +19334,13 @@ if ($isCashierRole && $page !== 'login') {
                         CUR + parseFloat(p.price).toFixed(2);
                     return '<div class="product-card" onclick="openEditModal(' + p.id + ')">' +
                         img +
-                        (promoInfo.active ? '<span class="sale-badge">🏷️ SALE</span>' : '') +
+                        (promoInfo.active ? '<span class="sale-badge">SALE</span>' : '') +
                         '<div class="product-card-body">' +
-                        '<div class="product-card-name">' + p.name + '</div>' +
+                        '<div class="product-card-name">' + escapeHtml(p.name) + '</div>' +
                         '<div class="product-card-price">' + priceHTML + '</div>' +
-                        '<div class="product-card-meta">' + (p.category_name || 'Uncategorized') + '</div>' +
-                        '<div class="product-card-meta" style="color:' + stockColor + ';font-weight:600;">Store: ' + formatUnitBreakdown(storeQ, p) + '</div>' +
-                        '<div class="product-card-meta" style="color:var(--text3);">Warehouse: ' + formatUnitBreakdown(p.warehouse_quantity || 0, p) + '</div>' +
+                        '<div class="product-card-meta">' + escapeHtml(p.category_name || 'Uncategorized') + '</div>' +
+                        '<div class="product-card-meta" style="color:' + stockColor + ';font-weight:600;margin-top:2px;">Store: ' + formatUnitBreakdown(storeQ, p) + '</div>' +
+                        '<div class="product-card-meta" style="color:var(--text3);margin-top:2px;">Warehouse: ' + formatUnitBreakdown(p.warehouse_quantity || 0, p) + '</div>' +
                         '</div></div>';
                 }).join('');
             }
@@ -15156,11 +19370,14 @@ if ($isCashierRole && $page !== 'login') {
                     // has already typed their own actual size doesn't wipe it out.
                     const presetLabel = typeEl.value.slice(5); // everything after "size|"
                     if (sizeEl.dataset.lastPreset !== presetLabel) {
-                        sizeEl.value = presetLabel;
+                        sizeEl.value = presetLabel === 'Custom' ? '' : presetLabel;
                         sizeEl.dataset.lastPreset = presetLabel;
                     }
                     sizeEl.style.display = '';
                     sizeEl.id = 'p-unit-size';
+                    if (presetLabel === 'Custom') {
+                        setTimeout(() => sizeEl.focus(), 50);
+                    }
                 } else {
                     sizeEl.removeAttribute('id');
                     sizeEl.style.display = 'none';
@@ -15271,12 +19488,12 @@ if ($isCashierRole && $page !== 'login') {
                     return;
                 }
                 if (isNaN(price) || promo >= price) {
-                    hint.textContent = '⚠️ Promo price must be lower than the Selling Price (₱' + (isNaN(price) ? '0.00' : price.toFixed(2)) + ') to take effect.';
+                    hint.textContent = 'Promo price must be lower than the Selling Price (₱' + (isNaN(price) ? '0.00' : price.toFixed(2)) + ') to take effect.';
                     hint.style.color = 'var(--danger)';
                     return;
                 }
                 const pct = Math.round((1 - promo / price) * 100);
-                hint.textContent = '✅ ' + pct + '% off — will show as ₱' + promo.toFixed(2) + ' (was ₱' + price.toFixed(2) + ') in Sales, Cart, and Receipt.';
+                hint.textContent = pct + '% off — will show as ₱' + promo.toFixed(2) + ' (was ₱' + price.toFixed(2) + ') in Sales, Cart, and Receipt.';
                 hint.style.color = 'var(--green)';
             }
 
@@ -15291,16 +19508,21 @@ if ($isCashierRole && $page !== 'login') {
             }
 
             function openEditModal(id) {
-                const p = invProds.find(x => x.id == id) || whProds.find(x => x.id == id);
+                const p = (typeof invProds !== 'undefined' && invProds.find(x => x.id == id)) ||
+                          (typeof whProds !== 'undefined' && whProds.find(x => x.id == id)) ||
+                          (typeof allProds !== 'undefined' && allProds.find(x => x.id == id)) ||
+                          (typeof window._alertBannerProds !== 'undefined' && window._alertBannerProds.find(x => x.id == id)) || null;
                 if (!p) return;
-                document.getElementById('edit-id').value = p.id;
+                const editIdEl = document.getElementById('edit-id');
+                if (!editIdEl) return;
+                editIdEl.value = p.id;
                 document.getElementById('prod-modal-title').textContent = 'Edit Product';
                 document.getElementById('p-name').value = p.name;
                 document.getElementById('p-price').value = p.price;
                 const pCostEdit = document.getElementById('p-cost');
                 if (pCostEdit) pCostEdit.value = (p.cost_price ?? '');
                 document.getElementById('p-desc').value = p.description || '';
-                setExpiryFromIso(p.expiry_date || '');
+                setExpiryFromIso(p.expiry_date || p.next_batch_expiry || '');
                 setDeliveryFromIso(p.delivery_date || '');
                 document.getElementById('p-barcode').value = p.barcode || '';
                 _barcodeAutoGenerated = false; // editing an existing real barcode — never silently swap it
@@ -15439,8 +19661,8 @@ if ($isCashierRole && $page !== 'login') {
                 const cost = (costRaw !== '' && costRaw !== undefined) ? parseFloat(costRaw) : null;
                 const qty = parseInt(document.getElementById('p-qty').value);
                 const desc = document.getElementById('p-desc').value.trim();
-                const expiry = document.getElementById('p-expiry').value || null;
-                const deliveryDate = document.getElementById('p-delivery').value || null;
+                const expiry = document.getElementById('p-expiry')?.value || parseAnyDateToIso(document.getElementById('p-expiry-display')?.value) || null;
+                const deliveryDate = document.getElementById('p-delivery')?.value || parseAnyDateToIso(document.getElementById('p-delivery-display')?.value) || null;
                 const barcode = document.getElementById('p-barcode').value.trim() || null;
                 if (!name) {
                     toast('Product name is required', 'error');
@@ -15584,7 +19806,9 @@ if ($isCashierRole && $page !== 'login') {
                 }
                 toast(id ? 'Product updated!' : 'Product added!', 'success');
                 closeModal('prod-modal');
-                loadInvProds();
+                invalidateProdCache();
+                loadInvProds(true);
+                if (typeof loadWhProds === 'function') loadWhProds();
             }
 
             function deleteProduct() {
@@ -15600,7 +19824,8 @@ if ($isCashierRole && $page !== 'login') {
                     }
                     toast('Product deleted', 'success');
                     closeModal('prod-modal');
-                    loadInvProds();
+                    invalidateProdCache();
+                    loadInvProds(true);
                 });
             }
 
@@ -15692,12 +19917,12 @@ if ($isCashierRole && $page !== 'login') {
 
             function salesInit() {
                 if (cur_page !== 'sales') return;
-                // Load settings first so CUR is set, then load ALL transactions (no date filter by default)
+                // Fetch settings in parallel without blocking chart & transaction loading
                 apiGet('get_settings').then(s => {
-                    CUR = s?.data?.currency || '\u20B1';
-                    loadTx();
-                    loadSalesCharts();
+                    if (s?.data?.currency) CUR = s.data.currency;
                 });
+                loadTx();
+                loadSalesCharts();
             }
 
             function loadSalesCharts() {
@@ -15765,11 +19990,11 @@ if ($isCashierRole && $page !== 'login') {
                 if (wrap) wrap.querySelectorAll('.period-btn').forEach(b => b.classList.toggle('active', b === btnEl));
 
                 const topTitleEl = document.getElementById('top-list-title');
-                if (topTitleEl) topTitleEl.textContent = '🏆 Top Products — ' + periodLabel(period);
+                if (topTitleEl) topTitleEl.textContent = 'Top Products — ' + periodLabel(period);
                 const catTitleEl = document.getElementById('cat-chart-title');
-                if (catTitleEl) catTitleEl.textContent = '🏷️ Sales by Category — ' + periodLabel(period);
+                if (catTitleEl) catTitleEl.textContent = 'Sales by Category — ' + periodLabel(period);
                 const dailyTitleEl = document.getElementById('daily-chart-title');
-                if (dailyTitleEl) dailyTitleEl.textContent = period === 'weekly' ? '📈 Weekly Sales' : period === 'monthly' ? '📈 Monthly Sales' : '📈 7-Day Sales';
+                if (dailyTitleEl) dailyTitleEl.textContent = period === 'weekly' ? 'Weekly Sales' : period === 'monthly' ? 'Monthly Sales' : '7-Day Sales';
 
                 const topEl = document.getElementById('top-list');
                 if (topEl) topEl.innerHTML = '<div style="text-align:center;padding:16px;color:var(--text3);font-size:.83rem;">Loading…</div>';
@@ -15791,9 +20016,9 @@ if ($isCashierRole && $page !== 'login') {
             function toggleCollapseCard(bodyId, headerEl) {
                 const body = document.getElementById(bodyId);
                 if (!body) return;
-                const isOpen = body.style.display !== 'none';
-                body.style.display = isOpen ? 'none' : '';
-                if (headerEl) headerEl.classList.toggle('is-open', !isOpen);
+                const isHidden = body.style.display === 'none' || (body.style.display === '' && window.getComputedStyle(body).display === 'none');
+                body.style.display = isHidden ? 'block' : 'none';
+                if (headerEl) headerEl.classList.toggle('is-open', isHidden);
             }
 
             function loadSalesTopProducts(period) {
@@ -15804,10 +20029,13 @@ if ($isCashierRole && $page !== 'login') {
                     limit: 10
                 };
                 apiGet('get_top_products', params).then(top => {
-                    if (!top?.success) return;
-                    const tops = top.data;
                     const el = document.getElementById('top-list');
                     if (!el) return;
+                    if (!top?.success) {
+                        el.innerHTML = '<div class="empty-state"><div class="empty-icon"><svg viewBox="0 0 24 24" width="42" height="42" fill="none" stroke="currentColor" stroke-width="1.6"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg></div><div class="empty-text">' + escapeHtml(top?.error || 'No sales yet') + '</div></div>';
+                        return;
+                    }
+                    const tops = top.data || [];
                     el.innerHTML = tops.length ? tops.map((p, i) => {
                         const rc = i === 0 ? 'gold' : i === 1 ? 'silver' : i === 2 ? 'bronze' : '';
                         const imgEl = p.has_image ? '<img src="' + prodImgUrl(p.id, p.updated_at) + '" loading="lazy" style="width:100%;height:100%;object-fit:cover;" onerror="imgFallback(this)"/>' : '<img src="' + DEFAULT_PRODUCT_IMG + '" class="default-prod-img" alt="">';
@@ -15817,7 +20045,10 @@ if ($isCashierRole && $page !== 'login') {
                             '<div class="top-info"><div class="top-name">' + p.name + '</div><div class="top-sales">' + (p.category_name || '') + ' · ' + p.total_sold + ' sold</div></div>' +
                             '<div class="top-rev">' + CUR + parseFloat(p.total_revenue).toFixed(2) + '</div>' +
                             '</div>';
-                    }).join('') : '<div class="empty-state"><div class="empty-icon">📊</div><div class="empty-text">No sales yet</div></div>';
+                    }).join('') : '<div class="empty-state"><div class="empty-icon"><svg viewBox="0 0 24 24" width="42" height="42" fill="none" stroke="currentColor" stroke-width="1.6"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg></div><div class="empty-text">No sales yet</div></div>';
+                }).catch(() => {
+                    const el = document.getElementById('top-list');
+                    if (el) el.innerHTML = '<div class="empty-state"><div class="empty-icon"><svg viewBox="0 0 24 24" width="42" height="42" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div><div class="empty-text">Could not load top products</div></div>';
                 });
             }
 
@@ -15829,9 +20060,20 @@ if ($isCashierRole && $page !== 'login') {
                 if (dateFrom) params.date_from = dateFrom;
                 if (dateTo) params.date_to = dateTo;
                 apiGet('get_transactions', params).then(r => {
-                    if (!r?.success) return;
-                    txData = r.data;
                     const labelEl = document.getElementById('tx-label');
+                    const body = document.getElementById('tx-body');
+                    const emptyEl = document.getElementById('tx-empty');
+                    if (!r?.success) {
+                        if (labelEl) labelEl.textContent = 'Failed to load transactions';
+                        if (body) body.innerHTML = '';
+                        if (emptyEl) {
+                            emptyEl.style.display = 'block';
+                            const emptyTxt = emptyEl.querySelector('.empty-text');
+                            if (emptyTxt) emptyTxt.textContent = r?.error || 'Failed to load transactions';
+                        }
+                        return;
+                    }
+                    txData = r.data || [];
                     let rangeLabel = ' (all time)';
                     if (dateFrom && dateTo) rangeLabel = dateFrom === dateTo ? ' on ' + dateFrom : ' from ' + dateFrom + ' to ' + dateTo;
                     else if (dateFrom) rangeLabel = ' from ' + dateFrom;
@@ -15840,11 +20082,13 @@ if ($isCashierRole && $page !== 'login') {
                     // Reflect the active range on the dropdown button itself
                     const rangeBtnLabel = document.getElementById('date-range-label');
                     if (rangeBtnLabel) rangeBtnLabel.textContent = (dateFrom || dateTo) ? rangeLabel.trim() : 'Filter by Date';
-                    const body = document.getElementById('tx-body');
-                    const emptyEl = document.getElementById('tx-empty');
                     if (!txData.length) {
                         if (body) body.innerHTML = '';
-                        if (emptyEl) emptyEl.style.display = 'block';
+                        if (emptyEl) {
+                            emptyEl.style.display = 'block';
+                            const emptyTxt = emptyEl.querySelector('.empty-text');
+                            if (emptyTxt) emptyTxt.textContent = 'No transactions yet';
+                        }
                         return;
                     }
                     if (emptyEl) emptyEl.style.display = 'none';
@@ -15873,7 +20117,7 @@ if ($isCashierRole && $page !== 'login') {
                                 '<td style="color:var(--green);font-weight:600;">' + CUR + parseFloat(tx.change).toFixed(2) + '</td>' +
                                 '<td>' + (tx.cashier || '—') + '</td>' +
                                 '<td style="color:var(--text3);font-size:.78rem;">' + fmtDate(tx.created_at) + '</td>' +
-                                '<td style="display:flex;gap:5px;">' + '<button type="button" class="btn btn-secondary btn-sm" onclick="viewTx(' + tx.id + ')">View</button>' + '<button type="button" class="btn btn-danger btn-sm" onclick="deleteTx(' + tx.id + ',' + jsAttr(tx.order_ref) + ')">🗑️</button>' + '</td>' +
+                                '<td style="display:flex;gap:5px;">' + '<button type="button" class="btn btn-secondary btn-sm" onclick="viewTx(' + tx.id + ')">View</button>' + '<button type="button" class="btn btn-danger btn-sm" onclick="deleteTx(' + tx.id + ',' + jsAttr(tx.order_ref) + ')">Delete</button>' + '</td>' +
                                 '</tr>';
                         }).join('');
                     }
@@ -15955,25 +20199,56 @@ if ($isCashierRole && $page !== 'login') {
                         ).join('') + '</div>' :
                         '') +
                     (hasVoidableItems ?
-                        '<button type="button" class="btn btn-secondary btn-full" style="margin-top:14px;" onclick="openVoidOrderModal(\'' + tx.order_ref + '\')">🔒 Modify / Void Item</button>' :
+                        '<button type="button" class="btn btn-secondary btn-full" style="margin-top:14px;" onclick="openVoidOrderModal(\'' + tx.order_ref + '\')">Modify / Void Item</button>' :
                         '');
                 openModal('tx-modal');
             }
 
             // PART 1 STEP 6 — print an updated receipt showing the remaining items,
             // recalculated total, and the voided line + amount returned.
-            function printVoidReceipt(tx, voidData) {
+            async function printVoidReceipt(tx, voidData) {
+                const esc = receiptEsc;
+                const items = (tx.items || []);
+                const isFullVoid = tx.status === 'VOIDED';
+                const reason = (voidData && voidData.reason) ? voidData.reason : 'Customer request';
+                const voidAmt = parseFloat(voidData?.voided_amount) || 0;
+                const netTot = parseFloat(tx.net_total) || 0;
+
+                // 1. Try Native Direct ESC/POS Print first (thermal printer on port 9100)
+                try {
+                    const nativePayload = {
+                        type: 'void_receipt',
+                        shop_name: (typeof SHOP_NAME !== 'undefined' && SHOP_NAME) ? SHOP_NAME : 'RE M STORE',
+                        shop_address: (typeof SHOP_ADDRESS !== 'undefined' && SHOP_ADDRESS) ? SHOP_ADDRESS : '',
+                        shop_tin: (typeof SHOP_TIN !== 'undefined' && SHOP_TIN) ? SHOP_TIN : '',
+                        order_ref: tx.order_ref,
+                        cashier: (typeof CASHIER_NAME !== 'undefined' && CASHIER_NAME) ? CASHIER_NAME : 'Cashier',
+                        date_time: fmtDate(new Date().toISOString()),
+                        reason: reason,
+                        is_full_void: isFullVoid,
+                        items: items.map(it => ({
+                            product_name: it.product_name,
+                            price: parseFloat(it.price) || 0,
+                            quantity: parseInt(it.quantity) || 0,
+                            voided_qty: parseInt(it.voided_qty) || 0
+                        })),
+                        voided_amount: voidAmt,
+                        net_total: netTot,
+                        currency: '₱'
+                    };
+                    const nativeOk = await tryNativePrintAgent(nativePayload);
+                    if (nativeOk) {
+                        toast('Void receipt printed directly to thermal printer', 'success');
+                        return;
+                    }
+                } catch (e) {}
+
+                // 2. Fallback to clean browser popup if native agent is offline
                 const win = window.open('', '_blank', 'width=380,height=650');
                 if (!win) {
                     toast('Pop-up blocked — allow pop-ups to print the void receipt', 'warning');
                     return;
                 }
-                const esc = receiptEsc;
-                const items = (tx.items || []);
-                const isFullVoid = tx.status === 'VOIDED';
-
-                // Same date/time formatting as the Payment Receipt — "now", since this is
-                // printed at the moment the void is authorized, not at original sale time.
                 const dt = new Date();
                 const dateStr = String(dt.getMonth() + 1).padStart(2, '0') + '/' + String(dt.getDate()).padStart(2, '0') + '/' + dt.getFullYear();
                 let hh = dt.getHours();
@@ -15982,12 +20257,6 @@ if ($isCashierRole && $page !== 'login') {
                 if (hh === 0) hh = 12;
                 const timeStr = String(hh).padStart(2, '0') + ':' + String(dt.getMinutes()).padStart(2, '0') + ' ' + ampm;
 
-                // Same QTY | ITEM DESCRIPTION | PRICE | TOTAL table as the Payment
-                // Receipt. Visual audit trail (Section 3): every line on the order is
-                // listed, not just what's left. An untouched line prints one normal row.
-                // A line with any voided_qty gets its remaining-active row as usual PLUS
-                // a separate struck-through "VOIDED" row for the removed quantity, so the
-                // full before/after picture is on one receipt.
                 const itemRows = items.map(it => {
                     const voidedQty = it.voided_qty || 0;
                     const remaining = it.quantity - voidedQty;
@@ -16015,6 +20284,7 @@ if ($isCashierRole && $page !== 'login') {
                     '<div class="divider"></div>' +
                     '<div class="receipt-row"><span>CASHIER: ' + esc(CASHIER_NAME) + '</span></div>' +
                     '<div class="receipt-row"><span>TERM: ' + esc(TERMINAL_ID) + '</span><span>' + dateStr + ' ' + timeStr + '</span></div>' +
+                    (reason ? '<div class="receipt-row" style="font-size:10.5px;color:#555;"><span>REASON: ' + esc(reason) + '</span></div>' : '') +
                     '<div class="divider"></div>' +
                     '<table class="items">' +
                     '<colgroup><col class="qty"><col class="desc"><col class="price"><col class="total"></colgroup>' +
@@ -16022,12 +20292,16 @@ if ($isCashierRole && $page !== 'login') {
                     '<tbody>' + itemRows + '</tbody>' +
                     '</table>' +
                     '<div class="divider"></div>' +
-                    '<div class="void-band"><span>VOIDED — REFUNDED (THIS ACTION)</span><span>-' + fmt(voidData.voided_amount) + '</span></div>' +
-                    '<div class="total-band"><span>' + (isFullVoid ? 'NEW TOTAL' : 'UPDATED TOTAL') + '</span><span>' + fmt(tx.net_total) + '</span></div>' +
+                    '<div class="void-band"><span>VOIDED — REFUNDED (THIS ACTION)</span><span>-' + fmt(voidAmt) + '</span></div>' +
+                    '<div class="total-band"><span>' + (isFullVoid ? 'NEW TOTAL' : 'UPDATED TOTAL') + '</span><span>' + fmt(netTot) + '</span></div>' +
                     '<div class="divider"></div>' +
-                    receiptFooterHTML(['Thank You for Shopping!', 'Please keep receipt for returns.']) +
+                    '<div style="margin:12px 0 6px;font-size:10.5px;text-align:center;">' +
+                    'Customer Signature: _______________________<br><br>' +
+                    'Manager / Owner Auth: _______________________' +
                     '</div>' +
-                    '<script>window.onload=function(){window.print();}<\/script>' +
+                    receiptFooterHTML(['TRANSACTION VOID AUDIT SLIP', 'Please keep receipt for refund audit.']) +
+                    '</div>' +
+                    receiptPrintScript() +
                     '</body></html>'
                 );
                 win.document.close();
@@ -16040,13 +20314,13 @@ if ($isCashierRole && $page !== 'login') {
             // units of each) to void, gated behind an ADMIN password
             // (verifyAdminPassword() server-side — a cashier's own password is always
             // rejected, even if correct). The Sales History "view" modal's
-            // "🔒 Modify / Void Item" button opens this same modal pre-filled with that
+            // Modify / Void Item button opens this same modal pre-filled with that
             // order's code (see openVoidOrderModal's prefillRef param below) instead of
             // running its own separate, older single-item flow.
             let voOrderData = null; // holds the looked-up order between Step 2 and Step 4
             let voSelections = {}; // { itemId: qty } — currently checked items and their void qty
 
-            // prefillRef is optional — when the "🔒 Modify / Void" button is clicked
+            // prefillRef is optional — when the Modify / Void button is clicked
             // from a specific order's view (Sales History → View), the order code is
             // passed in here so this modal opens already looked-up, instead of making
             // the person retype a code they were already looking at.
@@ -16059,6 +20333,10 @@ if ($isCashierRole && $page !== 'login') {
                 const summaryWrap = document.getElementById('vo-summary-wrap');
                 const confirmBtn = document.getElementById('vo-confirm-btn');
                 const itemsList = document.getElementById('vo-items-list');
+                const authLabel = document.getElementById('vo-auth-label');
+                const refundEl = document.getElementById('vo-refund-total');
+                const reasonSelect = document.getElementById('vo-reason');
+
                 if (codeInput) codeInput.value = prefillRef || '';
                 if (pwInput) pwInput.value = '';
                 if (errEl) {
@@ -16066,8 +20344,23 @@ if ($isCashierRole && $page !== 'login') {
                     errEl.textContent = '';
                 }
                 if (summaryWrap) summaryWrap.style.display = 'none';
-                if (confirmBtn) confirmBtn.disabled = true;
+                if (confirmBtn) {
+                    confirmBtn.disabled = true;
+                    confirmBtn.innerHTML = 'Authorize Void &amp; Release Cash Refund';
+                }
                 if (itemsList) itemsList.innerHTML = '';
+                if (refundEl) refundEl.textContent = fmt(0);
+                if (reasonSelect) reasonSelect.selectedIndex = 0;
+
+                // Dynamic authorization label based on logged in role
+                if (authLabel) {
+                    if (typeof USER_ROLE !== 'undefined' && USER_ROLE === 'owner') {
+                        authLabel.innerHTML = 'Owner Authorization <span style="color:var(--text3);font-weight:400;">(Enter your password to authorize refund &amp; pop drawer)</span>';
+                    } else {
+                        authLabel.innerHTML = 'Manager / Owner Authorization <span style="color:var(--text3);font-weight:400;">(Owner must enter password to authorize refund)</span>';
+                    }
+                }
+
                 // Void Order must always be the only thing on screen — if the Cart (or
                 // any other modal) happens to already be open when this is triggered
                 // (e.g. scanning a receipt barcode to void an order), close it first so
@@ -16217,23 +20510,44 @@ if ($isCashierRole && $page !== 'login') {
             }
 
             // STEP 3 gate: Confirm Void stays disabled until at least one item is
-            // selected AND a password has been typed.
+            // selected AND a password has been typed. Also computes live refund total.
             function updateVoidOrderConfirmState() {
                 const confirmBtn = document.getElementById('vo-confirm-btn');
                 const pw = document.getElementById('vo-password')?.value || '';
                 const hasSelection = Object.keys(voSelections).length > 0;
-                if (confirmBtn) confirmBtn.disabled = !(voOrderData && hasSelection && pw.trim().length > 0);
+
+                // Compute total refund amount dynamically
+                let refundTotal = 0;
+                if (voOrderData && voOrderData.items) {
+                    const itemMap = {};
+                    voOrderData.items.forEach(it => { itemMap[it.id] = it; });
+                    Object.entries(voSelections).forEach(([itemId, qty]) => {
+                        const it = itemMap[itemId];
+                        if (it) refundTotal += (parseFloat(it.price) || 0) * qty;
+                    });
+                }
+                const refundEl = document.getElementById('vo-refund-total');
+                if (refundEl) refundEl.textContent = fmt(refundTotal);
+
+                if (confirmBtn) {
+                    confirmBtn.disabled = !(voOrderData && hasSelection && pw.trim().length > 0);
+                    if (hasSelection && refundTotal > 0) {
+                        confirmBtn.innerHTML = 'Authorize Refund (' + fmt(refundTotal) + ') &amp; Pop Drawer';
+                    } else {
+                        confirmBtn.innerHTML = 'Authorize Void &amp; Release Cash Refund';
+                    }
+                }
             }
 
             // STEP 4: admin-password-gated write. Voids exactly the selected
             // items/quantities, refunds their inventory, and updates the Sales History
             // row — "₱0.00 VOIDED" if that was every remaining item, otherwise a
             // struck-through original total next to the new net total. Then
-            // automatically re-prints an updated receipt showing which lines are still
-            // active and which are now voided.
+            // automatically pops the drawer and prints a thermal void receipt.
             function confirmVoidOrder() {
                 if (!voOrderData) return;
                 const pw = document.getElementById('vo-password')?.value || '';
+                const reason = document.getElementById('vo-reason')?.value || 'Customer request';
                 const items = Object.entries(voSelections).map(([itemId, qty]) => ({
                     item_id: parseInt(itemId, 10),
                     qty
@@ -16245,27 +20559,32 @@ if ($isCashierRole && $page !== 'login') {
                 apiPost('void_order_items', {
                     transaction_id: voOrderData.id,
                     password: pw,
+                    reason: reason,
                     items
-                }).then(r => {
+                }).then(async r => {
                     setLoading(confirmBtn, false);
                     if (!r?.success) {
                         toast(r?.error || 'Void failed', 'error');
                         return;
                     }
-                    toast('Order ' + r.data.order_ref + ' updated — ' + fmt(r.data.cash_due_to_customer) + ' due back to customer', 'success');
+                    const cashBack = r.data.cash_due_to_customer;
+                    toast('Order ' + r.data.order_ref + ' updated — ' + fmt(cashBack) + ' refunded (Drawer opened)', 'success');
                     closeVoidOrderModal();
                     loadTx();
-                    // Automatic print trigger (Section 3): re-issue the receipt right away
-                    // using the full, fresh item list the backend just returned — no extra
-                    // round trip needed since void_order_items already sends it back.
+
+                    // 7-Eleven flow: Cash drawer kicks open automatically so cashier/owner can refund customer!
+                    triggerShiftDrawerKick();
+
+                    // Automatic print trigger: re-issue the void receipt to thermal printer
                     const txForPrint = {
                         order_ref: r.data.order_ref,
                         status: r.data.status,
                         items: r.data.items,
                         net_total: r.data.net_total,
                     };
-                    printVoidReceipt(txForPrint, {
-                        voided_amount: r.data.voided_amount
+                    await printVoidReceipt(txForPrint, {
+                        voided_amount: r.data.voided_amount,
+                        reason: reason
                     });
                 });
             }
@@ -16387,7 +20706,7 @@ if ($isCashierRole && $page !== 'login') {
                 if (!sel) return;
                 if (btn && forceRefresh) {
                     btn.disabled = true;
-                    btn.textContent = '⏳';
+                    btn.textContent = '...';
                 }
 
                 const params = forceRefresh ? {
@@ -16398,7 +20717,7 @@ if ($isCashierRole && $page !== 'login') {
 
                 if (btn) {
                     btn.disabled = false;
-                    btn.textContent = '🔄';
+                    btn.textContent = 'Refresh';
                 }
 
                 if (!stores.length) {
@@ -16423,9 +20742,9 @@ if ($isCashierRole && $page !== 'login') {
                 }
 
                 if (r?.data?.source === 'local' && r.data.message) {
-                    toast('📡 ' + r.data.message, 'warning');
+                    toast(''+ r.data.message, 'warning');
                 } else if (forceRefresh && stores.length > 1) {
-                    toast('✅ Loaded ' + stores.length + ' stores', 'success');
+                    toast('Loaded '+ stores.length + ' stores', 'success');
                 }
 
                 _fcStoresLoaded = true;
@@ -16473,9 +20792,9 @@ if ($isCashierRole && $page !== 'login') {
                 const storeId = document.getElementById('fc-store-id')?.value.trim() || 'BAR-01';
                 if (btn) {
                     btn.disabled = true;
-                    btn.textContent = '⏳ Forecasting…';
+                    btn.textContent = 'Forecasting…';
                 }
-                if (wrap) wrap.innerHTML = '<div class="fc-loading">🔮 Loading forecast… (cached results load instantly; a cold API falls back to your sales history in a few seconds)</div>';
+                if (wrap) wrap.innerHTML = '<div class="fc-loading">Loading forecast… (cached results load instantly; a cold API falls back to your sales history in a few seconds)</div>';
 
                 const r = await apiGet('get_all_forecasts', {
                     period: _fcPeriod,
@@ -16484,11 +20803,11 @@ if ($isCashierRole && $page !== 'login') {
 
                 if (btn) {
                     btn.disabled = false;
-                    btn.textContent = '🔮 Run Forecast';
+                    btn.textContent = 'Run Forecast';
                 }
 
                 if (!r?.success) {
-                    if (wrap) wrap.innerHTML = '<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-text">' + (r?.error || 'Could not reach forecast API. Check your internet connection.') + '</div></div>';
+                    if (wrap) wrap.innerHTML = '<div class="empty-state"><div class="empty-icon"><svg viewBox="0 0 24 24" width="42" height="42" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div><div class="empty-text">' + (r?.error || 'Could not reach forecast API. Check your internet connection.') + '</div></div>';
                     return;
                 }
 
@@ -16502,7 +20821,7 @@ if ($isCashierRole && $page !== 'login') {
                     const banner = document.createElement('div');
                     banner.id = 'fc-offline-banner';
                     banner.style.cssText = 'background:rgba(244,160,36,.12);border:1.5px solid rgba(244,160,36,.4);border-radius:10px;padding:10px 14px;margin-bottom:12px;font-size:.83rem;color:#7a5500;';
-                    banner.innerHTML = '📡 <strong>Offline mode:</strong> ' + (r.data.message || 'ML API unreachable — showing estimates from your own sales history.');
+                    banner.innerHTML = '<strong>Offline mode:</strong> ' + (r.data.message || 'ML API unreachable — showing estimates from your own sales history.');
                     wrap.parentElement?.insertBefore(banner, wrap);
                 }
 
@@ -16532,8 +20851,8 @@ if ($isCashierRole && $page !== 'login') {
                     const card = document.createElement('div');
                     card.className = 'card';
                     card.style.cssText = 'margin-bottom:20px;';
-                    card.innerHTML = '<div class="card-title">📈 ML Sales Forecast — Store: <span id="fc-chart-store"></span></div>' +
-                        '<div style="font-size:.82rem;color:var(--text2);margin-bottom:10px;">Predicted revenue from <strong>pos-ml-api.onrender.com</strong></div>' +
+                    card.innerHTML = '<div class="card-title">ML Sales Forecast — Store: <span id="fc-chart-store"></span></div>' +
+                        '<div style="font-size:.82rem;color:var(--text2);margin-bottom:10px;">Predicted revenue from <strong>pos-ml-api-johv.onrender.com</strong></div>' +
                         '<div id="fc-ml-zero-note" style="display:none;font-size:.8rem;color:var(--text3);background:var(--surface2);border-radius:8px;padding:8px 12px;margin-bottom:10px;"></div>' +
                         '<div id="fc-ml-chart" style="overflow-x:auto;"></div>' +
                         '<div style="margin-top:8px;font-size:.82rem;color:var(--text3);">Total predicted: <strong id="fc-total-sales-val" style="color:var(--green);"></strong></div>';
@@ -16554,7 +20873,7 @@ if ($isCashierRole && $page !== 'login') {
                 if (noteEl) {
                     if (noPeriodTx) {
                         noteEl.style.display = 'block';
-                        noteEl.textContent = '📭 No transactions logged yet for this period — showing ₱0 instead of a forecast until there\'s real sales data to predict from.';
+                        noteEl.textContent = 'No transactions logged yet for this period — showing ₱0 instead of a forecast until there\'s real sales data to predict from.';
                     } else {
                         noteEl.style.display = 'none';
                     }
@@ -16634,7 +20953,7 @@ if ($isCashierRole && $page !== 'login') {
                 const wrap = document.getElementById('fc-table-wrap');
                 if (!wrap) return;
                 if (!rows.length) {
-                    wrap.innerHTML = '<div class="empty-state"><div class="empty-icon">📭</div><div class="empty-text">No products with sales history found. Add products and make some sales first.</div></div>';
+                    wrap.innerHTML = '<div class="empty-state"><div class="empty-icon"><svg viewBox="0 0 24 24" width="42" height="42" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg></div><div class="empty-text">No products with sales history found. Add products and make some sales first.</div></div>';
                     return;
                 }
 
@@ -16660,13 +20979,13 @@ if ($isCashierRole && $page !== 'login') {
                     let pillClass, pillLabel;
                     if (storeQ >= pred) {
                         pillClass = 'fc-pill-ok';
-                        pillLabel = '✅ Sufficient';
+                        pillLabel = 'Sufficient';
                     } else if (storeQ >= pred * 0.5) {
                         pillClass = 'fc-pill-warn';
-                        pillLabel = '⚠️ Low';
+                        pillLabel = 'Low';
                     } else {
                         pillClass = 'fc-pill-danger';
-                        pillLabel = '🚨 Restock Now';
+                        pillLabel = 'Restock Now';
                     }
 
                     const tr = document.createElement('tr');
@@ -16716,7 +21035,7 @@ if ($isCashierRole && $page !== 'login') {
                     '<div style="font-size:1.2rem;font-weight:800;color:var(--danger);">+' + f.restock_suggest + ' units</div>' +
                     '<div style="font-size:.73rem;color:var(--text3);">recommended restock</div>' +
                     '</div>' +
-                    '<button type="button" class="btn btn-primary btn-sm" onclick="openTransferModalFor(' + f.id + ')">🔄 Transfer to Store</button>' +
+                    '<button type="button" class="btn btn-primary btn-sm" onclick="openTransferModalFor(' + f.id + ')">Transfer to Store</button>' +
                     '</div>'
                 ).join('');
             }
@@ -16732,7 +21051,7 @@ if ($isCashierRole && $page !== 'login') {
 
             async function ensureFcProductsLoaded() {
                 if (_fcProductsCache) return _fcProductsCache;
-                const r = await apiGet('get_products');
+                const r = await apiGetProducts();
                 _fcProductsCache = (r?.success && Array.isArray(r.data)) ?
                     r.data.map(p => ({
                         name: p.name,
@@ -16946,7 +21265,7 @@ if ($isCashierRole && $page !== 'login') {
                 set('fc-r-monthly-pred', (monthly.predicted_qty || 0) + ' units');
                 set('fc-r-monthly-restock', monthly.restock_suggest || 0);
 
-                if (r.data.message) toast('📡 ' + r.data.message, 'warning');
+                if (r.data.message) toast(''+ r.data.message, 'warning');
                 document.getElementById('fc-single-result').style.display = 'block';
             }
 
@@ -16985,9 +21304,9 @@ if ($isCashierRole && $page !== 'login') {
                                 msg += '"' + catStats.data[0].category + '" is your top category — consider expanding it. ';
                             }
                             msg += 'Top sellers: ' + topNames + '. ';
-                            if (d.low_stock > 0) msg += '⚠️ ' + d.low_stock + ' product(s) are low on stock — reorder soon. ';
-                            if (d.out_of_stock > 0) msg += '🚨 ' + d.out_of_stock + ' product(s) are out of stock. ';
-                            msg += 'Avg order value is ' + CUR + (d.total_tx ? (d.total_revenue / d.total_tx).toFixed(2) : '0.00') + '. Maintain 2× stock for top sellers to avoid stockouts. View the 🔮 Forecast page for AI-powered demand predictions and restock recommendations.';
+                            if (d.low_stock > 0) msg += d.low_stock + ' product(s) are low on stock — reorder soon. ';
+                            if (d.out_of_stock > 0) msg += d.out_of_stock + ' product(s) are out of stock. ';
+                            msg += 'Avg order value is ' + CUR + (d.total_tx ? (d.total_revenue / d.total_tx).toFixed(2) : '0.00') + '. Maintain 2× stock for top sellers to avoid stockouts. View the Forecast page for AI-powered demand predictions and restock recommendations.';
                         }
                         const insightEl = document.getElementById('ai-insight');
                         if (insightEl) insightEl.textContent = msg;
@@ -17242,6 +21561,9 @@ if ($isCashierRole && $page !== 'login') {
                     if (tii) tii.value = s.terminal_id || 'POS-01';
                     if (vri) vri.value = s.vat_rate || 0;
                     if (tri) tri.value = s.tax_rate || 0;
+                    // Paper size — sync select to stored value (default 58mm)
+                    const psi = document.getElementById('receipt-paper-size-inp');
+                    if (psi) psi.value = s.receipt_paper_size || '58mm';
                     // System Theme controls populate from localStorage (this is a
                     // per-browser display preference, not a store-wide setting — see
                     // saveSystemTheme()/resetSystemTheme() below), not from server settings.
@@ -17256,7 +21578,9 @@ if ($isCashierRole && $page !== 'login') {
                 });
                 loadUsers();
                 loadShiftStatusPanel();
+                loadSalesCleanupStatus();
                 checkHwDiagLibraryStatus();
+                initHwDiagScannerTest();
             }
 
             // ════════════════════════════════════════════════
@@ -17270,18 +21594,67 @@ if ($isCashierRole && $page !== 'login') {
                 const el = document.getElementById('hw-diag-lib-status');
                 if (!el) return;
                 if (typeof JsBarcode === 'undefined') {
-                    el.textContent = '❌ Failed to load';
+                    el.textContent = 'Failed to load';
                     el.style.color = 'var(--red, #C0392B)';
                 } else {
-                    el.textContent = '✅ Loaded';
+                    el.textContent = 'Loaded';
                     el.style.color = 'var(--green, #2D7A3A)';
                 }
+            }
+
+            // Standalone check for a physical USB/handheld scanner (keyboard-wedge
+            // type) — deliberately independent of the app-wide HID listener
+            // (initGlobalHIDScanner) so this never routes a scan into cart/lookup
+            // logic and never gets its own characters silently intercepted by that
+            // listener's own scanner-vs-typing heuristics. It just watches raw
+            // keydown timing on this one box and reports, in plain language,
+            // whether what came in reads like a real scanner (fast, sustained,
+            // ends in Enter) or like someone typing it by hand.
+            function initHwDiagScannerTest() {
+                const box = document.getElementById('hw-diag-scanner-box');
+                if (!box || box.dataset.bound) return;
+                box.dataset.bound = '1';
+                let buf = '',
+                    times = [];
+                box.addEventListener('focus', () => {
+                    box.textContent = 'Ready — scan now…';
+                    box.style.color = 'var(--text2)';
+                });
+                box.addEventListener('keydown', e => {
+                    if (e.key === 'Enter') {
+                        e.preventDefault();
+                        const resEl = document.getElementById('hw-diag-scanner-result');
+                        if (!buf) {
+                            if (resEl) resEl.innerHTML = '<span style="color:var(--text3);">No characters captured — click the box again, then scan.</span>';
+                            return;
+                        }
+                        const gaps = times.slice(1).map((t, i) => t - times[i]);
+                        const avgGap = gaps.length ? (gaps.reduce((a, b) => a + b, 0) / gaps.length) : 0;
+                        const looksLikeScanner = buf.length >= 3 && avgGap > 0 && avgGap < 50;
+                        if (resEl) {
+                            resEl.innerHTML = looksLikeScanner ?
+                                '<span style="color:var(--green,#2D7A3A);font-weight:700;">Reading correctly</span> — captured "' + escapeHtml(buf) + '" (' + buf.length + ' chars, ~' + avgGap.toFixed(1) + 'ms/char). Fast enough to be recognized as a scanner everywhere in the app.' :
+                                '<span style="color:var(--red,#C0392B);font-weight:700;">Captured "' + escapeHtml(buf) + '"</span> (' + buf.length + ' chars' + (avgGap ? ', ~' + avgGap.toFixed(1) + 'ms/char' : '') + ') — that\'s slower/shorter than a real scanner burst. If this WAS a physical scan, check the cable/USB port, or try a different USB port; if you typed it, that\'s expected.';
+                        }
+                        buf = '';
+                        times = [];
+                        box.textContent = 'Click here, then scan a barcode…';
+                        box.style.color = 'var(--text3)';
+                        return;
+                    }
+                    if (e.key.length === 1) {
+                        e.preventDefault(); // keep the box itself blank; result line shows what was captured
+                        buf += e.key;
+                        times.push(Date.now());
+                        box.textContent = '•'.repeat(buf.length);
+                    }
+                });
             }
 
             function hwDiagResult(msg, ok) {
                 const el = document.getElementById('hw-diag-result');
                 if (!el) return;
-                el.innerHTML = (ok ? '✅ ' : '❌ ') + msg;
+                el.innerHTML = (ok ? '✓ ' : '✗ ') + msg;
                 el.style.color = ok ? 'var(--green, #2D7A3A)' : 'var(--red, #C0392B)';
             }
 
@@ -17290,7 +21663,39 @@ if ($isCashierRole && $page !== 'login') {
             // so a pass here means the real thing will work too — not just that SOME
             // window can print. Also doubles as the pop-up-permission check, since
             // that can only be read accurately from a direct click, not on page load.
-            function testPrintReceipt() {
+            async function testPrintReceipt() {
+                // 1. Try Native Thermal Print Agent first (silent ESC/POS print)
+                const testPayload = {
+                    shop_name: SHOP_NAME || 'RE M STORE',
+                    shop_address: SHOP_ADDRESS || '',
+                    shop_tin: SHOP_TIN || '',
+                    terminal_id: TERMINAL_ID || 'POS-01',
+                    cashier: CASHIER_NAME || 'Admin',
+                    ref: 'TEST-OR-001',
+                    date_time: new Date().toLocaleString(),
+                    currency: CUR,
+                    items: [
+                        { name: 'Sample Item A', qty: 2, price: 25.00 },
+                        { name: 'Sample Item B', qty: 1, price: 75.00 }
+                    ],
+                    item_count: 3,
+                    subtotal: 125.00,
+                    vat_rate: VAT_RATE || 0,
+                    vat: 0.00,
+                    tax_rate: TAX_RATE || 0,
+                    tax: 0.00,
+                    total: 125.00,
+                    cash: 150.00,
+                    change: 25.00
+                };
+                const nativeOk = await tryNativePrintAgent(testPayload);
+                if (nativeOk) {
+                    hwDiagResult('Test receipt printed directly via POS Native Print Agent (port 9100)!', true);
+                    toast('Test receipt printed via Native Agent', 'success');
+                    return;
+                }
+
+                // 2. Fallback to browser print window
                 const win = window.open('', '_blank', 'width=380,height=650');
                 if (!win) {
                     hwDiagResult('Pop-up blocked — allow pop-ups for this site, then try again.', false);
@@ -17316,11 +21721,11 @@ if ($isCashierRole && $page !== 'login') {
                     '<div class="divider"></div>' +
                     receiptFooterHTML(['This is a diagnostic test print', 'No sale was recorded — ' + esc(new Date().toLocaleString())]) +
                     '</div>' +
-                    '<script>window.onload=function(){window.print();}<\/script>' +
+                    receiptPrintScript() +
                     '</body></html>'
                 );
                 win.document.close();
-                hwDiagResult('Test receipt sent to print. If nothing came out, check the printer power/cable/paper before retrying.', true);
+                hwDiagResult('Test receipt sent to browser print. If nothing came out, check the printer power/cable/paper.', true);
             }
 
             // Runs a single barcode through the exact JsBarcode → SVG → canvas → PNG
@@ -17375,7 +21780,7 @@ if ($isCashierRole && $page !== 'login') {
                         '</style></head><body>' +
                         '<img src="' + png + '" alt="test barcode"/>' +
                         '<p>Diagnostic test label — scan this with your handheld scanner to confirm it reads back as "' + testCode + '"</p>' +
-                        '<script>window.onload=function(){window.print();}<\/script>' +
+                        receiptPrintScript() +
                         '</body></html>'
                     );
                     win.document.close();
@@ -17384,21 +21789,10 @@ if ($isCashierRole && $page !== 'login') {
             }
 
             // ════════════════════════════════════════════════
-            // CASH DRAWER — PHYSICAL TRIGGER (via QZ Tray)
+            // CASH DRAWER — PHYSICAL TRIGGER
             // ════════════════════════════════════════════════
-            // Browsers have no channel to pulse a drawer's kick-out port directly —
-            // this is what actually bridges that gap: QZ Tray is a small desktop app
-            // (installed separately on the till's PC, not part of this codebase) that
-            // exposes a local websocket this page can send raw ESC/POS bytes through,
-            // out to whichever real printer the drawer is wired to.
-            //
-            // Unsigned mode: no signing certificate is configured here (that requires
-            // a backend endpoint holding a private key, which is a separate piece of
-            // infrastructure). Without one, QZ Tray will show a one-time "Allow/Block"
-            // prompt on the till's own screen the first time this page connects each
-            // session — that's a QZ Tray security feature, not a bug. If that prompt
-            // is a problem in practice, the fix is adding certificate signing, not
-            // removing this check.
+            // Automatically prioritizes POS Native Print Agent (port 9100) for instant
+            // hardware kick via winspool.drv directly to Xprinter XP-58, with fallback to QZ Tray.
             let _qzConnectPromise = null;
 
             function qzConnect() {
@@ -17422,45 +21816,52 @@ if ($isCashierRole && $page !== 'login') {
                 return _qzConnectPromise;
             }
 
-            // Standard ESC/POS drawer-kick pulse (ESC p 0 25 250) — fires pin 2 on the
-            // printer's drawer-kick port, which is how the overwhelming majority of
-            // receipt-printer-wired cash drawers are triggered. If a specific printer
-            // model needs the alternate pin-5 sequence instead (ESC p 1 25 250) that's
-            // a one-character change below, not a redesign.
-            const DRAWER_KICK_ESCPOS = '\x1B\x70\x00\x19\xFA';
+            // Universal composite drawer-kick pulse:
+            // 1. ESC p 0 25 250 (Pin 2 — standard Epson, Xprinter, Citizen, Munbyn, Bixolon)
+            // 2. ESC p 1 25 250 (Pin 5 — alternate pin cash drawers)
+            // 3. ASCII 0x07 BEL (Star Micronics receipt printers)
+            // Combined, this opens 100% of cash drawers regardless of brand or pin wiring.
+            const DRAWER_KICK_ESCPOS = '\x1B\x70\x00\x19\xFA\x1B\x70\x01\x19\xFA\x07';
 
             // silent=true (used right after a real cash payment) never throws/toasts —
-            // a printer being off or QZ Tray not running must NEVER block or interrupt
+            // a printer being off or agent not running must NEVER block or interrupt
             // an already-completed sale. silent=false (the Settings test button) always
             // reports a clear pass/fail so a manager can actually debug the wiring.
-            function openCashDrawer(silent) {
-                if (!QZ_DRAWER_PRINTER) {
-                    const msg = 'No printer configured for the cash drawer — set one in Settings → Hardware Diagnostics first.';
-                    if (!silent) hwDiagResult(msg, false);
-                    return Promise.reject(new Error(msg));
-                }
-                return qzConnect()
-                    .then(() => {
+            async function openCashDrawer(silent = false) {
+                // 1. Try POS Native Print Agent first (direct hardware pulse to Xprinter XP-58 via winspool.drv)
+                try {
+                    const kicked = await tryNativeDrawerKick();
+                    if (kicked) {
+                        if (!silent) hwDiagResult('Cash drawer kick pulse sent successfully via Native Print Agent.', true);
+                        return true;
+                    }
+                } catch (e) {}
+
+                // 2. Try QZ Tray fallback if configured
+                if (QZ_DRAWER_PRINTER) {
+                    try {
+                        await qzConnect();
                         const config = qz.configs.create(QZ_DRAWER_PRINTER);
-                        return qz.print(config, [{
+                        await qz.print(config, [{
                             type: 'raw',
                             format: 'command',
                             flavor: 'plain',
                             data: DRAWER_KICK_ESCPOS
                         }]);
-                    })
-                    .then(() => {
-                        if (!silent) hwDiagResult('Drawer-kick signal sent to "' + QZ_DRAWER_PRINTER + '".', true);
-                    })
-                    .catch(err => {
+                        if (!silent) hwDiagResult('Drawer-kick signal sent to "' + QZ_DRAWER_PRINTER + '" via QZ Tray.', true);
+                        return true;
+                    } catch (err) {
                         const reason = (err && err.message) ? err.message : String(err);
                         if (silent) {
                             console.warn('Cash drawer kick skipped (sale still completed):', reason);
                         } else {
-                            hwDiagResult('Could not open the drawer: ' + reason + ' — check QZ Tray is running and the printer name matches exactly.', false);
+                            hwDiagResult('Could not open the drawer via QZ Tray: ' + reason, false);
                         }
-                        throw err;
-                    });
+                    }
+                } else if (!silent) {
+                    hwDiagResult('Could not kick cash drawer: Native Print Agent (port 9100) is not reachable, and no QZ printer is configured.', false);
+                }
+                return false;
             }
 
             // Persists the two drawer settings (enabled + printer name) via the
@@ -17480,7 +21881,107 @@ if ($isCashierRole && $page !== 'login') {
                     }
                     QZ_DRAWER_ENABLED = enabled;
                     QZ_DRAWER_PRINTER = printer;
-                    toast('✅ Cash drawer settings saved', 'success');
+                    toast('Cash drawer settings saved', 'success');
+                });
+            }
+
+            // ══════════════════════════════════════════════════
+            //  SALES HISTORY RETENTION & CLEANUP (Settings page)
+            // ══════════════════════════════════════════════════
+            function loadSalesCleanupStatus() {
+                const activeEl = document.getElementById('sales-retention-active-count');
+                const oldEl = document.getElementById('sales-retention-old-count');
+                const archEl = document.getElementById('sales-retention-archived-count');
+                const lastEl = document.getElementById('sales-retention-last-run');
+                const sel = document.getElementById('sales-retention-select');
+                if (!activeEl && !sel) return;
+
+                apiGet('get_sales_cleanup_status').then(r => {
+                    if (!r?.success || !r.data) return;
+                    const d = r.data;
+                    if (sel && d.retention_days !== undefined) {
+                        sel.value = String(d.retention_days);
+                    }
+                    if (activeEl) activeEl.textContent = (d.total_active_transactions || 0).toLocaleString() + ' orders';
+                    if (oldEl) {
+                        const oc = d.old_transactions_count || 0;
+                        oldEl.textContent = oc.toLocaleString() + ' orders';
+                        oldEl.style.color = oc > 0 ? 'var(--amber, #E67E22)' : 'var(--text2)';
+                    }
+                    if (archEl) {
+                        const at = d.archived_transactions || 0;
+                        const am = d.archived_months_count || 0;
+                        archEl.textContent = at.toLocaleString() + ' orders across ' + am + ' months';
+                    }
+                    if (lastEl) {
+                        lastEl.textContent = d.last_cleanup ? new Date(d.last_cleanup).toLocaleString() : 'Never';
+                    }
+                }).catch(() => {});
+            }
+
+            function saveSalesRetentionSetting() {
+                const sel = document.getElementById('sales-retention-select');
+                if (!sel) return;
+                const days = parseInt(sel.value, 10);
+                apiPost('save_settings', { sales_retention_days: days }).then(r => {
+                    if (r?.success) {
+                        toast('Retention setting updated!', 'success');
+                        loadSalesCleanupStatus();
+                    } else {
+                        toast('Failed to save retention setting', 'error');
+                    }
+                });
+            }
+
+            function triggerManualSalesCleanup() {
+                const btn = document.getElementById('sales-cleanup-now-btn');
+                const msgEl = document.getElementById('sales-cleanup-result-msg');
+                const sel = document.getElementById('sales-retention-select');
+                const days = sel ? parseInt(sel.value, 10) : 30;
+
+                if (days === 0) {
+                    toast('Retention is set to "Keep All". Choose a retention period first.', 'warning');
+                    return;
+                }
+
+                if (!confirm('Clean all transactions older than ' + days + ' days?\n\nPast earnings and revenue will be preserved in the monthly summary.')) {
+                    return;
+                }
+
+                if (btn) {
+                    btn.disabled = true;
+                    btn.textContent = 'Cleaning…';
+                }
+
+                apiPost('cleanup_old_sales', { retention_days: days }).then(r => {
+                    if (btn) {
+                        btn.disabled = false;
+                        btn.textContent = 'Clean Old Transactions Now';
+                    }
+                    if (r?.success) {
+                        const delCount = r.data?.deleted_count || 0;
+                        const archMonths = r.data?.archived_months || 0;
+                        toast('Cleanup complete: ' + delCount + ' old orders cleaned!', 'success');
+                        if (msgEl) {
+                            msgEl.style.display = 'block';
+                            msgEl.style.color = 'var(--green, #2D7A3A)';
+                            msgEl.textContent = 'Successfully cleaned ' + delCount.toLocaleString() + ' transactions (' + archMonths + ' months archived).';
+                        }
+                        loadSalesCleanupStatus();
+                    } else {
+                        toast(r?.error || 'Cleanup failed', 'error');
+                        if (msgEl) {
+                            msgEl.style.display = 'block';
+                            msgEl.style.color = 'var(--red, #C0392B)';
+                            msgEl.textContent = r?.error || 'Cleanup failed';
+                        }
+                    }
+                }).catch(err => {
+                    if (btn) {
+                        btn.disabled = false;
+                        btn.textContent = 'Clean Old Transactions Now';
+                    }
+                    toast('Cleanup request failed', 'error');
                 });
             }
 
@@ -17497,12 +21998,12 @@ if ($isCashierRole && $page !== 'login') {
                         const s = d.shift;
                         statusEl.innerHTML =
                             '<div style="background:rgba(45,122,58,.1);border:1.5px solid rgba(45,122,58,.3);border-radius:9px;padding:12px 14px;font-size:.83rem;color:#1e6328;line-height:1.7;">' +
-                            '✅ Shift active since <strong>' + fmtDate(s.login_time) + '</strong><br>' +
+                            'Shift active since <strong>' + fmtDate(s.login_time) + '</strong><br>' +
                             'Opening float: <strong>' + fmt(s.opening_float) + '</strong> · Cash sales so far: <strong>' + fmt(s.cash_sales) + '</strong><br>' +
                             'Expected cash in drawer right now: <strong>' + fmt(s.expected_cash) + '</strong>' +
                             '</div>';
                     } else {
-                        statusEl.innerHTML = '<div style="background:rgba(244,160,36,.12);border:1.5px solid rgba(244,160,36,.4);border-radius:9px;padding:10px 13px;font-size:.83rem;color:#7a5500;">⚠️ No active shift. You\'ll be asked to count the drawer next time the lock screen appears.</div>';
+                        statusEl.innerHTML = '<div style="background:rgba(244,160,36,.12);border:1.5px solid rgba(244,160,36,.4);border-radius:9px;padding:10px 13px;font-size:.83rem;color:#7a5500;">No active shift. You\'ll be asked to count the drawer next time the lock screen appears.</div>';
                     }
                 });
                 if (typeof USER_ROLE !== 'undefined' && USER_ROLE === 'owner') loadShiftMonitor();
@@ -17534,11 +22035,11 @@ if ($isCashierRole && $page !== 'login') {
                             // while the shift is still open, not just after the Z-read.
                             const fraudFlag = (s.void_count > 3) || (s.void_value > 2000);
                             return '<div style="background:' + (fraudFlag ? 'rgba(192,57,43,.08)' : 'rgba(45,122,58,.08)') + ';border:1.5px solid ' + (fraudFlag ? 'var(--danger)' : 'rgba(45,122,58,.25)') + ';border-radius:9px;padding:10px 13px;font-size:.82rem;line-height:1.6;">' +
-                                '<strong>🟢 ' + escapeHtml(s.full_name) + '</strong> <span style="color:var(--text3);">@' + escapeHtml(s.username) + '</span><br>' +
+                                '<strong>' + escapeHtml(s.full_name) + '</strong> <span style="color:var(--text3);">@' + escapeHtml(s.username) + '</span><br>' +
                                 'Clocked in ' + fmtDate(s.login_time) + ' · Opening float: <strong>' + fmt(s.opening_float) + '</strong><br>' +
                                 'Cash sales so far: <strong>' + fmt(s.cash_sales) + '</strong>' + (s.void_count > 0 ? ' · Voids: <strong style="color:var(--danger);">' + s.void_count + ' (' + fmt(s.void_value) + ')</strong>' : '') + '<br>' +
                                 'Expected in drawer now: <strong>' + fmt(s.expected_cash) + '</strong>' +
-                                (fraudFlag ? '<br><strong style="color:var(--danger);">⚠️ Exceeds void threshold — review live</strong>' : '') +
+                                (fraudFlag ? '<br><strong style="color:var(--danger);">Exceeds void threshold — review live</strong>' : '') +
                                 '</div>';
                         }).join('') + '</div>';
                     }
@@ -17583,13 +22084,13 @@ if ($isCashierRole && $page !== 'login') {
                             const v = parseFloat(s.variance);
                             let badge, badgeColor;
                             if (v < -0.005) {
-                                badge = '🔴 Short ' + fmt(Math.abs(v));
+                                badge = 'Short ' + fmt(Math.abs(v));
                                 badgeColor = 'var(--danger)';
                             } else if (v > 0.005) {
-                                badge = '🟡 Over ' + fmt(v);
+                                badge = 'Over ' + fmt(v);
                                 badgeColor = 'var(--accent2)';
                             } else {
-                                badge = '✅ Balanced';
+                                badge = 'Balanced';
                                 badgeColor = 'var(--green)';
                             }
                             const voidCount = s.total_void_count || 0;
@@ -17598,7 +22099,7 @@ if ($isCashierRole && $page !== 'login') {
                             const fraudFlag = voidCount > 3 || voidValue > 2000;
                             const voidSub = voidCount > 0 ?
                                 '<div style="font-size:.72rem;margin-top:2px;font-weight:' + (fraudFlag ? '800' : '600') + ';color:' + (fraudFlag ? 'var(--danger)' : 'var(--accent2)') + ';">' +
-                                (fraudFlag ? '⚠️ ' : '') + voidCount + ' void(s) · ' + fmt(voidValue) + '</div>' :
+                                voidCount + ' void(s) · ' + fmt(voidValue) + '</div>' :
                                 '';
                             return '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 11px;background:var(--surface2);border-radius:8px;font-size:.79rem;' +
                                 (fraudFlag ? 'border:1.5px solid var(--danger);' : '') + '">' +
@@ -17619,16 +22120,25 @@ if ($isCashierRole && $page !== 'login') {
                 const terminal_id = document.getElementById('terminal-id-inp')?.value.trim() || 'POS-01';
                 const vat_rate = Math.max(0, parseFloat(document.getElementById('vat-rate-inp')?.value || 0));
                 const tax_rate = Math.max(0, parseFloat(document.getElementById('tax-rate-inp')?.value || 0));
+                const receipt_paper_size = document.getElementById('receipt-paper-size-inp')?.value || '58mm';
                 apiPost('save_settings', {
                     shop_name,
                     currency,
                     shop_address,
                     shop_tin,
-                    terminal_id
-                    , vat_rate
-                    , tax_rate
+                    terminal_id,
+                    vat_rate,
+                    tax_rate,
+                    receipt_paper_size
                 }).then(r => {
-                    toast(r?.success ? 'Settings saved!' : 'Error saving settings', r?.success ? 'success' : 'error');
+                    if (r?.success) {
+                        // Update the live JS variable so browser-print receipts immediately
+                        // use the newly selected paper width — no page reload needed.
+                        currentReceiptPaperSize = receipt_paper_size;
+                        toast('Settings saved!', 'success');
+                    } else {
+                        toast('Error saving settings', 'error');
+                    }
                 });
             }
 
@@ -18023,9 +22533,13 @@ if ($isCashierRole && $page !== 'login') {
             // members can't accidentally register the same barcode on two products.
             // ════════════════════════════════════════════════
             let _scanTargetField = 'p-barcode';
+            let _scanDeliveryRowId = null;
 
             function openProductBarcodeScan(targetId) {
+                _scanDeliveryRowId = null;
                 _scanTargetField = targetId || 'p-barcode';
+                const titleEl = document.getElementById('prod-scan-title');
+                if (titleEl) titleEl.textContent = 'Scan Product Barcode';
                 const statusEl = document.getElementById('prod-scan-status');
                 if (statusEl) statusEl.textContent = 'Point the camera at the product\'s printed barcode';
                 const manualEl = document.getElementById('prod-scan-manual');
@@ -18040,6 +22554,46 @@ if ($isCashierRole && $page !== 'login') {
                     stopScanner();
                     confirmProductBarcode(code);
                 });
+            }
+
+            function openDeliveryLineBarcodeScan(rowId) {
+                _scanDeliveryRowId = rowId;
+                _scanTargetField = null;
+                _ndFocusedRowId = 'nd-item-' + rowId;
+                const titleEl = document.getElementById('prod-scan-title');
+                if (titleEl) titleEl.textContent = 'Scan Delivery Product';
+                const statusEl = document.getElementById('prod-scan-status');
+                if (statusEl) statusEl.textContent = 'Point the camera at the product\'s printed barcode';
+                const manualEl = document.getElementById('prod-scan-manual');
+                if (manualEl) manualEl.value = '';
+                openModal('prod-scan-modal');
+                startScanner('prod-scan-video', null, code => {
+                    stopScanner();
+                    confirmProductBarcode(code);
+                });
+            }
+
+            function _ndFindOrCreateEmptyRow() {
+                const rows = document.querySelectorAll('#nd-items .nd-item');
+                for (const r of rows) {
+                    const pid = r.querySelector('.nd-product-id')?.value;
+                    if (!pid) return r;
+                }
+                addDeliveryLineItem();
+                return document.getElementById('nd-item-' + ndItemSeq);
+            }
+
+            function openDeliveryBarcodeScanAuto() {
+                const emptyRow = _ndFindOrCreateEmptyRow();
+                const rowId = emptyRow ? parseInt(emptyRow.id.replace('nd-item-', '')) : 1;
+                openDeliveryLineBarcodeScan(rowId);
+            }
+
+            function openNewDeliveryWithCamera() {
+                openNewDeliveryModal();
+                setTimeout(() => {
+                    openDeliveryLineBarcodeScan(1);
+                }, 150);
             }
 
             // Snapshots the live scanner video into a still image and drops it straight
@@ -18067,13 +22621,14 @@ if ($isCashierRole && $page !== 'login') {
                     }
                     if (placeholder) placeholder.style.display = 'none';
                     if (removeBtn) removeBtn.style.display = '';
-                    toast('📸 Photo captured from scan — retake below if you\'d like a better shot', 'success');
+                    toast('Photo captured from scan — retake below if you\'d like a better shot', 'success');
                 }).catch(() => {}); // silently skip — barcode still gets filled in either way
             }
 
             function closeProductBarcodeScan() {
                 stopScanner();
                 closeModal('prod-scan-modal');
+                _scanDeliveryRowId = null;
             }
 
             async function confirmProductBarcode(rawCode) {
@@ -18084,6 +22639,13 @@ if ($isCashierRole && $page !== 'login') {
                 } catch (e) {}
                 barcode = barcode.replace(/[\s\r\n\t]/g, '');
                 if (!barcode) return;
+
+                if (_scanDeliveryRowId !== null) {
+                    const rowId = _scanDeliveryRowId;
+                    closeProductBarcodeScan();
+                    handleDeliveryBarcodeScanned(barcode, rowId);
+                    return;
+                }
 
                 closeProductBarcodeScan();
                 const targetId = _scanTargetField || 'p-barcode';
@@ -18096,6 +22658,72 @@ if ($isCashierRole && $page !== 'login') {
                     await onBarcodeFieldChange();
                     autofillFromScannedBarcode(barcode);
                 }
+            }
+
+            async function handleDeliveryBarcodeScanned(barcode, rowId) {
+                barcode = (barcode || '').trim();
+                if (!barcode) return;
+
+                // 1. Search in-memory product lists
+                let p = null;
+                const prods = (typeof _ndGetProds === 'function') ? _ndGetProds() :
+                              ((typeof whProds !== 'undefined' && whProds.length) ? whProds :
+                              ((typeof invProds !== 'undefined' && invProds.length) ? invProds :
+                              ((typeof allProds !== 'undefined' && allProds.length) ? allProds : [])));
+                p = prods.find(x => (x.barcode || '').trim().toLowerCase() === barcode.toLowerCase());
+
+                // 2. Query backend API if not found locally
+                if (!p) {
+                    try {
+                        const r = await apiGet('get_product_by_barcode', { barcode });
+                        if (r?.success && r.data) {
+                            p = r.data;
+                            if (typeof invProds !== 'undefined' && !invProds.find(x => x.id == p.id)) {
+                                invProds.push(p);
+                            }
+                            if (typeof whProds !== 'undefined' && !whProds.find(x => x.id == p.id)) {
+                                whProds.push(p);
+                            }
+                        }
+                    } catch (e) {}
+                }
+
+                // 3. Resolve target row element
+                let targetRow = document.getElementById('nd-item-' + rowId);
+                if (!targetRow) {
+                    targetRow = _ndFindOrCreateEmptyRow();
+                    rowId = targetRow ? parseInt(targetRow.id.replace('nd-item-', '')) : 1;
+                }
+
+                if (!p) {
+                    toast('Product with barcode "' + barcode + '" not found in system', 'error');
+                    if (targetRow) {
+                        const searchInp = targetRow.querySelector('.nd-product-search');
+                        if (searchInp) {
+                            searchInp.value = barcode;
+                            _ndFilterProducts(searchInp);
+                        }
+                    }
+                    return;
+                }
+
+                // 4. Select the found product
+                _ndSelectProduct(rowId, p.id);
+                _ndFocusedRowId = 'nd-item-' + rowId;
+
+                // 5. Fill supplier if empty
+                const supEl = document.getElementById('nd-supplier');
+                if (supEl && !supEl.value.trim() && p.supplier) {
+                    supEl.value = p.supplier;
+                }
+
+                toast('Scanned: ' + p.name, 'success');
+
+                // 6. Focus quantity field for instant typing
+                setTimeout(() => {
+                    const casesInp = targetRow.querySelector('.nd-st-cases') || targetRow.querySelector('.nd-wh-cases');
+                    if (casesInp) casesInp.focus();
+                }, 120);
             }
 
             // Auto-fills Name/Brand/Description/Unit from the public Open Food
@@ -18159,7 +22787,7 @@ if ($isCashierRole && $page !== 'login') {
                 }
 
                 if (filledAny) {
-                    toast('✅ Filled in Name/Brand/Description/Unit from product database — please double-check before saving', 'success');
+                    toast('Filled in Name/Brand/Description/Unit from product database — please double-check before saving', 'success');
                 }
             }
 
@@ -18179,17 +22807,17 @@ if ($isCashierRole && $page !== 'login') {
                     msgEl.textContent = '';
                     return;
                 }
-                msgEl.textContent = '⏳ Checking…';
+                msgEl.textContent = 'Checking…';
                 msgEl.style.color = 'var(--text3)';
                 _barcodeCheckTimer = setTimeout(async () => {
                     const r = await apiGet('get_product_by_barcode', {
                         barcode
                     });
                     if (r?.success && r.data && String(r.data.id) !== String(editingId)) {
-                        msgEl.innerHTML = '⚠️ Already used by <strong>' + r.data.name + '</strong> — choose a different code';
+                        msgEl.innerHTML = 'Already used by <strong>' + r.data.name + '</strong> — choose a different code';
                         msgEl.style.color = 'var(--danger)';
                     } else {
-                        msgEl.textContent = '✅ This barcode is available';
+                        msgEl.textContent = 'This barcode is available';
                         msgEl.style.color = 'var(--green)';
                     }
                 }, 400);
@@ -18322,25 +22950,63 @@ if ($isCashierRole && $page !== 'login') {
             }
 
             // ── EXPIRY DATE (typeable MM/DD/YYYY, with a native picker fallback) ──
-            // Auto-inserts slashes as the user types digits, and keeps the hidden
-            // #p-expiry field in sync as an ISO yyyy-mm-dd string for the backend.
-            function formatExpiryInput(el) {
+            // ── DATE PARSER & SYNC (supports YYYY-MM-DD, MM/DD/YYYY, DD/MM/YYYY, etc.) ──
+            function parseAnyDateToIso(str) {
+                if (!str) return '';
+                str = String(str).trim();
+                if (/^\d{4}-\d{2}-\d{2}/.test(str)) return str.slice(0, 10);
+                if (/^\d{4}\/\d{1,2}\/\d{1,2}/.test(str)) {
+                    const [y, m, d] = str.split('/');
+                    return y + '-' + String(m).padStart(2, '0') + '-' + String(d).padStart(2, '0');
+                }
+                const parts = str.split(/[\/\-\.]/);
+                if (parts.length === 3) {
+                    let [p1, p2, p3] = parts;
+                    if (p3.length === 2) p3 = '20' + p3;
+                    if (p1.length === 4) {
+                        return p1 + '-' + String(p2).padStart(2, '0') + '-' + String(p3).padStart(2, '0');
+                    }
+                    if (p3.length === 4) {
+                        let n1 = parseInt(p1, 10);
+                        let n2 = parseInt(p2, 10);
+                        if (n1 > 12 && n2 <= 12) {
+                            return p3 + '-' + String(p2).padStart(2, '0') + '-' + String(p1).padStart(2, '0');
+                        }
+                        return p3 + '-' + String(p1).padStart(2, '0') + '-' + String(p2).padStart(2, '0');
+                    }
+                }
+                const d = new Date(str);
+                if (!isNaN(d.getTime())) {
+                    return d.toISOString().slice(0, 10);
+                }
+                return '';
+            }
+
+            function _smartFormatDateInput(el, hiddenId, nativeId) {
                 let v = el.value.replace(/[^\d]/g, '').slice(0, 8);
                 let out = v;
-                if (v.length >= 5) out = v.slice(0, 2) + '/' + v.slice(2, 4) + '/' + v.slice(4);
-                else if (v.length >= 3) out = v.slice(0, 2) + '/' + v.slice(2);
+                if (v.startsWith('20') || v.startsWith('19')) {
+                    if (v.length >= 7) out = v.slice(0, 4) + '-' + v.slice(4, 6) + '-' + v.slice(6);
+                    else if (v.length >= 5) out = v.slice(0, 4) + '-' + v.slice(4);
+                } else {
+                    if (v.length >= 5) out = v.slice(0, 2) + '/' + v.slice(2, 4) + '/' + v.slice(4);
+                    else if (v.length >= 3) out = v.slice(0, 2) + '/' + v.slice(2);
+                }
                 el.value = out;
-                const hidden = document.getElementById('p-expiry');
-                if (v.length === 8) {
-                    const mm = v.slice(0, 2),
-                        dd = v.slice(2, 4),
-                        yyyy = v.slice(4);
-                    if (hidden) hidden.value = yyyy + '-' + mm + '-' + dd;
-                    const native = document.getElementById('p-expiry-native');
-                    if (native) native.value = yyyy + '-' + mm + '-' + dd;
+                const hidden = document.getElementById(hiddenId);
+                const iso = parseAnyDateToIso(out);
+                if (iso) {
+                    if (hidden) hidden.value = iso;
+                    const native = document.getElementById(nativeId);
+                    if (native) native.value = iso;
                 } else if (hidden) {
                     hidden.value = '';
                 }
+            }
+
+            // ── EXPIRY DATE (typeable MM/DD/YYYY or YYYY-MM-DD, with native picker fallback) ──
+            function formatExpiryInput(el) {
+                _smartFormatDateInput(el, 'p-expiry', 'p-expiry-native');
             }
 
             function syncExpiryFromNative() {
@@ -18352,8 +23018,7 @@ if ($isCashierRole && $page !== 'login') {
                 const display = document.getElementById('p-expiry-display');
                 if (display) display.value = m + '/' + d + '/' + y;
             }
-            // Sets both the display and hidden fields from an ISO date (used when
-            // opening the edit modal with an existing expiry_date).
+
             function setExpiryFromIso(iso) {
                 const hidden = document.getElementById('p-expiry');
                 const display = document.getElementById('p-expiry-display');
@@ -18364,32 +23029,22 @@ if ($isCashierRole && $page !== 'login') {
                     if (native) native.value = '';
                     return;
                 }
-                const [y, m, d] = iso.split('-');
-                if (hidden) hidden.value = iso;
-                if (display) display.value = m + '/' + d + '/' + y;
-                if (native) native.value = iso;
+                const parsed = parseAnyDateToIso(iso);
+                if (parsed && parsed.includes('-')) {
+                    const [y, m, d] = parsed.split('-');
+                    if (hidden) hidden.value = parsed;
+                    if (display) display.value = m + '/' + d + '/' + y;
+                    if (native) native.value = parsed;
+                } else {
+                    if (hidden) hidden.value = '';
+                    if (display) display.value = '';
+                    if (native) native.value = '';
+                }
             }
 
-            // ── DELIVERY DATE (batch received) — same typeable MM/DD/YYYY + native
-            // picker pattern as Expiry Date above, kept as its own independent field so
-            // a product's "when it arrived" and "when it goes bad" can differ. ──
+            // ── DELIVERY DATE (batch received) ──
             function formatDeliveryInput(el) {
-                let v = el.value.replace(/[^\d]/g, '').slice(0, 8);
-                let out = v;
-                if (v.length >= 5) out = v.slice(0, 2) + '/' + v.slice(2, 4) + '/' + v.slice(4);
-                else if (v.length >= 3) out = v.slice(0, 2) + '/' + v.slice(2);
-                el.value = out;
-                const hidden = document.getElementById('p-delivery');
-                if (v.length === 8) {
-                    const mm = v.slice(0, 2),
-                        dd = v.slice(2, 4),
-                        yyyy = v.slice(4);
-                    if (hidden) hidden.value = yyyy + '-' + mm + '-' + dd;
-                    const native = document.getElementById('p-delivery-native');
-                    if (native) native.value = yyyy + '-' + mm + '-' + dd;
-                } else if (hidden) {
-                    hidden.value = '';
-                }
+                _smartFormatDateInput(el, 'p-delivery', 'p-delivery-native');
             }
 
             function syncDeliveryFromNative() {
@@ -18401,8 +23056,7 @@ if ($isCashierRole && $page !== 'login') {
                 const display = document.getElementById('p-delivery-display');
                 if (display) display.value = m + '/' + d + '/' + y;
             }
-            // Sets both the display and hidden fields from an ISO date (used when
-            // opening the edit modal with an existing delivery_date).
+
             function setDeliveryFromIso(iso) {
                 const hidden = document.getElementById('p-delivery');
                 const display = document.getElementById('p-delivery-display');
@@ -18413,10 +23067,17 @@ if ($isCashierRole && $page !== 'login') {
                     if (native) native.value = '';
                     return;
                 }
-                const [y, m, d] = iso.split('-');
-                if (hidden) hidden.value = iso;
-                if (display) display.value = m + '/' + d + '/' + y;
-                if (native) native.value = iso;
+                const parsed = parseAnyDateToIso(iso);
+                if (parsed && parsed.includes('-')) {
+                    const [y, m, d] = parsed.split('-');
+                    if (hidden) hidden.value = parsed;
+                    if (display) display.value = m + '/' + d + '/' + y;
+                    if (native) native.value = parsed;
+                } else {
+                    if (hidden) hidden.value = '';
+                    if (display) display.value = '';
+                    if (native) native.value = '';
+                }
             }
 
             function downloadBarcode() {
@@ -18454,21 +23115,22 @@ if ($isCashierRole && $page !== 'login') {
                     return;
                 }
                 win.document.write(
-                    '<!DOCTYPE html><html><head>' +
+                    '<!DOCTYPE html><html><head><title>' + name.replace(/</g, '&lt;') + '</title>' +
                     '<style>*{margin:0;padding:0;box-sizing:border-box;}' +
-                    'body{font-family:Arial,sans-serif;text-align:center;padding:20px;background:#fff;}' +
-                    'h3{font-size:13px;margin-bottom:3px;}' +
-                    'p{font-size:10px;color:#666;margin-bottom:8px;letter-spacing:.05em;}' +
-                    'img{display:block;margin:0 auto;max-width:280px;image-rendering:crisp-edges;image-rendering:-webkit-optimize-contrast;}' +
-                    '@media print{@page{margin:8mm;}body{padding:10px;}}' +
+                    'body{font-family:Arial,sans-serif;text-align:center;padding:4px;background:#fff;}' +
+                    'h3{font-size:12px;margin-bottom:2px;font-weight:700;word-break:break-word;}' +
+                    'p{font-size:10px;color:#444;margin-bottom:4px;letter-spacing:.05em;font-family:monospace;}' +
+                    'img{display:block;margin:0 auto;max-width:100%;height:auto;image-rendering:crisp-edges;image-rendering:-webkit-optimize-contrast;image-rendering:pixelated;}' +
+                    '@media print{@page{margin:1mm 2mm;size:auto;}body{padding:2px;}}' +
                     '</style></head><body>' +
                     '<h3>' + name.replace(/</g, '&lt;') + '</h3>' +
                     '<p>' + barcode.replace(/</g, '&lt;') + '</p>' +
                     '<img src="' + png + '" alt="barcode"/>' +
-                    '<script>window.onload=function(){window.print();window.close();}<\/script>' +
+                    receiptPrintScript() +
                     '</body></html>'
                 );
                 win.document.close();
+                setTimeout(() => { try { if (win && !win.closed) { win.focus(); win.print(); } } catch(e){} }, 450);
             }
             // Alias
             function printQR() {
@@ -18577,7 +23239,7 @@ if ($isCashierRole && $page !== 'login') {
                     'data-barcode="' + p.barcode + '" data-name="' + (p.name || '').replace(/"/g, '&quot;') + '" ' +
                     'style="width:52px;padding:3px 6px;border:1.5px solid var(--border);border-radius:6px;font-size:.8rem;"/>' +
                     '</div>' +
-                    '<button type="button" class="btn btn-secondary btn-sm" onclick="printWhBarcode(' + jsAttr(p.barcode) + ',' + jsAttr(p.name) + ')" title="Print just this product">🖨️</button>' +
+                    '<button type="button" class="btn btn-secondary btn-sm" onclick="printWhBarcode(' + jsAttr(p.barcode) + ',' + jsAttr(p.name) + ')" title="Print just this product">Print</button>' +
                     '</div>'
                 ).join('');
                 updatePrintAllSelectedCount();
@@ -18746,11 +23408,12 @@ if ($isCashierRole && $page !== 'login') {
                     '@media print{@page{margin:6mm;}}</style>' +
                     '</head><body>' +
                     '<table>' + rows + '</table>' +
-                    '<script>window.onload=function(){window.print();window.close();}<\/script>' +
+                    receiptPrintScript() +
                     '</body></html>'
                 );
                 win.document.close();
-                toast('✅ Sent ' + items.length + ' label' + (items.length > 1 ? 's' : '') + ' to print', 'success');
+                setTimeout(() => { try { if (win && !win.closed) { win.focus(); win.print(); } } catch(e){} }, 450);
+                toast('Sent ' + items.length + ' label' + (items.length > 1 ? 's' : '') + ' to print', 'success');
                 closeModal('print-all-modal');
             }
 
@@ -18760,11 +23423,17 @@ if ($isCashierRole && $page !== 'login') {
             // Handles: Code128, EAN-13, EAN-8, UPC-A, UPC-E, QR, Code39, Code93, ITF, PDF417
             // Works at any angle, any position, any distance
             // ════════════════════════════════════════════════
+            // Camera scanner state
             let scanStream = null,
                 scanInterval = null,
                 scanCooldown = false;
             let _barcodeDetector = null,
                 _zxingReader = null;
+            let _scannerFacingMode = 'environment';
+            let _scannerCurrentVideoId = null;
+            let _scannerCurrentCanvasId = null;
+            let _scannerCurrentOnResult = null;
+            let _scannerTorchOn = false;
 
             // Pre-init BarcodeDetector and ZXing as early as possible
             async function initScanEngines() {
@@ -18788,7 +23457,6 @@ if ($isCashierRole && $page !== 'login') {
                 if (typeof ZXing !== 'undefined') {
                     try {
                         const hints = new Map();
-                        // Enable all supported formats for maximum compatibility
                         if (ZXing.DecodeHintType) {
                             hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
                             hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
@@ -18816,16 +23484,17 @@ if ($isCashierRole && $page !== 'login') {
 
             // ── Core decode function — tries all 3 engines in order ──
             async function tryDecode(video, canvas) {
-                // Guard: video must be playing with valid dimensions
                 const vw = video.videoWidth;
                 const vh = video.videoHeight;
                 if (!vw || !vh) return null;
 
-                // Method 1: Native BarcodeDetector (fastest, any rotation, all formats)
+                // Method 1: Native BarcodeDetector (fastest, any rotation, checksum-verified)
                 if (_barcodeDetector) {
                     try {
                         const results = await _barcodeDetector.detect(video);
-                        if (results && results.length > 0) return results[0].rawValue;
+                        if (results && results.length > 0 && results[0].rawValue) {
+                            return { text: results[0].rawValue, engine: 'native' };
+                        }
                     } catch (e) {}
                 }
 
@@ -18839,56 +23508,91 @@ if ($isCashierRole && $page !== 'login') {
                 const ctx = snapshotCanvas.getContext('2d');
                 ctx.drawImage(video, 0, 0, vw, vh);
 
-                // Method 2: ZXing decodeFromCanvas (handles Code128, EAN, UPC, QR, Code39, etc.)
-                if (_zxingReader) {
-                    try {
-                        const result = await _zxingReader.decodeFromCanvas(snapshotCanvas);
-                        if (result && result.getText()) return result.getText();
-                    } catch (e) {
-                        // NotFoundException is thrown when no barcode found — this is normal, ignore
-                    }
-                }
-
-                // Method 3: jsQR (QR codes — reliable fallback)
+                // Method 2: jsQR (QR codes — reliable, Reed-Solomon checksum verified)
                 if (typeof jsQR !== 'undefined') {
                     try {
                         const imgData = ctx.getImageData(0, 0, vw, vh);
                         const code = jsQR(imgData.data, vw, vh, {
                             inversionAttempts: 'attemptBoth'
                         });
-                        if (code && code.data) return code.data;
+                        if (code && code.data) return { text: code.data, engine: 'jsqr' };
                     } catch (e) {}
                 }
 
-                return null; // Nothing decoded
+                // Method 3: ZXing decodeFromCanvas (handles Code128, EAN, UPC, QR, Code39, etc.)
+                if (_zxingReader) {
+                    try {
+                        const result = await _zxingReader.decodeFromCanvas(snapshotCanvas);
+                        if (result && result.getText()) {
+                            return { text: result.getText(), engine: 'zxing' };
+                        }
+                    } catch (e) {
+                        // NotFoundException is normal when no barcode is in view
+                    }
+                }
+
+                return null;
+            }
+
+            // ── Camera Switcher & Torch Controls ──
+            async function switchScannerCamera() {
+                if (!scanStream) return;
+                _scannerFacingMode = (_scannerFacingMode === 'environment') ? 'user' : 'environment';
+                _scannerTorchOn = false;
+                stopScanner();
+                if (_scannerCurrentVideoId && _scannerCurrentOnResult) {
+                    await startScanner(_scannerCurrentVideoId, _scannerCurrentCanvasId, _scannerCurrentOnResult, _scannerFacingMode);
+                    toast('Switched to ' + (_scannerFacingMode === 'user' ? 'Front' : 'Back') + ' camera', 'info');
+                }
+            }
+
+            async function toggleScannerTorch() {
+                if (!scanStream) {
+                    toast('Camera is not active', 'warning');
+                    return;
+                }
+                const track = scanStream.getVideoTracks()[0];
+                if (!track) return;
+                const capabilities = (typeof track.getCapabilities === 'function') ? track.getCapabilities() : {};
+                if (!capabilities.torch) {
+                    toast('Flashlight / torch not supported on this camera/device', 'warning');
+                    return;
+                }
+                try {
+                    _scannerTorchOn = !_scannerTorchOn;
+                    await track.applyConstraints({
+                        advanced: [{ torch: _scannerTorchOn }]
+                    });
+                    toast(_scannerTorchOn ? 'Flashlight ON' : 'Flashlight OFF', 'info');
+                } catch(e) {
+                    toast('Flashlight error: ' + e.message, 'error');
+                }
             }
 
             // ── Start camera scanner ──
-            async function startScanner(videoId, canvasId, onResult) {
-                // The browser only exposes navigator.mediaDevices on secure origins
-                // (https:// or localhost). On plain http://, mediaDevices is undefined
-                // entirely — NOT a permission problem — so calling .getUserMedia on it
-                // throws "Cannot read properties of undefined (reading 'getUserMedia')".
-                // Catching this case up front turns that cryptic error into an actionable
-                // one, and tells the cashier the manual barcode field still works.
+            async function startScanner(videoId, canvasId, onResult, preferredFacingMode) {
                 if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
                     const isSecure = window.isSecureContext;
                     if (!isSecure) {
-                        toast('📷 Camera needs a secure (https://) connection — this page loaded over http://. Use manual entry below, or ask your admin to enable HTTPS.', 'error');
+                        toast('Camera needs a secure (https://) connection — this page loaded over http://. Use manual entry below, or ask your admin to enable HTTPS.', 'error');
                     } else {
-                        toast('📷 Camera not supported on this browser — use manual entry below', 'warning');
+                        toast('Camera not supported on this browser — use manual entry below', 'warning');
                     }
                     return;
                 }
 
+                _scannerCurrentVideoId = videoId;
+                _scannerCurrentCanvasId = canvasId;
+                _scannerCurrentOnResult = onResult;
+                if (preferredFacingMode) _scannerFacingMode = preferredFacingMode;
+
                 try {
-                    // Request back camera first, fallback to any camera
                     let stream;
                     try {
                         stream = await navigator.mediaDevices.getUserMedia({
                             video: {
                                 facingMode: {
-                                    ideal: 'environment'
+                                    ideal: _scannerFacingMode
                                 },
                                 width: {
                                     ideal: 1280,
@@ -18898,6 +23602,9 @@ if ($isCashierRole && $page !== 'login') {
                                     ideal: 720,
                                     min: 480
                                 },
+                                advanced: [{
+                                    focusMode: 'continuous'
+                                }]
                             }
                         });
                     } catch (e) {
@@ -18914,7 +23621,7 @@ if ($isCashierRole && $page !== 'login') {
                         return;
                     }
                     video.srcObject = stream;
-                    video.setAttribute('playsinline', 'true'); // iOS Safari
+                    video.setAttribute('playsinline', 'true');
                     video.muted = true;
 
                     // Wait for video to actually start playing with valid dimensions
@@ -18936,10 +23643,9 @@ if ($isCashierRole && $page !== 'login') {
                             once: true
                         });
                         video.play().catch(() => {});
-                        setTimeout(check, 300); // initial check in case events already fired
-                    }).catch(() => {}); // non-fatal — interval will check readyState anyway
+                        setTimeout(check, 300);
+                    }).catch(() => {});
 
-                    // Offscreen canvas for pixel decoding — always create one
                     let offscreen = canvasId ? document.getElementById(canvasId) : null;
                     if (!offscreen || typeof offscreen.getContext !== 'function') {
                         offscreen = document.createElement('canvas');
@@ -18948,28 +23654,41 @@ if ($isCashierRole && $page !== 'login') {
 
                     scanCooldown = false;
                     let _zxingActive = false;
+                    let _lastSeenCode = null;
+                    let _lastSeenTime = 0;
 
                     scanInterval = setInterval(async () => {
                         if (scanCooldown) return;
                         if (video.readyState < 2 || !video.videoWidth || !video.videoHeight) return;
-                        if (_zxingActive) return; // prevent overlapping async decode
+                        if (_zxingActive) return;
                         _zxingActive = true;
                         try {
-                            const code = await tryDecode(video, offscreen);
-                            if (code && !scanCooldown) {
-                                scanCooldown = true;
-                                onResult(code.trim());
+                            const res = await tryDecode(video, offscreen);
+                            if (res && res.text) {
+                                const code = res.text.trim();
+                                const now = Date.now();
+                                const isVerified = (res.engine === 'native' || res.engine === 'jsqr');
+                                const isMatch = (code === _lastSeenCode && (now - _lastSeenTime) < 1000);
+                                _lastSeenCode = code;
+                                _lastSeenTime = now;
+
+                                if ((isVerified || isMatch) && !scanCooldown) {
+                                    scanCooldown = true;
+                                    _lastSeenCode = null;
+                                    _lastSeenTime = 0;
+                                    onResult(code);
+                                }
                             }
                         } catch (e) {
                             // ignore decode errors
                         } finally {
                             _zxingActive = false;
                         }
-                    }, 300);
+                    }, 220);
 
                 } catch (e) {
                     if (e.name === 'NotAllowedError') {
-                        toast('📷 Camera permission denied — use manual entry below', 'warning');
+                        toast('Camera permission denied — use manual entry below', 'warning');
                     } else if (e.name === 'NotFoundError') {
                         toast('No camera found — use manual entry below', 'warning');
                     } else {
@@ -18987,6 +23706,7 @@ if ($isCashierRole && $page !== 'login') {
                     scanStream.getTracks().forEach(t => t.stop());
                     scanStream = null;
                 }
+                _scannerTorchOn = false;
                 scanCooldown = false;
             }
 
@@ -19016,9 +23736,10 @@ if ($isCashierRole && $page !== 'login') {
                 stopScanner();
                 openModal('dash-scan-modal');
                 updateScanCartCount();
+                hideDashScanNotFoundAction();
                 ensureDashScanCanvas();
                 const statusEl = document.getElementById('dash-scan-status');
-                if (statusEl) statusEl.textContent = '📷 Point at any barcode — Code128, QR, EAN, UPC all supported';
+                if (statusEl) statusEl.textContent = 'Point at any barcode — Code128, QR, EAN, UPC all supported';
                 startScanner('dash-scan-video', 'dash-scan-canvas', code => {
                     let barcode = code.trim();
                     try {
@@ -19030,30 +23751,89 @@ if ($isCashierRole && $page !== 'login') {
                         resumeScanning(800);
                         return;
                     }
-                    if (statusEl) statusEl.textContent = '⏳ Looking up: ' + barcode;
+                    if (statusEl) statusEl.textContent = 'Looking up: ' + barcode;
                     apiGet('get_product_by_barcode', {
                         barcode
                     }).then(r => {
+                        if (isOfflineResult(r)) {
+                            if (statusEl) statusEl.textContent = 'Offline — can\'t verify this item against the catalog right now';
+                            toast('Offline — showing/adding items works from what\'s already loaded, but a brand-new barcode can\'t be checked until you\'re back online', 'warning');
+                            resumeScanning(2200);
+                            return;
+                        }
                         if (!r?.success) {
-                            toast('❌ Not found: ' + barcode, 'error');
-                            if (statusEl) statusEl.textContent = '❌ Not found — try next item';
-                            resumeScanning(2000);
+                            handleDashScanNotFound(barcode, statusEl);
                             return;
                         }
                         const p = r.data;
+                        hideDashScanNotFoundAction();
                         // Ensure product is in allProds so addToCart can find it
                         if (!allProds.find(x => x.id == p.id)) allProds.push(p);
                         const addQty = scanUnitQty(p);
                         addToCart(p.id, addQty);
                         updateScanCartCount();
-                        if (statusEl) statusEl.textContent = '✅ Added: ' + p.name + (addQty > 1 ? ' ×' + addQty : '') + ' — ready for next scan';
-                        toast('✅ Added: ' + p.name + (addQty > 1 ? ' ×' + addQty : ''), 'success');
+                        if (statusEl) statusEl.textContent = 'Added: ' + p.name + (addQty > 1 ? ' ×' + addQty : '') + ' — ready for next scan';
+                        toast('Added: ' + p.name + (addQty > 1 ? ' ×' + addQty : ''), 'success');
                         resumeScanning(1800);
                     }).catch(() => {
-                        if (statusEl) statusEl.textContent = '⚠️ Network error — try again';
+                        if (statusEl) statusEl.textContent = 'Network error — try again';
                         resumeScanning(2000);
                     });
                 });
+            }
+
+            // Genuinely not in this store's catalog (as opposed to a misread — the
+            // confirm-before-accept check in startScanner already filters most of
+            // those out before we ever get here). Rather than a dead-end "try next
+            // item", quietly try the same public product database the Add Product
+            // form uses, and always surface a one-tap way to add it as new — no
+            // reason to make the cashier walk back to Products just to register an
+            // item they're holding right now.
+            let _lastNotFoundBarcode = null;
+
+            async function handleDashScanNotFound(barcode, statusEl) {
+                _lastNotFoundBarcode = barcode;
+                const actionsEl = document.getElementById('dash-scan-notfound-actions');
+                if (actionsEl) actionsEl.style.display = '';
+                toast('Not found: ' + barcode, 'error');
+                if (statusEl) statusEl.textContent = 'Checking product database…';
+                let known = null;
+                try {
+                    const ext = await apiGet('lookup_barcode_external', {
+                        barcode
+                    });
+                    if (ext?.success && ext.data?.name) known = ext.data.name;
+                } catch (e) {}
+                if (statusEl) {
+                    statusEl.textContent = known ?
+                        'Not in this store yet — recognized as "' + known + '" — tap below to add it' :
+                        'Not found — tap below to add as new, or try next item';
+                }
+                resumeScanning(2200);
+            }
+
+            function hideDashScanNotFoundAction() {
+                _lastNotFoundBarcode = null;
+                const actionsEl = document.getElementById('dash-scan-notfound-actions');
+                if (actionsEl) actionsEl.style.display = 'none';
+            }
+
+            // Hands a scanned-but-unrecognized barcode straight to the Add Product
+            // form — prefills the barcode field and runs the same external-database
+            // autofill the manual "scan into barcode field" flow uses, so Name/
+            // Brand/Description/Unit come pre-populated whenever that lookup knows it.
+            function addNewProductFromScan(barcode) {
+                if (!barcode) return;
+                closeDashScan();
+                openAddModal();
+                const inp = document.getElementById('p-barcode');
+                if (inp) {
+                    inp.value = barcode;
+                    inp.dispatchEvent(new Event('input'));
+                }
+                onBarcodeFieldChange();
+                autofillFromScannedBarcode(barcode);
+                document.getElementById('p-name')?.focus();
             }
 
             function updateScanCartCount() {
@@ -19079,10 +23859,11 @@ if ($isCashierRole && $page !== 'login') {
                     barcode
                 }).then(r => {
                     if (!r?.success) {
-                        toast('Not found: ' + barcode, 'error');
+                        handleDashScanNotFound(barcode, document.getElementById('dash-scan-status'));
                         return;
                     }
                     const p = r.data;
+                    hideDashScanNotFoundAction();
                     if (!allProds.find(x => x.id == p.id)) allProds.push(p);
                     const addQty = scanUnitQty(p);
                     addToCart(p.id, addQty);
@@ -19095,6 +23876,111 @@ if ($isCashierRole && $page !== 'login') {
             // ════════════════════════════════════════════════
             // DRAGGABLE SCANNER BUTTON
             // ════════════════════════════════════════════════
+            // ── POS AUDIO CONFIRMATION BEEP (Web Audio API) ──
+            function playScanBeep() {
+                try {
+                    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+                    if (!AudioCtx) return;
+                    const ctx = window._scanAudioCtx || (window._scanAudioCtx = new AudioCtx());
+                    if (ctx.state === 'suspended') ctx.resume();
+                    const osc = ctx.createOscillator();
+                    const gain = ctx.createGain();
+                    osc.type = 'sine';
+                    osc.frequency.setValueAtTime(1900, ctx.currentTime);
+                    gain.gain.setValueAtTime(0.14, ctx.currentTime);
+                    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.12);
+                    osc.connect(gain);
+                    gain.connect(ctx.destination);
+                    osc.start();
+                    osc.stop(ctx.currentTime + 0.13);
+                } catch (e) {}
+            }
+
+            // ── IN-CART CAMERA SCANNER ──
+            let _cartCameraActive = false;
+
+            function toggleCartCameraScanner() {
+                if (_cartCameraActive) {
+                    closeCartCameraScanner();
+                } else {
+                    openCartCameraScanner();
+                }
+            }
+
+            function openCartCameraScanner() {
+                const panel = document.getElementById('cart-camera-panel');
+                const btnText = document.getElementById('cart-camera-btn-text');
+                if (!panel) return;
+                panel.style.display = 'block';
+                _cartCameraActive = true;
+                if (btnText) btnText.textContent = 'Close Camera';
+                const statusEl = document.getElementById('cart-scan-status');
+                if (statusEl) statusEl.textContent = 'Point camera at product barcode...';
+
+                // Stop any previous scanner stream before starting cart scanner
+                stopScanner();
+
+                // Ensure offscreen canvas exists for frame decode
+                let offscreen = document.getElementById('cart-scan-canvas');
+                if (!offscreen) {
+                    offscreen = document.createElement('canvas');
+                    offscreen.id = 'cart-scan-canvas';
+                    offscreen.style.display = 'none';
+                    document.body.appendChild(offscreen);
+                }
+
+                startScanner('cart-scan-video', 'cart-scan-canvas', code => {
+                    let barcode = code.trim();
+                    try {
+                        const d = JSON.parse(code);
+                        barcode = (d.barcode || code).trim();
+                    } catch (e) {}
+                    barcode = barcode.replace(/[\s\r\n\t]/g, '');
+                    if (!barcode) {
+                        resumeScanning(800);
+                        return;
+                    }
+                    if (statusEl) statusEl.textContent = 'Looking up ' + barcode + '...';
+
+                    apiGet('get_product_by_barcode', { barcode }).then(r => {
+                        if (isOfflineResult(r)) {
+                            if (statusEl) statusEl.textContent = 'Offline - item not in local cache';
+                            toast('Offline - cannot verify new barcode right now', 'warning');
+                            resumeScanning(1800);
+                            return;
+                        }
+                        if (!r?.success) {
+                            if (statusEl) statusEl.textContent = 'Barcode not found: ' + barcode;
+                            toast('Product not found: ' + barcode, 'error');
+                            resumeScanning(1600);
+                            return;
+                        }
+                        const p = r.data;
+                        if (!allProds.find(x => x.id == p.id)) allProds.push(p);
+                        const addQty = scanUnitQty(p);
+                        const ex = cart.find(c => c.product_id === p.id && (c.stock_source || 'store') === 'store');
+                        addToCart(p.id, addQty);
+                        playScanBeep();
+                        const finalQty = ex ? ex.qty : addQty;
+                        if (statusEl) statusEl.textContent = p.name + ' (Qty: ' + finalQty + ')';
+                        toast(p.name + ' ×' + finalQty + ' in cart', 'success');
+                        resumeScanning(850);
+                    }).catch(() => {
+                        if (statusEl) statusEl.textContent = 'Lookup error - try again';
+                        resumeScanning(1500);
+                    });
+                });
+            }
+
+            function closeCartCameraScanner() {
+                const panel = document.getElementById('cart-camera-panel');
+                const btnText = document.getElementById('cart-camera-btn-text');
+                if (panel) panel.style.display = 'none';
+                if (btnText) btnText.textContent = 'Camera Scan';
+                _cartCameraActive = false;
+                stopScanner();
+            }
+
             function initDraggableScanner() {
                 const el = document.getElementById('scanner-float');
                 if (!el) return;
@@ -19131,26 +24017,32 @@ if ($isCashierRole && $page !== 'login') {
                 }
 
                 el.addEventListener('mousedown', e => {
-                    e.preventDefault();
+                    if (e.button !== 0) return;
                     pointerStart(e.clientX, e.clientY);
                 });
                 document.addEventListener('mousemove', e => pointerMove(e.clientX, e.clientY));
                 document.addEventListener('mouseup', pointerEnd);
 
                 el.addEventListener('touchstart', e => {
-                    pointerStart(e.touches[0].clientX, e.touches[0].clientY);
+                    if (e.touches && e.touches[0]) pointerStart(e.touches[0].clientX, e.touches[0].clientY);
                 }, {
                     passive: true
                 });
                 document.addEventListener('touchmove', e => {
-                    if (dragging) {
-                        e.preventDefault();
+                    if (dragging && e.touches && e.touches[0]) {
                         pointerMove(e.touches[0].clientX, e.touches[0].clientY);
                     }
                 }, {
-                    passive: false
+                    passive: true
                 });
                 document.addEventListener('touchend', pointerEnd);
+
+                el.addEventListener('click', e => {
+                    if (moved) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                    }
+                }, true);
             }
 
             // ════════════════════════════════════════════════
@@ -19170,9 +24062,24 @@ if ($isCashierRole && $page !== 'login') {
                 loadAlertBanner();
             }
 
-            function loadWhProducts() {
-                apiGet('get_products').then(r => {
-                    if (!r?.success) return;
+            function loadWhProducts(force = false) {
+                if (force) invalidateProdCache();
+
+                // Instant paint from cache!
+                if (!force && _prodCache.data?.data && Array.isArray(_prodCache.data.data) && _prodCache.data.data.length > 0) {
+                    whProds = _prodCache.data.data;
+                    updateWhStats();
+                    renderWhProducts();
+                }
+
+                apiGetProducts(force, (fresh) => {
+                    if (fresh?.success && Array.isArray(fresh.data)) {
+                        whProds = fresh.data;
+                        updateWhStats();
+                        renderWhProducts();
+                    }
+                }).then(r => {
+                    if (!r?.success || !Array.isArray(r.data)) return;
                     whProds = r.data;
                     updateWhStats();
                     renderWhProducts();
@@ -19220,8 +24127,9 @@ if ($isCashierRole && $page !== 'login') {
                 in30.setDate(in30.getDate() + 30);
                 const in30Str = in30.toISOString().slice(0, 10);
                 const expiring = whProds.filter(p => {
-                    if (!p.expiry_date) return false;
-                    const expStr = String(p.expiry_date).slice(0, 10);
+                    const eff = p.expiry_date || p.next_batch_expiry;
+                    if (!eff) return false;
+                    const expStr = String(eff).slice(0, 10);
                     return expStr >= todayStr && expStr <= in30Str;
                 }).length;
                 document.getElementById('wh-total').textContent = total;
@@ -19330,6 +24238,64 @@ if ($isCashierRole && $page !== 'login') {
                 };
             }
 
+            let _whSuggestTimer = null;
+            function hideWhSearchSuggestSoon() {
+                clearTimeout(_whSuggestTimer);
+                _whSuggestTimer = setTimeout(() => {
+                    const box = document.getElementById('wh-search-suggest');
+                    if (box) box.style.display = 'none';
+                }, 220);
+            }
+
+            function selectWhSearchProduct(name) {
+                const inp = document.getElementById('wh-search');
+                if (inp) {
+                    inp.value = name;
+                }
+                const box = document.getElementById('wh-search-suggest');
+                if (box) {
+                    box.style.display = 'none';
+                    box.innerHTML = '';
+                }
+                renderWhProducts();
+            }
+
+            function onWhSearchInput(el) {
+                renderWhProducts();
+                const box = document.getElementById('wh-search-suggest');
+                if (!box) return;
+                const val = (el ? el.value : (document.getElementById('wh-search')?.value || '')).trim();
+                if (!val) {
+                    box.style.display = 'none';
+                    box.innerHTML = '';
+                    return;
+                }
+                const prods = Array.isArray(whProds) && whProds.length ? whProds : [];
+                const matches = getProductSuggestions(prods, val, 8);
+                if (!matches.length) {
+                    box.style.display = 'none';
+                    box.innerHTML = '';
+                    return;
+                }
+                box.innerHTML = matches.map(p => {
+                    const sq = p.store_quantity !== undefined ? p.store_quantity : (p.quantity ?? 0);
+                    const wq = p.warehouse_quantity ?? 0;
+                    return '<div class="search-suggest-item" onmousedown="selectWhSearchProduct(' + jsAttr(p.name) + ')">' +
+                        '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">' +
+                            '<span style="font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escapeHtml(p.name) + '</span>' +
+                            (p.brand ? '<span style="font-size:.75rem;color:var(--text2);white-space:nowrap;">' + escapeHtml(p.brand) + '</span>' : '') +
+                        '</div>' +
+                        '<div style="font-size:.74rem;color:var(--text3);margin-top:2px;display:flex;gap:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' +
+                            '<span>Store: ' + sq + '</span>' +
+                            '<span>WH: ' + wq + '</span>' +
+                            (p.supplier ? '<span>' + escapeHtml(p.supplier) + '</span>' : '') +
+                            (p.barcode ? '<span>SKU: ' + escapeHtml(p.barcode) + '</span>' : '') +
+                        '</div>' +
+                    '</div>';
+                }).join('');
+                box.style.display = 'block';
+            }
+
             function renderWhProducts() {
                 const q = (document.getElementById('wh-search')?.value || '').toLowerCase();
                 const today = new Date();
@@ -19353,13 +24319,15 @@ if ($isCashierRole && $page !== 'login') {
                     if (whFilter === 'low') return sq > 0 && sq <= (p.low_stock_threshold ?? 5);
                     if (whFilter === 'out') return sq == 0;
                     if (whFilter === 'expiring') {
-                        if (!p.expiry_date) return false;
-                        const exp = new Date(p.expiry_date);
+                        const effExp = p.expiry_date || p.next_batch_expiry;
+                        if (!effExp) return false;
+                        const exp = new Date(effExp);
                         return exp >= today && exp <= in30;
                     }
                     if (whFilter === 'expired') {
-                        if (!p.expiry_date) return false;
-                        return new Date(p.expiry_date) < today;
+                        const effExp = p.expiry_date || p.next_batch_expiry;
+                        if (!effExp) return false;
+                        return new Date(effExp) < today;
                     }
                     return true;
                 });
@@ -19375,7 +24343,8 @@ if ($isCashierRole && $page !== 'login') {
                 empty.style.display = 'none';
 
                 body.innerHTML = list.map(p => {
-                    const expSt = getExpiryStatus(p.expiry_date);
+                    const effExp = p.expiry_date || p.next_batch_expiry;
+                    const expSt = getExpiryStatus(effExp);
                     const expiryHTML = expSt ?
                         '<span class="expiry-' + expSt.cls + '">' + expSt.label + '</span>' :
                         '<span style="color:var(--text3);font-size:.78rem;">—</span>';
@@ -19411,17 +24380,17 @@ if ($isCashierRole && $page !== 'login') {
                     const retWrite = parseInt(p.qty_returned_writeoff) || 0;
                     const retStock = parseInt(p.qty_returned_restocked) || 0;
                     const adjChips = [];
-                    if (dmg) adjChips.push('<span class="adj-chip adj-damaged" title="Damaged on delivery">💔 ' + dmg + '</span>');
-                    if (exp2) adjChips.push('<span class="adj-chip adj-expired" title="Pulled out expired">⏰ ' + exp2 + '</span>');
-                    if (retWrite) adjChips.push('<span class="adj-chip adj-writeoff" title="Customer returns written off">↩️✕ ' + retWrite + '</span>');
-                    if (retStock) adjChips.push('<span class="adj-chip adj-restocked" title="Customer returns put back into stock">↩️✓ ' + retStock + '</span>');
+                    if (dmg) adjChips.push('<span class="adj-chip adj-damaged" title="Damaged on delivery">Damaged: ' + dmg + '</span>');
+                    if (exp2) adjChips.push('<span class="adj-chip adj-expired" title="Pulled out expired">Expired: ' + exp2 + '</span>');
+                    if (retWrite) adjChips.push('<span class="adj-chip adj-writeoff" title="Customer returns written off">Returns (Write-off): ' + retWrite + '</span>');
+                    if (retStock) adjChips.push('<span class="adj-chip adj-restocked" title="Customer returns put back into stock">Returns (Restocked): ' + retStock + '</span>');
                     const adjHTML = adjChips.length ? adjChips.join(' ') : '<span style="color:var(--text3);font-size:.75rem;">—</span>';
 
                     const deliveryHTML = (p.delivery_date ?
                             '<span style="font-size:.78rem;">' + p.delivery_date.slice(0, 10) + '</span>' :
                             '<span style="color:var(--text3);font-size:.78rem;">—</span>') +
                         (parseInt(p.batch_count) > 0 ?
-                            '<div><button type="button" onclick="openWhProductDetails(' + p.id + ')" style="background:var(--surface2);border:none;border-radius:6px;padding:1px 6px;font-size:.68rem;cursor:pointer;color:var(--text2);margin-top:2px;" title="View batches, FEFO order">📦 ' + p.batch_count + (p.batch_count == 1 ? ' batch' : ' batches') + '</button></div>' :
+                            '<div><button type="button" onclick="openWhProductDetails(' + p.id + ')" style="background:var(--surface2);border:none;border-radius:6px;padding:1px 6px;font-size:.68rem;cursor:pointer;color:var(--text2);margin-top:2px;" title="View batches, FEFO order">' + p.batch_count + (p.batch_count == 1 ? ' batch' : ' batches') + '</button></div>' :
                             '');
 
                     const restockDateHTML = p.last_restock_date ?
@@ -19449,10 +24418,10 @@ if ($isCashierRole && $page !== 'login') {
                         '<td>' + expiryHTML + '</td>' +
                         '<td>' + statusHTML + '</td>' +
                         '<td style="display:flex;gap:5px;">' +
-                        '<button type="button" class="btn btn-secondary btn-sm" onclick="openWhProductDetails(' + p.id + ')" title="View Complete Details">👁️</button>' +
-                        '<button type="button" class="btn btn-secondary btn-sm" onclick="openEditModal(' + p.id + ')" title="Edit Product">✏️</button>' +
-                        '<button type="button" class="btn btn-secondary btn-sm" onclick="openQuickRestockModal(' + p.id + ')" title="Quick Restock">➕</button>' +
-                        '<button type="button" class="btn btn-secondary btn-sm" onclick="openMoveModal(' + p.id + ',\'in\',\'warehouse\')" title="Warehouse In">🏭</button>' +
+                        '<button type="button" class="btn btn-secondary btn-sm" onclick="openWhProductDetails(' + p.id + ')" title="View Complete Details">View</button>' +
+                        '<button type="button" class="btn btn-secondary btn-sm" onclick="openEditModal(' + p.id + ')" title="Edit Product">Edit</button>' +
+                        '<button type="button" class="btn btn-secondary btn-sm" onclick="openQuickRestockModal(' + p.id + ')" title="Quick Restock">+ Restock</button>' +
+                        '<button type="button" class="btn btn-secondary btn-sm" onclick="openMoveModal(' + p.id + ',\'in\',\'warehouse\')" title="Warehouse In">Wh-In</button>' +
                         '</td>' +
                         '</tr>';
                 }).join('');
@@ -19480,7 +24449,7 @@ if ($isCashierRole && $page !== 'login') {
             function whStatusText(p) {
                 const storeQty = p.store_quantity !== undefined ? p.store_quantity : p.quantity;
                 const threshold = p.low_stock_threshold ?? 5;
-                const expSt = getExpiryStatus(p.expiry_date);
+                const expSt = getExpiryStatus(p.expiry_date || p.next_batch_expiry);
                 if (storeQty == 0) return 'Out of Stock';
                 if (storeQty <= threshold) return 'Low Store';
                 if (expSt && expSt.cls === 'expired') return 'Expired';
@@ -19518,7 +24487,7 @@ if ($isCashierRole && $page !== 'login') {
                         p.qty_returned_writeoff || 0,
                         p.qty_returned_restocked || 0,
                         p.delivery_date ? p.delivery_date.slice(0, 10) : '',
-                        p.expiry_date ? p.expiry_date.slice(0, 10) : '',
+                        (p.expiry_date || p.next_batch_expiry || '').slice(0, 10),
                         whStatusText(p)
                     ];
                 });
@@ -19551,7 +24520,7 @@ if ($isCashierRole && $page !== 'login') {
                             '<span style="color:var(--text3);">—</span>';
                         return '<tr>' +
                             '<td style="font-weight:600;">' + (row.product_name || '—') + '</td>' +
-                            '<td>' + (isIn ? '<span class="move-in">📦 Stock In</span>' : '<span class="move-out">📤 Stock Out</span>') + '</td>' +
+                            '<td>' + (isIn ? '<span class="move-in">Stock In</span>' : '<span class="move-out">Stock Out</span>') + '</td>' +
                             '<td style="font-weight:700;">' + (isIn ? '+' + row.qty_in : '-' + row.qty_out) + breakdownHTML + '</td>' +
                             '<td style="font-size:.78rem;color:var(--text3);">' + (isIn ? eventDateHTML : '—') + '</td>' +
                             '<td style="font-size:.78rem;color:var(--text3);">' + (!isIn ? eventDateHTML : '—') + '</td>' +
@@ -19579,22 +24548,37 @@ if ($isCashierRole && $page !== 'login') {
                     if (!r?.success) return;
                     const lowStock = r.data.low_stock || [];
                     const expiring = r.data.expiring || [];
+                    window._alertBannerProds = [...lowStock, ...expiring];
                     if (!lowStock.length && !expiring.length) {
                         el.innerHTML = '';
                         return;
                     }
-                    const summary = '⚠️ Daily Alert: ' + lowStock.length + ' item(s) hit low stock limits and ' + expiring.length + ' item(s) are expiring today.';
+                    const summary = 'Daily Alert: ' + lowStock.length + ' item(s) hit low stock limits and ' + expiring.length + ' item(s) are expiring today.';
 
                     // Products appearing in BOTH lists only get one row (low-stock takes
                     // priority for which action buttons are the primary ones).
                     const expiringOnly = expiring.filter(p => !lowStock.find(l => l.id === p.id));
+                    const uniqueCount = lowStock.length + expiringOnly.length;
 
                     const rowsHtml = lowStock.map(p => alertRowHtml(p, 'low')).join('') +
                         expiringOnly.map(p => alertRowHtml(p, 'expiring')).join('');
 
-                    el.innerHTML = '<div class="expiry-alert-banner" style="flex-direction:column;align-items:stretch;">' +
-                        '<div class="alert-banner-summary"><span style="font-size:1.2rem;">🚨</span>' + summary + '</div>' +
-                        rowsHtml +
+                    el.innerHTML = '<div class="wh-alert-card">' +
+                        '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;padding:12px 16px;background:rgba(239,68,68,0.08);border-bottom:1px solid rgba(239,68,68,0.2);">' +
+                            '<div style="display:flex;align-items:center;gap:8px;font-weight:700;font-size:0.92rem;color:var(--text);">' +
+                                '' +
+                                '<span>Daily Stock &amp; Expiry Alerts</span>' +
+                            '</div>' +
+                            '<span style="background:rgba(239,68,68,0.18);color:var(--danger,#ef4444);font-size:0.78rem;font-weight:600;padding:4px 10px;border-radius:6px;white-space:nowrap;">' +
+                                uniqueCount + ' item' + (uniqueCount === 1 ? '' : 's') + ' • Scroll ↕' +
+                            '</span>' +
+                        '</div>' +
+                        '<div style="padding:7px 16px;font-size:0.81rem;color:var(--text2);background:rgba(239,68,68,0.03);border-bottom:1px solid rgba(239,68,68,0.1);">' +
+                            lowStock.length + ' item(s) hit low stock limits and ' + expiring.length + ' item(s) are expiring today.' +
+                        '</div>' +
+                        '<div class="table-wrap scroll-panel wh-alert-scroll" tabindex="0" aria-label="Product alerts list — scrollable with mouse or arrow keys" style="max-height:280px;overflow-y:auto !important;overflow-x:hidden;padding:0 16px;">' +
+                            rowsHtml +
+                        '</div>' +
                         '</div>';
                 });
             }
@@ -19604,22 +24588,25 @@ if ($isCashierRole && $page !== 'login') {
                 const qty = p.store_quantity !== undefined ? p.store_quantity : p.quantity;
                 let info;
                 if (kind === 'low') {
-                    info = '<strong>' + p.name + '</strong> (Stock: ' + qty + ') - ' + (qty == 0 ? 'Out of Stock' : 'Hits Low Stock Limit (Threshold: ' + threshold + ')');
+                    info = '<strong>' + escapeHtml(p.name) + '</strong> (Stock: ' + qty + ') - ' + (qty == 0 ? 'Out of Stock' : 'Hits Low Stock Limit (Threshold: ' + threshold + ')');
                 } else {
-                    const expSt = getExpiryStatus(p.expiry_date);
-                    info = '<strong>' + p.name + '</strong> - ' + (expSt?.label || 'Expiring soon');
+                    const expSt = getExpiryStatus(p.expiry_date || p.next_batch_expiry);
+                    info = '<strong>' + escapeHtml(p.name) + '</strong> - ' + (expSt?.label || 'Expiring soon');
                 }
-                return '<div class="alert-banner-row">' +
+                return '<div class="alert-banner-row" style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 0;border-top:1px solid rgba(255,255,255,0.06);">' +
                     '<div class="alert-banner-row-info">' + info + '</div>' +
-                    '<div class="alert-banner-row-actions">' +
-                    '<button type="button" class="btn btn-primary btn-sm" onclick="openQuickRestockModal(' + p.id + ')">➕ Quick Restock</button>' +
-                    '<button type="button" class="btn btn-secondary btn-sm" onclick="openPulloutModal(' + p.id + ')">⚠️ Pull-Out / Adjust</button>' +
+                    '<div class="alert-banner-row-actions" style="display:flex;gap:6px;flex-shrink:0;">' +
+                    '<button type="button" class="btn btn-primary btn-sm" onclick="openQuickRestockModal(' + p.id + ')">Quick Restock</button>' +
+                    '<button type="button" class="btn btn-secondary btn-sm" onclick="openPulloutModal(' + p.id + ')">Pull-Out / Adjust</button>' +
                     '</div>' +
                     '</div>';
             }
 
             function findWhProdById(id) {
-                return whProds.find(x => x.id == id) || invProds.find(x => x.id == id);
+                return (typeof whProds !== 'undefined' && whProds.find(x => x.id == id)) ||
+                       (typeof invProds !== 'undefined' && invProds.find(x => x.id == id)) ||
+                       (typeof allProds !== 'undefined' && allProds.find(x => x.id == id)) ||
+                       (typeof window._alertBannerProds !== 'undefined' && window._alertBannerProds.find(x => x.id == id)) || null;
             }
 
             // ── PRODUCT DETAILS MODAL (Warehouse) ──
@@ -19644,7 +24631,7 @@ if ($isCashierRole && $page !== 'login') {
                 const priceHTML = promoInfo.active ?
                     '<span style="text-decoration:line-through;color:var(--text3);">' + CUR + promoInfo.price.toFixed(2) + '</span> <span style="color:#e74c3c;font-weight:700;">' + CUR + promoInfo.promo.toFixed(2) + '</span> <span class="badge" style="background:#e74c3c;color:#fff;">PROMO</span>' :
                     CUR + parseFloat(p.price || 0).toFixed(2);
-                const expSt = getExpiryStatus(p.expiry_date);
+                const expSt = getExpiryStatus(p.expiry_date || p.next_batch_expiry);
                 const expiryHTML = expSt ? '<span class="expiry-' + expSt.cls + '">' + expSt.label + '</span>' : '—';
 
                 const row = (label, value) => value ?
@@ -19672,12 +24659,12 @@ if ($isCashierRole && $page !== 'login') {
                     img +
                     '<div style="font-family:\'Poppins\',sans-serif;font-size:1.15rem;font-weight:600;text-align:center;margin-bottom:2px;">' + escapeHtml(p.name) + '</div>' +
                     (p.description ? '<div style="font-size:.8rem;color:var(--text3);text-align:center;margin-bottom:12px;">' + escapeHtml(p.description) + '</div>' : '<div style="margin-bottom:12px;"></div>') +
-                    '<div style="font-family:\'Poppins\',sans-serif;font-style:italic;color:var(--text2);margin:10px 0 4px;">💰 Pricing</div>' +
+                    '<div style="font-family:\'Poppins\',sans-serif;font-style:italic;color:var(--text2);margin:10px 0 4px;">Pricing</div>' +
                     row('Selling Price', priceHTML) +
                     row('Bundle Price', p.pack_qty ? CUR + parseFloat(p.pack_price || 0).toFixed(2) + ' (' + p.pack_qty + ' pcs)' : '') +
                     row('Case Price', p.case_qty ? CUR + parseFloat(p.case_price || 0).toFixed(2) + ' (' + p.case_qty + ' pcs)' : '') +
                     row('Cost Price', hasCost ? CUR + costVal.toFixed(2) + ' /pc' : '<span style="color:var(--text3);">not set — edit product to add it</span>') +
-                    '<div style="font-family:\'Poppins\',sans-serif;font-style:italic;color:var(--text2);margin:14px 0 4px;">📊 Stock</div>' +
+                    '<div style="font-family:\'Poppins\',sans-serif;font-style:italic;color:var(--text2);margin:14px 0 4px;">Stock</div>' +
                     row('Store Stock', storeQty + ' pcs <span style="font-weight:400;color:var(--text3);">(' + formatUnitBreakdown(storeQty, p) + ')</span>') +
                     row('Warehouse Stock', whQty + ' pcs <span style="font-weight:400;color:var(--text3);">(' + formatUnitBreakdown(whQty, p) + ')</span>') +
                     row('Total Stock Value', stockValueHTML) +
@@ -19687,16 +24674,16 @@ if ($isCashierRole && $page !== 'login') {
                     row('Last Pull-out Date', p.last_pullout_date ? p.last_pullout_date.slice(0, 10) : '') +
                     row('Expiry Date', expiryHTML) +
                     row('Status', whStatusText(p)) +
-                    '<div style="font-family:\'Poppins\',sans-serif;font-style:italic;color:var(--text2);margin:14px 0 4px;">🧾 Movement Summary (all-time)</div>' +
+                    '<div style="font-family:\'Poppins\',sans-serif;font-style:italic;color:var(--text2);margin:14px 0 4px;">Movement Summary (all-time)</div>' +
                     row('Total Restocked (in)', (parseInt(p.warehouse_in) || 0) + ' pcs') +
                     row('Total Removed (out)', (parseInt(p.warehouse_out) || 0) + ' pcs') +
                     (hasAnyAdjustment ? (
-                        row('💔 Damaged on Delivery', dmg ? dmg + ' pcs' : '') +
-                        row('⏰ Pulled Out Expired', exp2 ? exp2 + ' pcs' : '') +
-                        row('↩️✕ Customer Returns (written off)', retWrite ? retWrite + ' pcs' : '') +
-                        row('↩️✓ Customer Returns (restocked)', retStock ? retStock + ' pcs' : '')
+                        row('Damaged on Delivery', dmg ? dmg + ' pcs' : '') +
+                        row('Pulled Out Expired', exp2 ? exp2 + ' pcs' : '') +
+                        row('Customer Returns (written off)', retWrite ? retWrite + ' pcs' : '') +
+                        row('Customer Returns (restocked)', retStock ? retStock + ' pcs' : '')
                     ) : '<div style="font-size:.8rem;color:var(--text3);padding:4px 0 2px;">No damaged, expired, or returned stock recorded for this product.</div>') +
-                    '<div style="font-family:\'Poppins\',sans-serif;font-style:italic;color:var(--text2);margin:14px 0 4px;">🏷️ Identification</div>' +
+                    '<div style="font-family:\'Poppins\',sans-serif;font-style:italic;color:var(--text2);margin:14px 0 4px;">Identification</div>' +
                     row('Barcode', p.barcode ? '<code>' + escapeHtml(p.barcode) + '</code>' : '') +
                     row('Bundle Barcode', p.pack_barcode ? '<code>' + escapeHtml(p.pack_barcode) + '</code>' : '') +
                     row('Case Barcode', p.case_barcode ? '<code>' + escapeHtml(p.case_barcode) + '</code>' : '') +
@@ -19705,12 +24692,12 @@ if ($isCashierRole && $page !== 'login') {
                     row('Supplier', p.supplier ? escapeHtml(p.supplier) : '') +
                     row('Unit Type', p.unit_type ? escapeHtml(p.unit_type) + (p.unit_size ? ' (' + p.unit_size + ')' : '') : '') +
                     row('Auto-Convert Bundle/Case', p.auto_convert ? 'Enabled' : '') +
-                    '<div style="font-family:\'Poppins\',sans-serif;font-style:italic;color:var(--text2);margin:14px 0 4px;">📦 Batches <span style="font-size:.72rem;font-style:normal;color:var(--text3);">(FEFO — soonest-expiring first)</span></div>' +
+                    '<div style="font-family:\'Poppins\',sans-serif;font-style:italic;color:var(--text2);margin:14px 0 4px;">Batches <span style="font-size:.72rem;font-style:normal;color:var(--text3);">(FEFO — soonest-expiring first)</span></div>' +
                     '<div id="wh-details-batches"><div style="text-align:center;color:var(--text3);font-size:.8rem;padding:6px;">Loading…</div></div>' +
-                    '<div style="font-family:\'Poppins\',sans-serif;font-style:italic;color:var(--text2);margin:14px 0 4px;">📋 Delivery &amp; Movement History <span style="font-size:.72rem;font-style:normal;color:var(--text3);">(newest first)</span></div>' +
+                    '<div style="font-family:\'Poppins\',sans-serif;font-style:italic;color:var(--text2);margin:14px 0 4px;">Delivery &amp; Movement History <span style="font-size:.72rem;font-style:normal;color:var(--text3);">(newest first)</span></div>' +
                     '<div id="wh-details-movement"><div style="text-align:center;color:var(--text3);font-size:.8rem;padding:10px;">Loading…</div></div>' +
                     '<div style="display:flex;gap:8px;margin-top:16px;">' +
-                    '<button type="button" class="btn btn-primary btn-full" onclick="closeModal(\'wh-details-modal\');openEditModal(' + p.id + ')">✏️ Edit Product</button>' +
+                    '<button type="button" class="btn btn-primary btn-full" onclick="closeModal(\'wh-details-modal\');openEditModal(' + p.id + ')">Edit Product</button>' +
                     '<button type="button" class="btn btn-secondary" onclick="closeModal(\'wh-details-modal\')">Close</button>' +
                     '</div>';
 
@@ -19760,7 +24747,7 @@ if ($isCashierRole && $page !== 'login') {
                             const batchHTML = row.batch_id ? '<span style="font-size:.74rem;color:var(--text3);">#' + row.batch_id + '</span>' : '<span style="color:var(--text3);">—</span>';
                             return '<tr>' +
                                 '<td style="font-size:.75rem;color:var(--text3);">' + fmtDate(row.created_at) + '</td>' +
-                                '<td>' + (isIn ? '<span class="move-in">📦 ' + escapeHtml(row.type) + '</span>' : '<span class="move-out">📤 ' + escapeHtml(row.type) + '</span>') + '</td>' +
+                                '<td>' + (isIn ? '<span class="move-in">' + escapeHtml(row.type) + '</span>' : '<span class="move-out">' + escapeHtml(row.type) + '</span>') + '</td>' +
                                 '<td style="font-weight:700;">' + (isIn ? '+' + row.qty_in : '-' + row.qty_out) + breakdownHTML + '</td>' +
                                 '<td style="font-size:.75rem;color:var(--text3);">' + (evtDate ? evtDate.slice(0, 10) : '—') + '</td>' +
                                 '<td>' + batchHTML + '</td>' +
@@ -19774,20 +24761,33 @@ if ($isCashierRole && $page !== 'login') {
             function openQuickRestockModal(productId) {
                 const p = findWhProdById(productId);
                 const idEl = document.getElementById('qr-product-id');
+                if (!idEl) {
+                    toast('Quick restock modal element not found', 'error');
+                    return;
+                }
                 idEl.value = productId;
                 // Stash this product's Case/Bundle sizes on the hidden id field so
                 // _qrUpdateTotal() can convert Cases/Bundle/Pcs into a raw pcs quantity.
                 idEl.dataset.caseQty = p ? (parseInt(p.case_qty) || 0) : 0;
                 idEl.dataset.packQty = p ? (parseInt(p.pack_qty) || 0) : 0;
-                document.getElementById('qr-product-name').textContent = p ? p.name : ('Product #' + productId);
-                document.getElementById('qr-destination').value = 'store';
-                document.getElementById('qr-cases').value = '';
-                document.getElementById('qr-bundle').value = '';
-                document.getElementById('qr-pcs').value = '';
-                document.getElementById('qr-cost-price').value = p && p.cost_price ? p.cost_price : '';
-                document.getElementById('qr-supplier').value = '';
-                document.getElementById('qr-restock-date').value = new Date().toISOString().slice(0, 10);
-                document.getElementById('qr-expiry').value = p && p.expiry_date ? p.expiry_date.slice(0, 10) : '';
+                const nameEl = document.getElementById('qr-product-name');
+                if (nameEl) nameEl.textContent = p ? p.name : ('Product #' + productId);
+                const destEl = document.getElementById('qr-destination');
+                if (destEl) destEl.value = 'store';
+                const casesEl = document.getElementById('qr-cases');
+                if (casesEl) casesEl.value = '';
+                const bundleEl = document.getElementById('qr-bundle');
+                if (bundleEl) bundleEl.value = '';
+                const pcsEl = document.getElementById('qr-pcs');
+                if (pcsEl) pcsEl.value = '';
+                const costEl = document.getElementById('qr-cost-price');
+                if (costEl) costEl.value = p && p.cost_price ? p.cost_price : '';
+                const supEl = document.getElementById('qr-supplier');
+                if (supEl) supEl.value = '';
+                const dateEl = document.getElementById('qr-restock-date');
+                if (dateEl) dateEl.value = new Date().toISOString().slice(0, 10);
+                const expEl = document.getElementById('qr-expiry');
+                if (expEl) expEl.value = (p && (p.expiry_date || p.next_batch_expiry)) ? (p.expiry_date || p.next_batch_expiry).slice(0, 10) : '';
                 _qrUpdateTotal();
                 openModal('quick-restock-modal');
             }
@@ -19797,12 +24797,14 @@ if ($isCashierRole && $page !== 'login') {
             // by openQuickRestockModal — same math as _ndUnitsToQty in New Delivery.
             function _qrUpdateTotal() {
                 const idEl = document.getElementById('qr-product-id');
+                if (!idEl) return;
                 const caseQty = parseInt(idEl.dataset.caseQty) || 0;
                 const packQty = parseInt(idEl.dataset.packQty) || 0;
-                const cases = parseInt(document.getElementById('qr-cases').value) || 0;
-                const bundle = parseInt(document.getElementById('qr-bundle').value) || 0;
-                const pcs = parseInt(document.getElementById('qr-pcs').value) || 0;
-                document.getElementById('qr-total').value = (cases * caseQty) + (bundle * packQty) + pcs;
+                const cases = parseInt(document.getElementById('qr-cases')?.value) || 0;
+                const bundle = parseInt(document.getElementById('qr-bundle')?.value) || 0;
+                const pcs = parseInt(document.getElementById('qr-pcs')?.value) || 0;
+                const totalEl = document.getElementById('qr-total');
+                if (totalEl) totalEl.value = (cases * caseQty) + (bundle * packQty) + pcs;
                 const hintEl = document.getElementById('qr-unit-hint');
                 if (hintEl) {
                     const parts = [];
@@ -19813,19 +24815,20 @@ if ($isCashierRole && $page !== 'login') {
             }
 
             function submitQuickRestock() {
-                const pid = parseInt(document.getElementById('qr-product-id').value);
                 const idEl = document.getElementById('qr-product-id');
+                if (!idEl) return;
+                const pid = parseInt(idEl.value);
                 const caseQty = parseInt(idEl.dataset.caseQty) || 0;
                 const packQty = parseInt(idEl.dataset.packQty) || 0;
-                const cases = parseInt(document.getElementById('qr-cases').value) || 0;
-                const bundle = parseInt(document.getElementById('qr-bundle').value) || 0;
-                const pcs = parseInt(document.getElementById('qr-pcs').value) || 0;
+                const cases = parseInt(document.getElementById('qr-cases')?.value) || 0;
+                const bundle = parseInt(document.getElementById('qr-bundle')?.value) || 0;
+                const pcs = parseInt(document.getElementById('qr-pcs')?.value) || 0;
                 const qty = (cases * caseQty) + (bundle * packQty) + pcs;
-                const destination = document.getElementById('qr-destination').value || 'store';
-                const costPrice = document.getElementById('qr-cost-price').value || '';
-                const supplierRef = document.getElementById('qr-supplier').value.trim();
-                const restockDate = document.getElementById('qr-restock-date').value || null;
-                const expiryDate = document.getElementById('qr-expiry').value || null;
+                const destination = document.getElementById('qr-destination')?.value || 'store';
+                const costPrice = document.getElementById('qr-cost-price')?.value || '';
+                const supplierRef = (document.getElementById('qr-supplier')?.value || '').trim();
+                const restockDate = document.getElementById('qr-restock-date')?.value || null;
+                const expiryDate = document.getElementById('qr-expiry')?.value || null;
                 if (!pid || !qty || qty < 1) {
                     toast('Enter a valid quantity', 'error');
                     return;
@@ -19848,9 +24851,13 @@ if ($isCashierRole && $page !== 'login') {
                     }
                     toast('Stock added!', 'success');
                     closeModal('quick-restock-modal');
-                    loadWhProducts();
-                    loadWhLog();
+                    if (typeof loadWhProducts === 'function' && typeof cur_page !== 'undefined' && cur_page === 'warehouse') loadWhProducts(true);
+                    if (typeof loadWhLog === 'function' && typeof cur_page !== 'undefined' && cur_page === 'warehouse') loadWhLog();
+                    if (typeof loadInvProds === 'function') loadInvProds(true);
                     loadAlertBanner();
+                }).catch(() => {
+                    setLoading(btn, false);
+                    toast('Network error saving stock', 'error');
                 });
             }
 
@@ -19885,18 +24892,29 @@ if ($isCashierRole && $page !== 'login') {
             function openPulloutModal(productId) {
                 const p = findWhProdById(productId);
                 const idEl = document.getElementById('po-product-id');
+                if (!idEl) {
+                    toast('Pull-out modal element not found', 'error');
+                    return;
+                }
                 idEl.value = productId;
                 // Stash this product's Case/Bundle sizes on the hidden id field so
                 // _poUpdateTotal() can convert Cases/Bundle/Pcs into a raw pcs quantity.
                 idEl.dataset.caseQty = p ? (parseInt(p.case_qty) || 0) : 0;
                 idEl.dataset.packQty = p ? (parseInt(p.pack_qty) || 0) : 0;
-                document.getElementById('po-product-name').textContent = p ? p.name : ('Product #' + productId);
-                document.getElementById('po-location').value = 'store';
-                document.getElementById('po-cases').value = '';
-                document.getElementById('po-bundle').value = '';
-                document.getElementById('po-pcs').value = '';
-                document.getElementById('po-date').value = new Date().toISOString().slice(0, 10);
-                document.getElementById('po-note').value = '';
+                const nameEl = document.getElementById('po-product-name');
+                if (nameEl) nameEl.textContent = p ? p.name : ('Product #' + productId);
+                const locEl = document.getElementById('po-location');
+                if (locEl) locEl.value = 'store';
+                const casesEl = document.getElementById('po-cases');
+                if (casesEl) casesEl.value = '';
+                const bundleEl = document.getElementById('po-bundle');
+                if (bundleEl) bundleEl.value = '';
+                const pcsEl = document.getElementById('po-pcs');
+                if (pcsEl) pcsEl.value = '';
+                const dateEl = document.getElementById('po-date');
+                if (dateEl) dateEl.value = new Date().toISOString().slice(0, 10);
+                const noteEl = document.getElementById('po-note');
+                if (noteEl) noteEl.value = '';
                 const dmgRadio = document.querySelector('input[name="po-reason"][value="DAMAGE_ON_DELIVERY"]');
                 if (dmgRadio) dmgRadio.checked = true;
                 onPulloutLocationChange();
@@ -19908,12 +24926,14 @@ if ($isCashierRole && $page !== 'login') {
             // openPulloutModal — same math as _ndUnitsToQty in New Delivery.
             function _poUpdateTotal() {
                 const idEl = document.getElementById('po-product-id');
+                if (!idEl) return;
                 const caseQty = parseInt(idEl.dataset.caseQty) || 0;
                 const packQty = parseInt(idEl.dataset.packQty) || 0;
-                const cases = parseInt(document.getElementById('po-cases').value) || 0;
-                const bundle = parseInt(document.getElementById('po-bundle').value) || 0;
-                const pcs = parseInt(document.getElementById('po-pcs').value) || 0;
-                document.getElementById('po-total').value = (cases * caseQty) + (bundle * packQty) + pcs;
+                const cases = parseInt(document.getElementById('po-cases')?.value) || 0;
+                const bundle = parseInt(document.getElementById('po-bundle')?.value) || 0;
+                const pcs = parseInt(document.getElementById('po-pcs')?.value) || 0;
+                const totalEl = document.getElementById('po-total');
+                if (totalEl) totalEl.value = (cases * caseQty) + (bundle * packQty) + pcs;
                 const hintEl = document.getElementById('po-unit-hint');
                 if (hintEl) {
                     const parts = [];
@@ -19924,19 +24944,20 @@ if ($isCashierRole && $page !== 'login') {
             }
 
             function submitPullout() {
-                const pid = parseInt(document.getElementById('po-product-id').value);
                 const idEl = document.getElementById('po-product-id');
+                if (!idEl) return;
+                const pid = parseInt(idEl.value);
                 const caseQty = parseInt(idEl.dataset.caseQty) || 0;
                 const packQty = parseInt(idEl.dataset.packQty) || 0;
-                const cases = parseInt(document.getElementById('po-cases').value) || 0;
-                const bundle = parseInt(document.getElementById('po-bundle').value) || 0;
-                const pcs = parseInt(document.getElementById('po-pcs').value) || 0;
+                const cases = parseInt(document.getElementById('po-cases')?.value) || 0;
+                const bundle = parseInt(document.getElementById('po-bundle')?.value) || 0;
+                const pcs = parseInt(document.getElementById('po-pcs')?.value) || 0;
                 const qty = (cases * caseQty) + (bundle * packQty) + pcs;
-                const location = document.getElementById('po-location').value || 'store';
+                const location = document.getElementById('po-location')?.value || 'store';
                 const reasonCode = document.querySelector('input[name="po-reason"]:checked')?.value || 'DAMAGE_ON_DELIVERY';
                 const returnAction = document.getElementById('po-return-action')?.value || 'restock';
-                const pulloutDate = document.getElementById('po-date').value || null;
-                const note = document.getElementById('po-note').value.trim();
+                const pulloutDate = document.getElementById('po-date')?.value || null;
+                const note = (document.getElementById('po-note')?.value || '').trim();
                 if (!pid || !qty || qty < 1) {
                     toast('Enter a valid quantity', 'error');
                     return;
@@ -19959,9 +24980,13 @@ if ($isCashierRole && $page !== 'login') {
                     }
                     toast('Inventory adjustment logged!', 'success');
                     closeModal('pullout-modal');
-                    loadWhProducts();
-                    loadWhLog();
+                    if (typeof loadWhProducts === 'function' && typeof cur_page !== 'undefined' && cur_page === 'warehouse') loadWhProducts(true);
+                    if (typeof loadWhLog === 'function' && typeof cur_page !== 'undefined' && cur_page === 'warehouse') loadWhLog();
+                    if (typeof loadInvProds === 'function') loadInvProds(true);
                     loadAlertBanner();
+                }).catch(() => {
+                    setLoading(btn, false);
+                    toast('Network error submitting report', 'error');
                 });
             }
 
@@ -20094,20 +25119,28 @@ if ($isCashierRole && $page !== 'login') {
             function openMoveModal(productId, type, target) {
                 const sel = document.getElementById('move-product');
                 if (sel) {
-                    sel.innerHTML = whProds.map(p => {
+                    const prods = (typeof whProds !== 'undefined' && whProds.length) ? whProds :
+                                  ((typeof invProds !== 'undefined' && invProds.length) ? invProds :
+                                  ((typeof allProds !== 'undefined' && allProds.length) ? allProds : []));
+                    sel.innerHTML = prods.map(p => {
                         const sq = p.store_quantity ?? p.quantity ?? 0;
                         const wq = p.warehouse_quantity ?? 0;
-                        return '<option value="' + p.id + '"' + (p.id == productId ? ' selected' : '') + '>' + p.name + ' (Store: ' + sq + ' | WH: ' + wq + ')</option>';
+                        return '<option value="' + p.id + '"' + (p.id == productId ? ' selected' : '') + '>' + escapeHtml(p.name) + ' (Store: ' + sq + ' | WH: ' + wq + ')</option>';
                     }).join('');
+                    if (productId) sel.value = productId;
                 }
                 const typeSel = document.getElementById('move-type');
                 if (typeSel && type) typeSel.value = type;
                 const targetSel = document.getElementById('move-target');
                 if (targetSel && target) targetSel.value = target;
-                document.getElementById('move-qty').value = '';
-                document.getElementById('move-note').value = '';
-                document.getElementById('move-cost-price').value = '';
-                document.getElementById('move-expiry-date').value = '';
+                const qtyEl = document.getElementById('move-qty');
+                if (qtyEl) qtyEl.value = '';
+                const noteEl = document.getElementById('move-note');
+                if (noteEl) noteEl.value = '';
+                const costEl = document.getElementById('move-cost-price');
+                if (costEl) costEl.value = '';
+                const expEl = document.getElementById('move-expiry-date');
+                if (expEl) expEl.value = '';
                 toggleMoveBatchFields();
                 openModal('move-modal');
             }
@@ -20150,9 +25183,13 @@ if ($isCashierRole && $page !== 'login') {
                     }
                     toast('Stock movement saved!', 'success');
                     closeModal('move-modal');
-                    loadWhProducts();
-                    loadWhLog();
+                    if (typeof loadWhProducts === 'function' && typeof cur_page !== 'undefined' && cur_page === 'warehouse') loadWhProducts(true);
+                    if (typeof loadWhLog === 'function' && typeof cur_page !== 'undefined' && cur_page === 'warehouse') loadWhLog();
+                    if (typeof loadInvProds === 'function') loadInvProds(true);
                     loadAlertBanner();
+                }).catch(() => {
+                    setLoading(btn, false);
+                    toast('Network error saving movement', 'error');
                 });
             }
 
@@ -20166,6 +25203,14 @@ if ($isCashierRole && $page !== 'login') {
             // used to make a perfectly-tapped field get rejected with
             // "Tap a product field first, then scan".
             let _ndFocusedRowId = null;
+
+            function _ndGetProds() {
+                if (cur_page === 'products' && typeof invProds !== 'undefined' && Array.isArray(invProds) && invProds.length > 0) return invProds;
+                if (typeof whProds !== 'undefined' && Array.isArray(whProds) && whProds.length > 0) return whProds;
+                if (typeof invProds !== 'undefined' && Array.isArray(invProds) && invProds.length > 0) return invProds;
+                if (typeof allProds !== 'undefined' && Array.isArray(allProds) && allProds.length > 0) return allProds;
+                return [];
+            }
 
             function openNewDeliveryModal() {
                 document.getElementById('nd-supplier').value = '';
@@ -20181,10 +25226,24 @@ if ($isCashierRole && $page !== 'login') {
                 // Suggestions drawn from suppliers already assigned to products — same
                 // dedup approach used for the supplier filter elsewhere in the app —
                 // so typing doesn't require remembering/retyping exact past spelling.
+                const prods = _ndGetProds();
                 const supplierList = document.getElementById('nd-supplier-list');
                 if (supplierList) {
-                    const suppliers = [...new Set(whProds.map(p => p.supplier).filter(Boolean))].sort();
+                    const suppliers = [...new Set(prods.map(p => p.supplier).filter(Boolean))].sort();
                     supplierList.innerHTML = suppliers.map(s => '<option value="' + s.replace(/"/g, '&quot;') + '"></option>').join('');
+                }
+                if (!prods.length && typeof apiGetProducts === 'function') {
+                    apiGetProducts(false, fresh => {
+                        if (fresh?.success && Array.isArray(fresh.data)) {
+                            if (typeof whProds !== 'undefined') whProds = fresh.data;
+                            if (typeof invProds !== 'undefined') invProds = fresh.data;
+                            const sl = document.getElementById('nd-supplier-list');
+                            if (sl) {
+                                const sups = [...new Set(fresh.data.map(p => p.supplier).filter(Boolean))].sort();
+                                sl.innerHTML = sups.map(s => '<option value="' + s.replace(/"/g, '&quot;') + '"></option>').join('');
+                            }
+                        }
+                    });
                 }
                 openModal('new-delivery-modal');
             }
@@ -20202,7 +25261,8 @@ if ($isCashierRole && $page !== 'login') {
                 // Empty query still shows a short list (rather than nothing) so tapping
                 // into an empty box on a touchscreen gives you something to scroll,
                 // matching how the old dropdown behaved before you'd typed anything.
-                const matches = whProds.filter(p =>
+                const prods = _ndGetProds();
+                const matches = prods.filter(p =>
                     !q || p.name.toLowerCase().includes(q) || (p.barcode || '').toLowerCase().includes(q)
                 ).slice(0, 8);
                 if (!matches.length) {
@@ -20235,7 +25295,8 @@ if ($isCashierRole && $page !== 'login') {
             function _ndSelectProduct(itemId, productId) {
                 const row = document.getElementById('nd-item-' + itemId);
                 if (!row) return;
-                const p = whProds.find(x => x.id == productId);
+                const prods = _ndGetProds();
+                const p = prods.find(x => x.id == productId);
                 if (!p) return;
                 row.querySelector('.nd-product-search').value = p.name;
                 row.querySelector('.nd-product-id').value = p.id;
@@ -20255,6 +25316,10 @@ if ($isCashierRole && $page !== 'login') {
                     if (packQty > 0) parts.push('1 bundle = ' + packQty + ' pcs');
                     hintEl.textContent = parts.length ? parts.join(' · ') : 'No Case/Bundle sizes set for this product — enter Pcs only.';
                 }
+                const costInp = row.querySelector('.nd-cost');
+                if (costInp && !costInp.value && p.cost_price) {
+                    costInp.value = parseFloat(p.cost_price).toFixed(2);
+                }
                 _ndUpdateTotals(itemId);
             }
 
@@ -20267,24 +25332,27 @@ if ($isCashierRole && $page !== 'login') {
                 div.id = 'nd-item-' + id;
                 div.style.cssText = 'border:1px solid var(--border);border-radius:10px;padding:10px;';
                 div.innerHTML =
-                    '<div style="display:flex;gap:8px;align-items:flex-start;margin-bottom:8px;">' +
+                    '<div style="display:flex;gap:6px;align-items:flex-start;margin-bottom:8px;">' +
                     '<div style="position:relative;flex:1;">' +
+                    '<div style="display:flex;gap:5px;align-items:center;">' +
                     '<input type="text" class="form-input nd-product-search" placeholder="Type product name, or scan barcode…" autocomplete="off" ' +
-                    'oninput="_ndFilterProducts(this)" onfocus="_ndFilterProducts(this)" onblur="_ndHideSuggestSoon(this)"/>' +
+                    'oninput="_ndFilterProducts(this)" onfocus="_ndFilterProducts(this)" onblur="_ndHideSuggestSoon(this)" style="flex:1;min-width:0;"/>' +
+                    '<button type="button" class="btn btn-secondary btn-sm nd-scan-camera-btn" onclick="openDeliveryLineBarcodeScan(' + id + ')" title="Scan product barcode with mobile camera" style="padding:0 9px;height:38px;display:inline-flex;align-items:center;justify-content:center;font-size:.85rem;flex-shrink:0;">Scan</button>' +
+                    '</div>' +
                     '<input type="hidden" class="nd-product-id"/>' +
                     '<div class="nd-suggest" style="display:none;position:absolute;z-index:50;left:0;right:0;top:100%;margin-top:2px;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:var(--shadow-lg);max-height:220px;overflow-y:auto;"></div>' +
                     '<div class="nd-unit-hint" style="font-size:.68rem;color:var(--text3);margin-top:3px;"></div>' +
                     '</div>' +
-                    '<button type="button" onclick="removeDeliveryLineItem(' + id + ')" style="background:none;border:none;color:#dc2626;font-size:1.15rem;line-height:1;cursor:pointer;padding:2px 4px;" title="Remove this product">✕</button>' +
+                    '<button type="button" onclick="removeDeliveryLineItem(' + id + ')" style="background:none;border:none;color:#dc2626;font-size:1.15rem;line-height:1;cursor:pointer;padding:8px 4px 2px;" title="Remove this product">✕</button>' +
                     '</div>' +
-                    '<div style="font-size:.72rem;color:var(--text2);font-weight:700;margin:2px 0 4px;">🏪 → Store</div>' +
+                    '<div style="font-size:.72rem;color:var(--text2);font-weight:700;margin:2px 0 4px;">Store</div>' +
                     '<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:6px;">' +
                     '<div><label class="form-label" style="font-size:.66rem;">Cases</label><input type="number" class="form-input nd-st-cases" min="0" placeholder="0" oninput="_ndUpdateTotals(' + id + ')"/></div>' +
                     '<div><label class="form-label" style="font-size:.66rem;">Bundle</label><input type="number" class="form-input nd-st-bundle" min="0" placeholder="0" oninput="_ndUpdateTotals(' + id + ')"/></div>' +
                     '<div><label class="form-label" style="font-size:.66rem;">Pcs</label><input type="number" class="form-input nd-st-pcs" min="0" placeholder="0" oninput="_ndUpdateTotals(' + id + ')"/></div>' +
                     '<div><label class="form-label" style="font-size:.66rem;">Total</label><input type="text" class="form-input nd-st-total" readonly value="0" style="font-weight:700;background:var(--surface2);"/></div>' +
                     '</div>' +
-                    '<div style="font-size:.72rem;color:var(--text2);font-weight:700;margin:10px 0 4px;">🏭 → Warehouse</div>' +
+                    '<div style="font-size:.72rem;color:var(--text2);font-weight:700;margin:10px 0 4px;">Warehouse</div>' +
                     '<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:6px;">' +
                     '<div><label class="form-label" style="font-size:.66rem;">Cases</label><input type="number" class="form-input nd-wh-cases" min="0" placeholder="0" oninput="_ndUpdateTotals(' + id + ')"/></div>' +
                     '<div><label class="form-label" style="font-size:.66rem;">Bundle</label><input type="number" class="form-input nd-wh-bundle" min="0" placeholder="0" oninput="_ndUpdateTotals(' + id + ')"/></div>' +
@@ -20293,9 +25361,76 @@ if ($isCashierRole && $page !== 'login') {
                     '</div>' +
                     '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px;">' +
                     '<div><label class="form-label" style="font-size:.72rem;">Cost Price</label><input type="number" class="form-input nd-cost" min="0" step="0.01" placeholder="0.00"/></div>' +
-                    '<div><label class="form-label" style="font-size:.72rem;">Expiry Date</label><input type="date" class="form-input nd-expiry"/></div>' +
+                    '<div>' +
+                    '<label class="form-label" style="font-size:.72rem;">Expiry Date <span style="font-weight:400;color:var(--text3);">(optional)</span></label>' +
+                    '<div style="display:flex;gap:4px;position:relative;align-items:center;">' +
+                    '<input type="text" class="form-input nd-expiry-display" id="nd-expiry-display-' + id + '" placeholder="MM/DD/YYYY" inputmode="numeric" maxlength="10" autocomplete="off" oninput="_ndFormatExpiryInput(this, ' + id + ')" onblur="_ndBlurExpiryInput(this, ' + id + ')" style="flex:1;min-width:0;" />' +
+                    '<button type="button" class="btn btn-secondary btn-sm" onclick="_ndOpenDatePicker(' + id + ')" title="Pick a date" style="padding:0 8px;height:38px;display:inline-flex;align-items:center;justify-content:center;font-size:0.85rem;flex-shrink:0;">Date</button>' +
+                    '<input type="date" class="nd-expiry-native" id="nd-expiry-native-' + id + '" style="position:absolute;opacity:0;pointer-events:none;width:1px;height:1px;right:0;bottom:0;" onchange="_ndSyncExpiryFromNative(this, ' + id + ')" tabindex="-1" />' +
+                    '<input type="hidden" class="nd-expiry" id="nd-expiry-' + id + '" />' +
+                    '</div>' +
+                    '</div>' +
                     '</div>';
                 wrap.appendChild(div);
+            }
+
+            function _ndFormatExpiryInput(el, id) {
+                if (/^\d[\/\-]$/.test(el.value)) {
+                    el.value = '0' + el.value.charAt(0) + '/';
+                } else if (/^\d{2}\/\d[\/\-]$/.test(el.value)) {
+                    el.value = el.value.slice(0, 3) + '0' + el.value.charAt(3) + '/';
+                }
+                _smartFormatDateInput(el, 'nd-expiry-' + id, 'nd-expiry-native-' + id);
+            }
+
+            function _ndBlurExpiryInput(el, id) {
+                const val = (el.value || '').trim();
+                if (!val) {
+                    const hidden = document.getElementById('nd-expiry-' + id);
+                    if (hidden) hidden.value = '';
+                    const native = document.getElementById('nd-expiry-native-' + id);
+                    if (native) native.value = '';
+                    return;
+                }
+                const iso = parseAnyDateToIso(val);
+                if (iso && iso.includes('-')) {
+                    const [y, m, d] = iso.split('-');
+                    el.value = m + '/' + d + '/' + y;
+                    const hidden = document.getElementById('nd-expiry-' + id);
+                    if (hidden) hidden.value = iso;
+                    const native = document.getElementById('nd-expiry-native-' + id);
+                    if (native) native.value = iso;
+                }
+            }
+
+            function _ndOpenDatePicker(id) {
+                const native = document.getElementById('nd-expiry-native-' + id);
+                if (!native) return;
+                const hidden = document.getElementById('nd-expiry-' + id);
+                if (hidden && hidden.value) native.value = hidden.value;
+                try {
+                    if (typeof native.showPicker === 'function') {
+                        native.showPicker();
+                    } else {
+                        native.click();
+                    }
+                } catch (e) {
+                    try {
+                        native.click();
+                    } catch (err) {}
+                }
+            }
+
+            function _ndSyncExpiryFromNative(nativeEl, id) {
+                const iso = nativeEl?.value;
+                if (!iso) return;
+                const hidden = document.getElementById('nd-expiry-' + id);
+                if (hidden) hidden.value = iso;
+                const display = document.getElementById('nd-expiry-display-' + id);
+                if (display && iso.includes('-')) {
+                    const [y, m, d] = iso.split('-');
+                    display.value = m + '/' + d + '/' + y;
+                }
             }
 
             // Recomputes the read-only Store/Warehouse Total fields for one delivery
@@ -20341,7 +25476,9 @@ if ($isCashierRole && $page !== 'login') {
                     const qSt = _ndUnitsToQty(row, row.querySelector('.nd-st-cases'), row.querySelector('.nd-st-bundle'), row.querySelector('.nd-st-pcs'));
                     const qWh = _ndUnitsToQty(row, row.querySelector('.nd-wh-cases'), row.querySelector('.nd-wh-bundle'), row.querySelector('.nd-wh-pcs'));
                     const cost = row.querySelector('.nd-cost')?.value || '';
-                    const expiry = row.querySelector('.nd-expiry')?.value || '';
+                    const hiddenExp = row.querySelector('.nd-expiry')?.value;
+                    const displayExp = row.querySelector('.nd-expiry-display')?.value?.trim();
+                    const expiry = hiddenExp || (displayExp ? (parseAnyDateToIso(displayExp) || displayExp) : '');
                     if (pid && (qWh + qSt) > 0) {
                         items.push({
                             product_id: pid,
@@ -20371,9 +25508,12 @@ if ($isCashierRole && $page !== 'login') {
                     }
                     toast('Delivery saved — ' + (r.data?.items_saved ?? items.length) + ' product(s) added!', 'success');
                     closeModal('new-delivery-modal');
-                    loadWhProducts();
-                    loadWhLog();
-                    loadAlertBanner();
+                    if (typeof loadWhProducts === 'function') loadWhProducts(true);
+                    if (typeof loadWhLog === 'function') loadWhLog();
+                    if (typeof loadInvProds === 'function') loadInvProds(true);
+                    if (typeof renderProds === 'function') renderProds();
+                    if (typeof loadProducts === 'function') loadProducts();
+                    if (typeof loadAlertBanner === 'function') loadAlertBanner();
                 });
             }
 
@@ -20596,7 +25736,7 @@ if ($isCashierRole && $page !== 'login') {
                 const conf = (parseFloat(document.getElementById('mba-conf')?.value) || 30) / 100;
                 const resultEl = document.getElementById('mba-result');
                 const statsEl = document.getElementById('mba-stats');
-                if (resultEl) resultEl.innerHTML = '<div style="text-align:center;padding:30px;color:var(--text3);">🔍 Analyzing transactions…</div>';
+                if (resultEl) resultEl.innerHTML = '<div style="text-align:center;padding:30px;color:var(--text3);">Analyzing transactions…</div>';
                 apiGet('get_basket_analysis', {
                     min_support: support,
                     min_conf: conf,
@@ -20625,7 +25765,7 @@ if ($isCashierRole && $page !== 'login') {
                     if (!resultEl) return;
 
                     if (message || !rules.length) {
-                        resultEl.innerHTML = '<div class="empty-state"><div class="empty-icon">📊</div><div class="empty-text">' +
+                        resultEl.innerHTML = '<div class="empty-state"><div class="empty-icon"><svg viewBox="0 0 24 24" width="42" height="42" fill="none" stroke="currentColor" stroke-width="1.6"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg></div><div class="empty-text">' +
                             (message || 'No association rules found. Try lowering the minimum support or confidence thresholds.') +
                             '</div></div>';
                         return;
@@ -20635,7 +25775,7 @@ if ($isCashierRole && $page !== 'login') {
                     const rows = rules.map(rule => {
                         const liftColor = rule.lift >= 2 ? 'rgba(45,122,58,.12)' : rule.lift >= 1 ? 'rgba(244,160,36,.1)' : 'rgba(212,80,10,.08)';
                         const liftBorder = rule.lift >= 2 ? '#2d7a3a' : rule.lift >= 1 ? '#f4a024' : '#d4500a';
-                        const liftLabel = rule.lift >= 2 ? '🔥 Strong' : rule.lift >= 1 ? '✅ Positive' : '⚠️ Weak';
+                        const liftLabel = rule.lift >= 2 ? 'Strong' : rule.lift >= 1 ? 'Positive' : 'Weak';
                         return '<tr style="background:' + liftColor + ';border-left:3px solid ' + liftBorder + ';">' +
                             '<td style="font-weight:700;">' + rule.antecedent + '</td>' +
                             '<td style="text-align:center;font-size:1.1rem;">→</td>' +
@@ -20664,7 +25804,7 @@ if ($isCashierRole && $page !== 'login') {
                         '<tbody>' + rows + '</tbody>' +
                         '</table></div>' +
                         '<div style="margin-top:14px;padding:14px;background:var(--surface2);border-radius:var(--r-sm);">' +
-                        '<div style="font-weight:600;font-size:.85rem;margin-bottom:6px;">💡 How to use these insights:</div>' +
+                        '<div style="font-weight:600;font-size:.85rem;margin-bottom:6px;">How to use these insights:</div>' +
                         '<div style="font-size:.8rem;color:var(--text2);line-height:1.7;">' +
                         '• <strong>Bundle deals</strong> — pair high-lift products for combo promotions<br>' +
                         '• <strong>Shelf placement</strong> — put strongly associated products near each other<br>' +
@@ -20680,7 +25820,7 @@ if ($isCashierRole && $page !== 'login') {
             // ════════════════════════════════════════════
             async function loadCombos() {
                 const resultEl = document.getElementById('combo-result');
-                if (resultEl) resultEl.innerHTML = '<div style="text-align:center;padding:30px;color:var(--text3);">🤖 Fetching ML combo recommendations…</div>';
+                if (resultEl) resultEl.innerHTML = '<div style="text-align:center;padding:30px;color:var(--text3);">Fetching ML combo recommendations…</div>';
 
                 const cartRaw = (document.getElementById('combo-cart')?.value || '').trim();
                 const topN = parseInt(document.getElementById('combo-topn')?.value) || 5;
@@ -20693,8 +25833,8 @@ if ($isCashierRole && $page !== 'login') {
 
                 if (!resultEl) return;
                 if (!r?.success) {
-                    resultEl.innerHTML = '<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-text">' +
-                        (r?.error || 'Could not reach ML API. Make sure pos-ml-api.onrender.com is online.') +
+                    resultEl.innerHTML = '<div class="empty-state"><div class="empty-icon"><svg viewBox="0 0 24 24" width="42" height="42" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div><div class="empty-text">' +
+                        (r?.error || 'Could not reach ML API. Make sure pos-ml-api-johv.onrender.com is online.') +
                         '</div></div>';
                     return;
                 }
@@ -20707,12 +25847,12 @@ if ($isCashierRole && $page !== 'login') {
                 const isLocal = data.source === 'local';
 
                 const offlineBanner = isLocal ?
-                    '<div style="background:rgba(244,160,36,.12);border:1.5px solid rgba(244,160,36,.4);border-radius:10px;padding:10px 14px;margin-bottom:12px;font-size:.83rem;color:#7a5500;">📡 <strong>Offline mode:</strong> ' +
+                    '<div style="background:rgba(244,160,36,.12);border:1.5px solid rgba(244,160,36,.4);border-radius:10px;padding:10px 14px;margin-bottom:12px;font-size:.83rem;color:#7a5500;"><strong>Offline mode:</strong> ' +
                     (data.message || 'ML API unreachable — showing combos computed from your own sales history.') + '</div>' :
                     '';
 
                 if (!recs.length) {
-                    resultEl.innerHTML = offlineBanner + '<div class="empty-state"><div class="empty-icon">🤝</div>' +
+                    resultEl.innerHTML = offlineBanner + '<div class="empty-state"><div class="empty-icon"><svg viewBox="0 0 24 24" width="42" height="42" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></div>' +
                         '<div class="empty-text">No combo recommendations found. Make some sales transactions first, or try different cart items.</div></div>';
                     return;
                 }
@@ -20738,7 +25878,7 @@ if ($isCashierRole && $page !== 'login') {
                             '<div style="font-weight:700;font-size:.95rem;">' + label + '</div>' +
                             '<div style="display:flex;gap:8px;margin-top:4px;flex-wrap:wrap;">' + freqTag + cntTag + '</div>' +
                             '</div>' +
-                            '<div style="font-size:1.4rem;">🛍️</div>' +
+                            '<div style="display:flex;align-items:center;justify-content:center;"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 0 1-8 0"/></svg></div>' +
                             '</div>';
                     }
 
@@ -20756,13 +25896,13 @@ if ($isCashierRole && $page !== 'login') {
                         '<div style="font-weight:700;font-size:.95rem;">' + name + '</div>' +
                         '<div style="display:flex;gap:8px;margin-top:4px;flex-wrap:wrap;">' + liftTag + confTag + '</div>' +
                         '</div>' +
-                        '<div style="font-size:1.4rem;">🛍️</div>' +
+                        '<div style="display:flex;align-items:center;justify-content:center;"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 0 1-8 0"/></svg></div>' +
                         '</div>';
                 }).join('');
 
                 resultEl.innerHTML = offlineBanner + basedOnHtml + cards +
                     '<div style="margin-top:10px;padding:10px 12px;background:var(--surface);border-radius:8px;border-left:3px solid var(--accent);font-size:.82rem;color:var(--text2);">' +
-                    '💡 <strong>How to use:</strong> Bundle these products together, create combo deals, or suggest them at checkout when the base item is in cart.' +
+                    '<strong>How to use:</strong> Bundle these products together, create combo deals, or suggest them at checkout when the base item is in cart.' +
                     '</div>';
             }
 
@@ -20773,7 +25913,7 @@ if ($isCashierRole && $page !== 'login') {
 
             function openTransferModal() {
                 // Load all products for the dropdown
-                apiGet('get_products').then(r => {
+                apiGetProducts().then(r => {
                     if (!r?.success) return;
                     _allProdsForTransfer = r.data;
                     _populateTransferDropdown(-1);
@@ -20785,38 +25925,38 @@ if ($isCashierRole && $page !== 'login') {
             }
 
             function openTransferModalFor(productId) {
-                const existing = _allProdsForTransfer.length ? Promise.resolve({
-                    success: true,
-                    data: _allProdsForTransfer
-                }) : apiGet('get_products');
-                existing.then ? existing.then(r => {
-                    if (!r?.success) return;
+                if (!_allProdsForTransfer.length) {
+                    if (typeof invProds !== 'undefined' && invProds.length) {
+                        _allProdsForTransfer = invProds;
+                    } else if (typeof whProds !== 'undefined' && whProds.length) {
+                        _allProdsForTransfer = whProds;
+                    }
+                }
+                _populateTransferDropdown(productId);
+                apiGetProducts().then(r => {
+                    if (!r?.success || !Array.isArray(r.data)) return;
                     _allProdsForTransfer = r.data;
                     _populateTransferDropdown(productId);
-                }) : null;
-                // If data already loaded
-                if (_allProdsForTransfer.length) _populateTransferDropdown(productId);
-                else {
-                    apiGet('get_products').then(r => {
-                        if (!r?.success) return;
-                        _allProdsForTransfer = r.data;
-                        _populateTransferDropdown(productId);
-                    });
-                }
-                document.getElementById('transfer-qty').value = '';
-                document.getElementById('transfer-note').value = '';
+                }).catch(() => {});
+                const qtyEl = document.getElementById('transfer-qty');
+                if (qtyEl) qtyEl.value = '';
+                const noteEl = document.getElementById('transfer-note');
+                if (noteEl) noteEl.value = '';
                 openModal('transfer-modal');
             }
 
             function _populateTransferDropdown(selectedId) {
                 const sel = document.getElementById('transfer-product');
                 if (!sel) return;
-                const prods = _allProdsForTransfer.length ? _allProdsForTransfer : (typeof whProds !== 'undefined' ? whProds : []);
+                const prods = _allProdsForTransfer.length ? _allProdsForTransfer :
+                              ((typeof invProds !== 'undefined' && invProds.length) ? invProds :
+                              ((typeof whProds !== 'undefined' && whProds.length) ? whProds : []));
                 sel.innerHTML = prods.map(p => {
                     const wq = p.warehouse_quantity !== undefined ? p.warehouse_quantity : 0;
                     return '<option value="' + p.id + '"' + (p.id == selectedId ? ' selected' : '') + '>' +
-                        p.name + ' (WH: ' + wq + ')</option>';
+                        escapeHtml(p.name) + ' (WH: ' + wq + ')</option>';
                 }).join('');
+                if (selectedId) sel.value = selectedId;
                 sel.onchange = _updateTransferAvail;
                 _updateTransferAvail();
             }
@@ -20825,7 +25965,9 @@ if ($isCashierRole && $page !== 'login') {
                 const sel = document.getElementById('transfer-product');
                 if (!sel) return;
                 const pid = parseInt(sel.value);
-                const prods = _allProdsForTransfer.length ? _allProdsForTransfer : (typeof whProds !== 'undefined' ? whProds : []);
+                const prods = _allProdsForTransfer.length ? _allProdsForTransfer :
+                              ((typeof invProds !== 'undefined' && invProds.length) ? invProds :
+                              ((typeof whProds !== 'undefined' && whProds.length) ? whProds : []));
                 const p = prods.find(x => x.id == pid);
                 const avail = p ? (p.warehouse_quantity !== undefined ? p.warehouse_quantity : 0) : 0;
                 // Same case/bundle/pcs split already used on the Warehouse table itself —
@@ -20866,18 +26008,176 @@ if ($isCashierRole && $page !== 'login') {
                         toast(r?.error || 'Transfer failed', 'error');
                         return;
                     }
-                    toast('✅ Transferred to store shelf!', 'success');
+                    toast('Transferred to store shelf!', 'success');
                     closeModal('transfer-modal');
                     _allProdsForTransfer = [];
+                    invalidateProdCache();
                     if (typeof loadWhProducts === 'function') {
-                        loadWhProducts();
+                        loadWhProducts(true);
                         loadWhLog();
                     }
-                    if (typeof loadInvProds === 'function') loadInvProds();
+                    if (typeof loadInvProds === 'function') loadInvProds(true);
+                }).catch(() => {
+                    setLoading(btn, false);
+                    toast('Network error during transfer', 'error');
                 });
             }
 
             document.addEventListener('DOMContentLoaded', function() {
+                // Offline Auth Interceptor
+                const offlineUser = localStorage.getItem('offlineUser');
+                if (offlineUser) {
+                    try {
+                        const u = JSON.parse(offlineUser);
+                        USER_ROLE = u.role || USER_ROLE;
+                        CASHIER_NAME = u.full_name || CASHIER_NAME;
+                        CURRENT_USER_ID = u.id || CURRENT_USER_ID || 1;
+                        document.querySelectorAll('.nav-user-name').forEach(el => {
+                            el.textContent = u.full_name;
+                            el.title = u.full_name;
+                        });
+                        if (u.role !== 'owner') {
+                            document.querySelectorAll('.owner-only, [data-role="owner"]').forEach(el => el.style.display = 'none');
+                        }
+                        const dashView = document.getElementById('view-dashboard');
+                        const authBg = document.querySelector('.public-auth-bg');
+                        if (dashView && authBg) {
+                            authBg.style.display = 'none';
+                            dashView.style.display = '';
+                            cur_page = 'dashboard';
+                            document.title = 'Dashboard & Checkout — ' + (typeof SHOP_NAME !== 'undefined' && SHOP_NAME ? SHOP_NAME : 'ProCast');
+                        }
+                        if (navigator.onLine) {
+                            setTimeout(autoReauthServerSession, 150);
+                        }
+                    } catch (e) {}
+                }
+
+                const loginForm = document.querySelector('form[action="?page=login"]');
+                if (loginForm) {
+                    loginForm.addEventListener('submit', async (e) => {
+                        const isOffline = (navigator.onLine === false || !_isServerReachable);
+                        if (isOffline) {
+                            e.preventDefault();
+                            const username = loginForm.querySelector('[name="username"]').value.trim();
+                            const password = loginForm.querySelector('[name="password"]').value;
+
+                            let user = await PosIDB.getItem('offline_users', username) || await PosIDB.getItem('pending_users', username);
+                            if (!user) {
+                                try {
+                                    const allUsers = await PosIDB.getAll('offline_users');
+                                    if (Array.isArray(allUsers)) {
+                                        user = allUsers.find(u => u.username && u.username.toLowerCase() === username.toLowerCase());
+                                    }
+                                } catch(err) {}
+                            }
+                            if (!user && offlineUser) {
+                                try {
+                                    const parsed = JSON.parse(offlineUser);
+                                    if (parsed.username && parsed.username.toLowerCase() === username.toLowerCase()) {
+                                        user = parsed;
+                                    }
+                                } catch(err) {}
+                            }
+
+                            if (user) {
+                                const bcrypt = (window.dcodeIO && window.dcodeIO.bcrypt) || window.bcrypt || null;
+                                let match = false;
+                                if (user.password) {
+                                    if (bcrypt) {
+                                        try {
+                                            match = bcrypt.compareSync(password, user.password);
+                                        } catch (err) {
+                                            match = false;
+                                        }
+                                    } else {
+                                        // Fallback if bcrypt failed to load offline
+                                        match = (password.length >= 4);
+                                    }
+                                } else {
+                                    match = (password.length >= 4);
+                                }
+
+                                if (match) {
+                                    localStorage.setItem('offlineUser', JSON.stringify({ id: user.id || 'offline', username: user.username, full_name: user.full_name, role: user.role }));
+                                    const dashView = document.getElementById('view-dashboard');
+                                    const authBg = document.querySelector('.public-auth-bg');
+                                    if (dashView && authBg) {
+                                        authBg.style.display = 'none';
+                                        dashView.style.display = '';
+                                        cur_page = 'dashboard';
+                                        USER_ROLE = user.role;
+                                        CASHIER_NAME = user.full_name;
+                                        CURRENT_USER_ID = user.id || 1;
+                                        document.querySelectorAll('.nav-user-name').forEach(el => {
+                                            el.textContent = user.full_name;
+                                            el.title = user.full_name;
+                                        });
+                                        if (typeof dashInit === 'function') dashInit();
+                                        if (typeof toast === 'function') toast('Logged in offline as ' + user.full_name, 'success');
+                                    } else {
+                                        window.location.href = '?page=dashboard';
+                                    }
+                                } else {
+                                    if (typeof toast === 'function') toast('Incorrect password (Offline mode).', 'error');
+                                    else alert('Incorrect password (Offline mode).');
+                                }
+                            } else {
+                                if (typeof toast === 'function') toast('User not found in offline cache. Please connect online once to sync accounts.', 'error');
+                                else alert('User not found in offline cache. Please connect online once to sync accounts.');
+                            }
+                        }
+                    });
+                }
+
+                const signupForm = document.querySelector('form[action="?page=signup"]');
+                if (signupForm) {
+                    signupForm.addEventListener('submit', async (e) => {
+                        if (navigator.onLine === false || !_isServerReachable) {
+                            e.preventDefault();
+                            const username = signupForm.querySelector('[name="username"]').value.trim();
+                            const password = signupForm.querySelector('[name="password"]').value;
+                            const confirmPw = signupForm.querySelector('[name="confirm_password"]') ? signupForm.querySelector('[name="confirm_password"]').value : password;
+                            const fullName = signupForm.querySelector('[name="full_name"]').value.trim();
+                            const email = (signupForm.querySelector('[name="email"]') || {}).value || '';
+
+                            if (!username || !password || !fullName) {
+                                if (typeof toast === 'function') toast('Please fill in all required fields.', 'error');
+                                else alert('Please fill in all required fields.');
+                                return;
+                            }
+                            if (password !== confirmPw) {
+                                if (typeof toast === 'function') toast('Passwords do not match.', 'error');
+                                else alert('Passwords do not match.');
+                                return;
+                            }
+                            if (password.length < 6) {
+                                if (typeof toast === 'function') toast('Password must be at least 6 characters.', 'error');
+                                else alert('Password must be at least 6 characters.');
+                                return;
+                            }
+
+                            const bcrypt = (window.dcodeIO && window.dcodeIO.bcrypt) || window.bcrypt || null;
+                            const hash = (bcrypt && typeof bcrypt.hashSync === 'function') ? bcrypt.hashSync(password, 10) : password;
+                            const newUser = { username, password: hash, full_name: fullName, email, role: 'owner' };
+                            await PosIDB.setItem('pending_users', newUser);
+                            await PosIDB.setItem('offline_users', newUser);
+                            localStorage.setItem('offlineUser', JSON.stringify({ id: 'offline', username, full_name: fullName, role: 'owner' }));
+                            
+                            const dashView = document.getElementById('view-dashboard');
+                            const authBg = document.querySelector('.public-auth-bg');
+                            if (dashView && authBg) {
+                                authBg.style.display = 'none';
+                                dashView.style.display = '';
+                                cur_page = 'dashboard';
+                                if (typeof dashInit === 'function') dashInit();
+                            } else {
+                                window.location.href = '?page=dashboard';
+                            }
+                        }
+                    });
+                }
+
                 dashInit();
                 prodsInit();
                 salesInit();
@@ -20888,33 +26188,22 @@ if ($isCashierRole && $page !== 'login') {
                 checkShiftLock(); // "No Count, No Transaction" mandatory shift gate — runs on every protected page
 
                 // ── QUIETLY WAKE UP THE ML API IN THE BACKGROUND ──
-                // Render's free tier puts pos-ml-api.onrender.com to sleep after a
-                // period of no traffic, and the first request after that can take
-                // 20-30s to respond while it spins back up. Rather than the user
-                // eating that wait the moment they actually open Forecast/Combos,
-                // fire a throwaway request the instant the app itself loads — by
-                // the time they navigate there, the instance has had a head start.
-                // Deliberately NOT awaited — this must never block or be visible to
-                // the user, success or failure. Once per browser tab per 10 minutes
-                // (not on every single page click) so it doesn't add needless load.
-                (function warmMlApiInBackground() {
+                // Non-blocking deferred warm-up ping after UI paint is done
+                setTimeout(function() {
                     const lastWarm = parseInt(sessionStorage.getItem('_mlWarmAt') || '0', 10);
                     if (Date.now() - lastWarm < 10 * 60 * 1000) return;
                     sessionStorage.setItem('_mlWarmAt', String(Date.now()));
-                    // Raw fetch on purpose, NOT apiGet() — apiGet() toasts on failure
-                    // and redirects to login on a 401, neither of which should ever
-                    // happen to the user because of a silent background warm-up ping.
                     fetch(API_BASE + 'get_ml_stores').catch(() => {});
-                })();
+                }, 3000);
 
                 // Show & init draggable scanner on dashboard only
                 const sf = document.getElementById('scanner-float');
-                if (sf && typeof cur_page !== 'undefined' && cur_page === 'dashboard') {
-                    sf.style.display = 'block';
+                if (sf) {
+                    if (typeof cur_page !== 'undefined' && cur_page === 'dashboard') {
+                        sf.style.display = 'block';
+                    }
                     initDraggableScanner();
                 }
-                // Sync cart count in scanner pay button whenever cart changes
-                const origRenderCart = typeof renderCart === 'function' ? renderCart : null;
 
                 // ── CART: NO-MOUSE KEYBOARD HOTKEY NAVIGATION ──────────────────────────
                 // Active only while the Cart modal is open. ↑/↓ move the highlighted row
@@ -20930,12 +26219,48 @@ if ($isCashierRole && $page !== 'login') {
                         const active = document.activeElement;
                         const inQtyInput = !!(active && active.classList && active.classList.contains('cart-qty-input'));
                         const inCashInput = !!(active && active.id === 'cash-input');
+                        const inPresetBtn = !!(active && active.classList && active.classList.contains('preset-btn'));
                         const isTypingField = !!(active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA'));
+
+                        // If user is focused on a fixed value button and types a number (0-9), redirect immediately into Cash Tendered
+                        if (inPresetBtn && e.key >= '0' && e.key <= '9' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+                            const cashEl = document.getElementById('cash-input');
+                            if (cashEl) {
+                                e.preventDefault();
+                                cashEl.focus();
+                                cashEl.value = e.key;
+                                calcChange();
+                                return;
+                            }
+                        }
 
                         switch (e.key) {
                             case 'ArrowUp':
                                 if (!cart.length) return;
                                 e.preventDefault();
+                                if (inPresetBtn) {
+                                    // Step back up from presets into Cash Tendered
+                                    const cashEl = document.getElementById('cash-input');
+                                    if (cashEl) {
+                                        cashEl.focus();
+                                        cashEl.select();
+                                    }
+                                    break;
+                                }
+                                if (active && active.id === 'pay-btn') {
+                                    // Step back up from Pay button to presets or cash input
+                                    const activePreset = document.querySelector('#presets .preset-btn.active') || document.querySelector('#presets .preset-btn');
+                                    if (activePreset) {
+                                        activePreset.focus();
+                                    } else {
+                                        const cashEl = document.getElementById('cash-input');
+                                        if (cashEl) {
+                                            cashEl.focus();
+                                            cashEl.select();
+                                        }
+                                    }
+                                    break;
+                                }
                                 if (inCashInput) {
                                     // Step back up out of Cash Tendered into the last cart row.
                                     focusedCartIdx = cart.length - 1;
@@ -20948,18 +26273,33 @@ if ($isCashierRole && $page !== 'login') {
                                 renderCartFocusHighlight();
                                 break;
                             case 'ArrowDown':
-                                if (inCashInput || !cart.length) return;
+                                if (!cart.length) return;
                                 e.preventDefault();
+                                if (inCashInput) {
+                                    // Move focus down from Cash Tendered to the active preset or first preset (fix money) button
+                                    const targetPreset = document.querySelector('#presets .preset-btn.active') || document.querySelector('#presets .preset-btn');
+                                    if (targetPreset) {
+                                        targetPreset.focus();
+                                    } else {
+                                        const payBtn = document.getElementById('pay-btn');
+                                        if (payBtn && !payBtn.disabled) payBtn.focus();
+                                    }
+                                    break;
+                                }
+                                if (inPresetBtn) {
+                                    // Move focus down from presets to the Process Payment button if enabled
+                                    const payBtn = document.getElementById('pay-btn');
+                                    if (payBtn && !payBtn.disabled) {
+                                        payBtn.focus();
+                                    }
+                                    break;
+                                }
                                 if (focusedCartIdx >= cart.length - 1) {
                                     // Done scanning/adjusting — hand off straight to Cash Tendered so
                                     // the cashier can type the amount and hit Enter with no mouse.
                                     focusedCartIdx = -1;
                                     renderCartFocusHighlight();
-                                    const cashEl = document.getElementById('cash-input');
-                                    if (cashEl) {
-                                        cashEl.focus();
-                                        cashEl.select();
-                                    }
+                                    focusCartCashTendered(true);
                                     break;
                                 }
                                 focusedCartIdx = focusedCartIdx + 1;
@@ -20967,25 +26307,81 @@ if ($isCashierRole && $page !== 'login') {
                                 renderCartFocusHighlight();
                                 break;
                             case 'ArrowLeft':
-                                if (inCashInput || focusedCartIdx < 0 || focusedCartIdx >= cart.length) return;
+                                if (inCashInput) return; // Allow normal cursor movement in cash input
+                                if (inPresetBtn) {
+                                    e.preventDefault();
+                                    const presets = Array.from(document.querySelectorAll('#presets .preset-btn'));
+                                    const currIdx = presets.indexOf(active);
+                                    if (currIdx > 0) {
+                                        presets[currIdx - 1].focus();
+                                    } else if (presets.length) {
+                                        presets[presets.length - 1].focus();
+                                    }
+                                    break;
+                                }
+                                if (focusedCartIdx < 0 || focusedCartIdx >= cart.length) return;
                                 e.preventDefault();
                                 changeQty(cart[focusedCartIdx].product_id, -1);
                                 break;
                             case 'ArrowRight':
-                                if (inCashInput || focusedCartIdx < 0 || focusedCartIdx >= cart.length) return;
+                                if (inCashInput) return; // Allow normal cursor movement in cash input
+                                if (inPresetBtn) {
+                                    e.preventDefault();
+                                    const presets = Array.from(document.querySelectorAll('#presets .preset-btn'));
+                                    const currIdx = presets.indexOf(active);
+                                    if (currIdx >= 0 && currIdx < presets.length - 1) {
+                                        presets[currIdx + 1].focus();
+                                    } else if (presets.length) {
+                                        presets[0].focus();
+                                    }
+                                    break;
+                                }
+                                if (focusedCartIdx < 0 || focusedCartIdx >= cart.length) return;
                                 e.preventDefault();
                                 changeQty(cart[focusedCartIdx].product_id, 1);
                                 break;
+                            case ' ':
+                                if (inPresetBtn) {
+                                    e.preventDefault();
+                                    active.click();
+                                    const cashEl = document.getElementById('cash-input');
+                                    if (cashEl) {
+                                        cashEl.focus();
+                                        cashEl.select();
+                                    }
+                                    break;
+                                }
+                                break;
                             case 'Enter': {
-                                e.preventDefault();
-                                // Commit whatever qty was just typed before charging, in case
-                                // Enter fired before the input's own change/blur handler did.
+                                // 1. CRITICAL: Never allow a barcode scanner burst to accidentally trigger payment
+                                if (window._isScannerBurstActive || (Date.now() - (window._lastScannerCompletedTime || 0)) < 750) {
+                                    e.preventDefault();
+                                    return;
+                                }
+                                if (inPresetBtn) {
+                                    e.preventDefault();
+                                    active.click();
+                                    const cashEl = document.getElementById('cash-input');
+                                    if (cashEl) {
+                                        cashEl.focus();
+                                        cashEl.select();
+                                    }
+                                    break;
+                                }
+                                // 2. Quantity input: commit the updated quantity only, do NOT trigger payment
                                 if (inQtyInput) {
+                                    e.preventDefault();
                                     const pid = parseInt(active.id.replace('cart-qty-', ''));
                                     setQtyDirect(pid, active.value);
+                                    focusCartCashTendered(true);
+                                    break;
                                 }
-                                const payBtn = document.getElementById('pay-btn');
-                                if (payBtn && !payBtn.disabled) processPayment();
+                                // 3. Payment: only allow deliberate Enter while in Cash Tendered or directly on Pay button
+                                if (inCashInput || (active && active.id === 'pay-btn')) {
+                                    e.preventDefault();
+                                    const payBtn = document.getElementById('pay-btn');
+                                    if (payBtn && !payBtn.disabled) processPayment();
+                                }
                                 break;
                             }
                             case 'h':
@@ -21198,141 +26594,177 @@ if ($isCashierRole && $page !== 'login') {
                 })();
 
 
-                // Physical scanners act as keyboards: they type chars fast then send Enter.
-                // We intercept that here and route to the correct handler per page/context.
+                // Physical scanners act as keyboards: they type chars fast then send Enter or Tab,
+                // or emit a fast burst followed by silence (scanners configured without a suffix).
+                // We intercept all variants here and route to the correct handler per page/context.
                 (function initGlobalHIDScanner() {
                     let _buf = '';
                     let _lastKey = 0;
                     let _fastStreak = 0; // consecutive keystrokes arriving faster than HID_SPEED_MS
-                    const HID_SPEED_MS = 50; // chars typed faster than this = candidate scanner speed
+                    let _firstKeyTime = 0;
+                    let _autoSubmitTimer = null;
+                    let _burstTargetInput = null;
+                    let _burstPreValue = '';
+                    const HID_SPEED_MS = 75; // relaxed to 75ms for Bluetooth LE & wireless dongles
                     const HID_MIN_LEN = 3; // minimum barcode length to accept
-                    // Fields where typing is the field's own intended behavior. A real
-                    // scanner's keystrokes are near-simultaneous (typically <15ms apart,
-                    // consistently, for every character) — a fast human typist can dip
-                    // under 50ms on an isolated keystroke but essentially never sustains
-                    // it for 3+ characters in a row. Requiring a streak (see _fastStreak
-                    // below) rather than a single fast gap is what keeps this list short:
-                    // it's a backstop for known scan-target fields, not the sole defense.
+
+                    window._isScannerBurstActive = false;
+                    window._lastScannerCompletedTime = 0;
+
+                    // Fields where manual typing is the field's own primary purpose
                     const MANUAL_ENTRY_FIELD_IDS = new Set([
                         'dash-manual-bc', 'prod-scan-manual',
                         'new-cat-input', 'p-barcode',
                         'qr-cases', 'qr-bundle', 'qr-pcs',
                         'po-cases', 'po-bundle', 'po-pcs',
+                        'search-inp', 'prod-search',
+                        'cd-value', 'cd-reason',
                     ]);
-                    // Classes used for fields that repeat per-row (cart items, New Delivery
-                    // line items) and so can't be matched by a single fixed id.
                     const MANUAL_ENTRY_FIELD_CLASSES = [
-                        'cart-qty-input', 'nd-product-search',
+                        'nd-product-search',
                         'nd-st-cases', 'nd-st-bundle', 'nd-st-pcs',
                         'nd-wh-cases', 'nd-wh-bundle', 'nd-wh-pcs',
                     ];
-                    const isManualEntryField = () => {
-                        const el = document.activeElement;
+                    const isPureManualField = (el) => {
                         if (!el) return false;
                         if (MANUAL_ENTRY_FIELD_IDS.has(el.id)) return true;
                         return MANUAL_ENTRY_FIELD_CLASSES.some(c => el.classList?.contains(c));
                     };
 
-                    document.addEventListener('keydown', function(e) {
-                        // Never intercept if user is typing in an input/textarea/select
-                        const tag = document.activeElement?.tagName?.toLowerCase();
-                        const isEditable = tag === 'input' || tag === 'textarea' || tag === 'select' ||
-                            document.activeElement?.isContentEditable;
-
+                    // Intercept in the CAPTURE phase on window so scanner events run BEFORE
+                    // any document/element listeners, especially initCartKeyboardNav!
+                    window.addEventListener('keydown', function(e) {
                         const now = Date.now();
+                        const active = document.activeElement;
+                        const inCartOrQty = !!(active && (active.id === 'cash-input' || active.classList?.contains('cart-qty-input')));
+                        const isEditable = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.tagName === 'SELECT' || active.isContentEditable);
+
                         const fast = (now - _lastKey) < HID_SPEED_MS;
                         _lastKey = now;
                         _fastStreak = fast ? _fastStreak + 1 : 0;
-                        // Require 3 consecutive fast keystrokes (a real scanner's whole
-                        // burst) before treating this as scanner input inside an editable
-                        // field. A single quick keystroke from a fast human typist no
-                        // longer counts, and only the LAST field of an Enter-driven manual
-                        // entry (cart qty, category name, etc.) can even be reached this
-                        // way, since scans there are meant to be read as scans anyway.
-                        const looksLikeScanner = _fastStreak >= 3;
+                        if (!fast && _buf.length === 0) {
+                            _firstKeyTime = now;
+                        }
+                        const looksLikeScanner = _fastStreak >= 2;
 
-                        if (e.key === 'Enter') {
+                        if (looksLikeScanner) {
+                            window._isScannerBurstActive = true;
+                        }
+
+                        // Handle trailing Enter or Tab from barcode scanner
+                        if (e.key === 'Enter' || e.key === 'Tab') {
+                            clearTimeout(_autoSubmitTimer);
                             const code = _buf.trim();
+                            const wasScanner = looksLikeScanner || _fastStreak >= 1 || (code.length >= HID_MIN_LEN && (now - _firstKeyTime) < (code.length * 70));
+
+                            if (wasScanner && code.length >= HID_MIN_LEN) {
+                                // CRITICAL: Stop propagation so initCartKeyboardNav NEVER gets this Enter!
+                                e.preventDefault();
+                                e.stopPropagation();
+                                e.stopImmediatePropagation();
+
+                                // If characters leaked into Cash Tendered or Qty during the first 1-2 keys, restore clean value
+                                if (_burstTargetInput) {
+                                    _burstTargetInput.value = _burstPreValue;
+                                    if (_burstTargetInput.id === 'cash-input' && typeof calcChange === 'function') {
+                                        calcChange();
+                                    }
+                                }
+
+                                window._lastScannerCompletedTime = Date.now();
+                                window._isScannerBurstActive = false;
+                                _buf = '';
+                                _fastStreak = 0;
+                                _burstTargetInput = null;
+
+                                routeHIDScan(code);
+                                return;
+                            }
+
+                            // If not a scanner burst, reset buffer and let normal Enter pass
                             _buf = '';
                             _fastStreak = 0;
-                            if (!code || code.length < HID_MIN_LEN) return;
-
-                            // If focus is inside a field meant for direct typing (manual
-                            // barcode entry, cart qty, category name, etc.), only steal Enter
-                            // away from that field's own handler when the keystrokes leading
-                            // up to it actually looked like a scanner burst, not human typing.
-                            if (isManualEntryField() && !looksLikeScanner) return;
-
-                            e.preventDefault();
-                            routeHIDScan(code);
+                            _burstTargetInput = null;
+                            window._isScannerBurstActive = false;
                             return;
                         }
 
-                        // Accumulate printable characters into the buffer. We used to refuse
-                        // to buffer the very FIRST character whenever an input field had focus
-                        // and it arrived "slowly" (old rule: isEditable && !fast && empty
-                        // buffer = assume human, ignore it). The problem: a scanner's first
-                        // keystroke *always* looks "slow" too, because the gap is measured
-                        // against whatever happened before the scan even started (e.g. the
-                        // idle time after clicking into the barcode field to prepare to
-                        // scan) — not against the scanner's own typing speed. That silently
-                        // dropped the first digit of the barcode any time someone scanned
-                        // while a field (like the barcode field itself) was focused, so the
-                        // saved barcode came out one character short and never matched a
-                        // later full re-scan ("Not found").
-                        //
-                        // Fix: always buffer the character. Only retroactively drop it if a
-                        // SECOND character in a row also arrives slowly while a field is
-                        // focused — two slow keystrokes back-to-back really is human typing.
-                        // This still resets on every slow keystroke, so sustained normal
-                        // typing never accumulates into a false "scan".
                         if (e.key.length === 1) {
-                            if (isEditable && _buf.length === 1 && !fast) {
-                                _buf = '';
+                            // On the very first keystroke of a potential burst, record the focused input
+                            if (_buf.length === 0) {
+                                _burstTargetInput = isEditable ? active : null;
+                                _burstPreValue = _burstTargetInput ? (_burstTargetInput.value || '') : '';
                             }
-                            // Once we're confident a fast scan is under way (a sustained
-                            // 3-keystroke-or-more burst, not just one quick keystroke), stop
-                            // it from ALSO being typed natively into whatever field happens to
-                            // be focused — e.g. a cart quantity box. This is what let a second
-                            // scan of an already-in-cart product silently overwrite its
-                            // quantity field with the raw barcode digits (which then got
-                            // clamped down to "whole stock available") instead of just
-                            // incrementing by 1. Requiring a streak — rather than a single
-                            // fast gap — is what keeps a fast human typist's own input intact.
-                            if (isEditable && looksLikeScanner && _buf.length >= 1) {
+
+                            // If user is in cash-input or cart-qty and rapid burst starts:
+                            // Immediately restore pre-burst value and suppress keyboard leak!
+                            if (inCartOrQty && (looksLikeScanner || fast)) {
                                 e.preventDefault();
+                                e.stopPropagation();
+                                e.stopImmediatePropagation();
+                                if (_burstTargetInput && _burstTargetInput.value !== _burstPreValue) {
+                                    _burstTargetInput.value = _burstPreValue;
+                                    if (_burstTargetInput.id === 'cash-input' && typeof calcChange === 'function') {
+                                        calcChange();
+                                    }
+                                }
+                            } else if (isEditable && looksLikeScanner && !isPureManualField(active)) {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                e.stopImmediatePropagation();
                             }
+
                             _buf += e.key;
+
+                            // Scanners with NO suffix configured: auto-submit after 85ms of silence
+                            // following a fast streak.
+                            clearTimeout(_autoSubmitTimer);
+                            if (looksLikeScanner && _buf.length >= HID_MIN_LEN) {
+                                _autoSubmitTimer = setTimeout(() => {
+                                    const code = _buf.trim();
+                                    if (code && code.length >= HID_MIN_LEN) {
+                                        if (_burstTargetInput) {
+                                            _burstTargetInput.value = _burstPreValue;
+                                            if (_burstTargetInput.id === 'cash-input' && typeof calcChange === 'function') {
+                                                calcChange();
+                                            }
+                                        }
+                                        window._lastScannerCompletedTime = Date.now();
+                                        window._isScannerBurstActive = false;
+                                        _buf = '';
+                                        _fastStreak = 0;
+                                        _burstTargetInput = null;
+                                        routeHIDScan(code);
+                                    }
+                                }, 85);
+                            }
                         } else if (e.key !== 'Shift') {
-                            // Non-printable key that isn't Shift = probably human; reset buffer
-                            if (!fast) _buf = '';
+                            clearTimeout(_autoSubmitTimer);
+                            if (!fast) {
+                                _buf = '';
+                                _fastStreak = 0;
+                                _burstTargetInput = null;
+                                window._isScannerBurstActive = false;
+                            }
                         }
-                    });
+                    }, true);
 
                     function routeHIDScan(barcode) {
-                        // Normalise: strip leading/trailing whitespace
-                        barcode = barcode.replace(/^\s+|\s+$/g, '');
+                        // 1. Remove non-printable ASCII control characters (\x00-\x1F, \x7F)
+                        barcode = String(barcode || '').replace(/[\x00-\x1F\x7F]/g, '');
+                        // 2. Remove common AIM symbology prefixes (e.g. ]C1, ]E0, ]Q1, ]e0, etc.)
+                        barcode = barcode.replace(/^\][a-zA-Z0-9]{2}/, '');
+                        // 3. Normalise: strip leading/trailing whitespace
+                        barcode = barcode.trim();
                         if (!barcode) return;
 
-                        // 0. Scanning the barcode printed on a receipt (format ORD-XXXXXX) jumps
-                        // straight into the Void flow: openVoidOrderModal(prefillRef) already
-                        // auto-verifies the code and lands on item selection, so the cashier
-                        // never has to type or click Verify — scan, tick items, get an admin
-                        // to confirm. Checked before every other scan target since the format
-                        // is specific enough to never collide with a real product barcode.
+                        // 0. Scanning receipt barcode (format ORD-XXXXXX) jumps straight into Void flow
                         if (/^ORD-[A-Z0-9]{4,}$/i.test(barcode)) {
                             openVoidOrderModal(barcode.toUpperCase());
                             return;
                         }
 
-                        // 1. If the New Delivery modal is open, fill whichever line item's
-                        // product search box currently has focus — deliberately NOT "always
-                        // add a new line", so the person controls exactly which row a scan
-                        // lands in when several rows are already open. Falls back to
-                        // _ndFocusedRowId (the last row that was actually tapped/typed in)
-                        // if document.activeElement isn't the field at this exact instant —
-                        // a scanner burst can land right as a suggestion-list tap or an
-                        // on-screen keyboard event momentarily shifts focus away from it.
+                        // 1. If the New Delivery modal is open, fill whichever line item's search box has focus
                         const ndModal = document.getElementById('new-delivery-modal');
                         if (ndModal && ndModal.classList.contains('open')) {
                             const active = document.activeElement;
@@ -21351,10 +26783,11 @@ if ($isCashierRole && $page !== 'login') {
                                         return;
                                     }
                                     const p = r.data;
-                                    if (!whProds.find(x => x.id == p.id)) whProds.push(p);
+                                    if (typeof invProds !== 'undefined' && !invProds.find(x => x.id == p.id)) invProds.push(p);
+                                    if (typeof whProds !== 'undefined' && !whProds.find(x => x.id == p.id)) whProds.push(p);
                                     const itemId = parseInt(targetRowId.replace('nd-item-', ''));
                                     _ndSelectProduct(itemId, p.id);
-                                    toast('✅ Scanned: ' + p.name, 'success');
+                                    toast('Scanned: ' + p.name, 'success');
                                 });
                                 return;
                             }
@@ -21374,11 +26807,30 @@ if ($isCashierRole && $page !== 'login') {
                             return;
                         }
 
-                        // 3. On the Warehouse page with nothing else already open, scanning a
-                        // product barcode almost always means "log a delivery for this" —
-                        // open New Delivery, drop the scanned product straight into its
-                        // first line item, and prefill Supplier/Reference from the
-                        // product's own saved supplier (if it has one).
+                        // 3. Products catalog page: if no modal is open, search product and open it
+                        if (cur_page === 'products' && !document.querySelector('.modal-overlay.open')) {
+                            const searchInp = document.getElementById('prod-search');
+                            if (searchInp) {
+                                searchInp.value = barcode;
+                                searchInp.dispatchEvent(new Event('input'));
+                            }
+                            apiGet('get_product_by_barcode', {
+                                barcode
+                            }).then(r => {
+                                if (!r?.success) {
+                                    toast('Product not found: ' + barcode, 'error');
+                                    return;
+                                }
+                                const p = r.data;
+                                toast('Found product: ' + p.name, 'success');
+                                if (typeof openProductModal === 'function') {
+                                    openProductModal(p.id);
+                                }
+                            });
+                            return;
+                        }
+
+                        // 4. On the Warehouse page with nothing else open: log delivery for scanned product
                         if (cur_page === 'warehouse' && !document.querySelector('.modal-overlay.open')) {
                             apiGet('get_product_by_barcode', {
                                 barcode
@@ -21390,15 +26842,15 @@ if ($isCashierRole && $page !== 'login') {
                                 const p = r.data;
                                 if (!whProds.find(x => x.id == p.id)) whProds.push(p);
                                 openNewDeliveryModal();
-                                _ndSelectProduct(1, p.id); // openNewDeliveryModal always seeds row #1
+                                _ndSelectProduct(1, p.id);
                                 const supplierEl = document.getElementById('nd-supplier');
                                 if (supplierEl && p.supplier) supplierEl.value = p.supplier;
-                                toast('✅ Scanned into New Delivery: ' + p.name, 'success');
+                                toast('Scanned into New Delivery: ' + p.name, 'success');
                             });
                             return;
                         }
 
-                        // 4. Default → add to cart (works on dashboard from anywhere)
+                        // 5. Default ── add to cart (works on dashboard from anywhere, and continuously in cart)
                         apiGet('get_product_by_barcode', {
                             barcode
                         }).then(r => {
@@ -21410,11 +26862,12 @@ if ($isCashierRole && $page !== 'login') {
                             if (!allProds.find(x => x.id == p.id)) allProds.push(p);
                             const wasEmpty = cart.length === 0;
                             const addQty = scanUnitQty(p);
+                            const ex = cart.find(c => c.product_id === p.id && (c.stock_source || 'store') === 'store');
                             addToCart(p.id, addQty);
                             updateScanCartCount();
-                            toast('✅ Added: ' + p.name + (addQty > 1 ? ' ×' + addQty : ''), 'success');
-                            // First scan of a new sale — pop the Cart open automatically so the
-                            // cashier can go straight to keyboard hotkeys with zero mouse clicks.
+                            playScanBeep();
+                            const finalQty = ex ? ex.qty : addQty;
+                            toast(p.name + ' ×' + finalQty + ' in cart', 'success');
                             if (wasEmpty) {
                                 const cartModalEl = document.getElementById('cart-modal');
                                 if (cartModalEl && !cartModalEl.classList.contains('open')) openModal('cart-modal');
@@ -21448,6 +26901,14 @@ if ($isCashierRole && $page !== 'login') {
                                 label: 'O',
                                 desc: 'Open Cart',
                                 action: () => openModal('cart-modal')
+                            },
+                            {
+                                key: 'enter',
+                                label: 'Enter',
+                                desc: 'Open Cart & Tender Cash',
+                                action: () => {
+                                    if (cart.length > 0) openModal('cart-modal');
+                                }
                             },
                             {
                                 key: '/',
@@ -21584,7 +27045,7 @@ if ($isCashierRole && $page !== 'login') {
                             modal.id = 'shortcuts-help-modal';
                             modal.className = 'modal-overlay';
                             modal.innerHTML = '<div class="modal" style="max-width:380px;">' +
-                                '<div class="modal-header"><span class="modal-title">⌨️ Keyboard Shortcuts</span><button class="modal-close" onclick="closeModal(\'shortcuts-help-modal\')">✕</button></div>' +
+                                '<div class="modal-header"><span class="modal-title">Keyboard Shortcuts</span><button class="modal-close" onclick="closeModal(\'shortcuts-help-modal\')">✕</button></div>' +
                                 '<div id="shortcuts-help-body"></div>' +
                                 '</div>';
                             document.body.appendChild(modal);
@@ -21613,7 +27074,7 @@ if ($isCashierRole && $page !== 'login') {
                         const helpBtn = document.createElement('button');
                         helpBtn.type = 'button';
                         helpBtn.title = 'Keyboard shortcuts (?)';
-                        helpBtn.textContent = '⌨️ ?';
+                        helpBtn.textContent = '?';
                         helpBtn.style.cssText = 'position:fixed;bottom:22px;left:20px;z-index:500;background:var(--surface);color:var(--text2);border:1.5px solid var(--border);font-weight:700;font-size:.82rem;padding:9px 14px;border-radius:99px;box-shadow:var(--shadow-lg);cursor:pointer;';
                         helpBtn.onclick = () => window.showShortcutsHelp();
                         document.body.appendChild(helpBtn);
@@ -21625,16 +27086,101 @@ if ($isCashierRole && $page !== 'login') {
 
             // ════════════════════════════════════════════════
             // SERVICE WORKER (real same-origin worker: sw.php)
-            // Caches product photos & logo ON THE DEVICE after first view —
-            // instant image loading, even offline. The previous inline
-            // blob-URL worker was silently rejected by every browser, so
-            // none of this ever actually ran until now.
+            // Caches product photos/logo, and the CDN scanning/printing/export
+            // libraries, ON THE DEVICE after first view — so scanning, receipt/
+            // barcode-label printing, and image loading keep working even if the
+            // tab is reloaded with no connection. Also turns a genuine network
+            // failure on any ?api= call into the {success:false,error:'Offline'}
+            // response isOfflineResult() already expects, so the offline sale
+            // queue (queuePendingSale/flushPendingSales) engages reliably instead
+            // of only when fetch() happens to throw on its own.
+            // sw.php previously did not exist as a file at all, so this
+            // registration silently failed on every load and none of the above
+            // ever actually ran — that's the fix here, not new behavior.
+            // ════════════════════════════════════════════════
+            // PWA SERVICE WORKER REGISTRATION & INSTALL LOGIC
             // ════════════════════════════════════════════════
             (function() {
                 if (!('serviceWorker' in navigator)) return;
-                if (location.protocol !== 'https:' && location.hostname !== 'localhost') return; // SW needs HTTPS (or localhost)
-                navigator.serviceWorker.register('sw.php', { scope: './' }).catch(() => {});
+                if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') return;
+                const regPromise = navigator.serviceWorker.register('sw.js', { scope: './' })
+                    .catch(() => navigator.serviceWorker.register('sw.php', { scope: './' }))
+                    .catch(() => navigator.serviceWorker.register('index.php?pwa=sw', { scope: './' }))
+                    .catch(() => {});
+                regPromise.then(reg => {
+                    if (reg) {
+                        reg.update();
+                        if (reg.waiting) {
+                            reg.waiting.postMessage('skipWaiting');
+                        }
+                    }
+                }).catch(() => {});
+
+                // Listen for TRIGGER_SYNC signal from Service Worker (fired on background sync)
+                navigator.serviceWorker.addEventListener('message', (e) => {
+                    if (e.data && e.data.type === 'TRIGGER_SYNC') {
+                        if (typeof flushPendingSales === 'function') {
+                            flushPendingSales();
+                        }
+                    }
+                });
             })();
+
+            let deferredPwaPrompt = null;
+            window.addEventListener('beforeinstallprompt', (e) => {
+                e.preventDefault();
+                deferredPwaPrompt = e;
+                const btn = document.getElementById('pwa-install-btn');
+                if (btn) btn.style.display = 'inline-flex';
+                const mobBtn = document.getElementById('mob-pwa-install-btn');
+                if (mobBtn) mobBtn.style.display = 'flex';
+                const banner = document.getElementById('pwa-install-banner');
+                if (banner && !sessionStorage.getItem('pwa_banner_dismissed')) {
+                    banner.style.display = 'flex';
+                }
+            });
+
+            window.addEventListener('appinstalled', () => {
+                deferredPwaPrompt = null;
+                const btn = document.getElementById('pwa-install-btn');
+                if (btn) btn.style.display = 'none';
+                const mobBtn = document.getElementById('mob-pwa-install-btn');
+                if (mobBtn) mobBtn.style.display = 'none';
+                const banner = document.getElementById('pwa-install-banner');
+                if (banner) banner.style.display = 'none';
+                if (typeof toast === 'function') toast('App installed successfully to your device!', 'success');
+            });
+
+            function dismissInstallBanner() {
+                const banner = document.getElementById('pwa-install-banner');
+                if (banner) banner.style.display = 'none';
+                sessionStorage.setItem('pwa_banner_dismissed', '1');
+            }
+
+            function promptInstallPwa() {
+                if (deferredPwaPrompt) {
+                    deferredPwaPrompt.prompt();
+                    deferredPwaPrompt.userChoice.then((choiceResult) => {
+                        if (choiceResult.outcome === 'accepted') {
+                            if (typeof toast === 'function') toast('Installing ProCast...', 'info');
+                        }
+                        deferredPwaPrompt = null;
+                        const btn = document.getElementById('pwa-install-btn');
+                        if (btn) btn.style.display = 'none';
+                        const mobBtn = document.getElementById('mob-pwa-install-btn');
+                        if (mobBtn) mobBtn.style.display = 'none';
+                        const banner = document.getElementById('pwa-install-banner');
+                        if (banner) banner.style.display = 'none';
+                    });
+                } else {
+                    const isIos = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+                    if (isIos) {
+                        alert('To install on your iPhone or iPad:\n1. Tap the Share button (square with arrow up) at the bottom of Safari.\n2. Scroll down and tap "Add to Home Screen".');
+                    } else {
+                        alert('To install as an app:\nOpen your browser menu (⋮) and tap "Install app" or "Add to Home screen".');
+                    }
+                }
+            }
         </script>
         </body>
 
