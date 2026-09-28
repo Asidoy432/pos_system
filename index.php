@@ -6169,7 +6169,13 @@ if ($page === 'logout') {
 restoreLoginFromCookie();
 if ($page !== 'login' && $page !== 'forgot' && $page !== 'reset' && $page !== 'signup' && $page !== 'landing') requireLogin();
 
-$currentUser = loggedIn() ? ['id' => $_SESSION['uid'], 'username' => $_SESSION['username'], 'full_name' => $_SESSION['full_name'], 'role' => $_SESSION['role'], 'email' => $_SESSION['email'] ?? ''] : [];
+$currentUser = loggedIn() ? [
+    'id' => $_SESSION['uid'] ?? 0,
+    'username' => $_SESSION['username'] ?? '',
+    'full_name' => $_SESSION['full_name'] ?? '',
+    'role' => $_SESSION['role'] ?? '',
+    'email' => $_SESSION['email'] ?? ''
+] : [];
 
 // ═══════════════════════════════════════════════════
 //  SESSION ROUTING — role-based bypass + shift-lock gate
@@ -6191,7 +6197,7 @@ if (in_array($page, ['settings', 'products', 'warehouse', 'analytics', 'forecast
 $showShiftLockOnLoad = false;
 if ($isCashierRole && $page !== 'login') {
     $chk = db()->prepare("SELECT id FROM cash_floats WHERE user_id=? AND status='open' LIMIT 1");
-    $chk->execute([$currentUser['id']]);
+    $chk->execute([$currentUser['id'] ?? 0]);
     $showShiftLockOnLoad = !$chk->fetch();
 }
 
@@ -11946,7 +11952,7 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
             <div class="nav-right">
                 <div id="network-status-pill" class="network-pill online" onclick="handleNetworkPillClick()" title="Network connection status — tap to sync">🟢</div>
                 <button type="button" id="theme-toggle-btn" class="nav-link" style="padding:6px 9px;" title="Switch to light mode" onclick="toggleTheme()">🌙</button>
-                <span class="nav-user-name" title="<?= htmlspecialchars($currentUser['full_name']) ?>"><?= htmlspecialchars($currentUser['full_name']) ?></span>
+                <span class="nav-user-name" title="<?= htmlspecialchars($currentUser['full_name'] ?? '') ?>"><?= htmlspecialchars($currentUser['full_name'] ?? '') ?></span>
                 <?php if ($isCashierRole): ?>
                     <button class="btn btn-secondary btn-sm nav-logout-btn" onclick="requestEndShift()">End Shift</button>
                     <a href="?page=logout" class="btn btn-secondary btn-sm nav-logout-btn" onclick="return attemptLogout(event)" style="margin-left:4px;">Logout</a>
