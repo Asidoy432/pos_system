@@ -4,7 +4,7 @@
 // works seamlessly with 100% functionality even when offline/no-network.
 // ═══════════════════════════════════════════════════════════════════════════
 
-const SHELL = 'pos-shell-v26';
+const SHELL = 'pos-shell-v28';
 const IMGS = 'pos-img-v5';
 const IMG_LIMIT = 500;
 const BASE = new URL('./', self.location).href;
@@ -167,8 +167,18 @@ self.addEventListener('fetch', e => {
     if (isImageRequest(url, req)) {
         e.respondWith((async () => {
             const cache = await caches.open(IMGS);
-            const hit = await cache.match(req);
+            // 1. Direct match with exact request
+            let hit = await cache.match(req);
             if (hit) return hit;
+
+            // 2. Match ignoring search parameters (e.g. timestamp versioning)
+            hit = await cache.match(req, { ignoreSearch: true });
+            if (hit) return hit;
+
+            // 3. Search across all caches (e.g. SHELL precache for assets)
+            hit = await caches.match(req, { ignoreSearch: true });
+            if (hit) return hit;
+
             try {
                 const resp = await fetch(req);
                 if (resp && (resp.status === 200 || resp.type === 'opaque')) {
@@ -180,9 +190,11 @@ self.addEventListener('fetch', e => {
                 }
                 return resp;
             } catch (err) {
-                // If offline and image not cached, fallback to default product or logo
-                const defProd = await cache.match(new URL('assets/default-product.png', BASE).href);
+                // If offline and image not cached, fallback to default product or logo across all caches
+                const defProd = await caches.match(new URL('assets/default-product.png', BASE).href, { ignoreSearch: true });
                 if (defProd) return defProd;
+                const defLogo = await caches.match(new URL('assets/default-logo.png', BASE).href, { ignoreSearch: true });
+                if (defLogo) return defLogo;
                 return Response.error();
             }
         })());
@@ -210,6 +222,19 @@ self.addEventListener('fetch', e => {
     // If online: Fast network race (2.5s). If online answers, update cache & return.
     // If network times out or drops: Immediately serve cached shell with zero delay.
     if (req.mode === 'navigate') {
+        const pageParam = url.searchParams.get('page');
+        if (pageParam === 'logout') {
+            e.respondWith((async () => {
+                try {
+                    const resp = await fetch(req);
+                    return resp;
+                } catch (err) {
+                    return Response.redirect(new URL('?page=login', BASE).href, 302);
+                }
+            })());
+            return;
+        }
+
         e.respondWith((async () => {
             const shellCache = await caches.open(SHELL);
 
@@ -259,7 +284,10 @@ self.addEventListener('fetch', e => {
             try {
                 const resp = await fetchWithTimeout(req, 2500);
                 if (resp && resp.status === 200) {
-                    shellCache.put(APP_SHELL_KEY, resp.clone()).catch(() => {});
+                    const respUrl = resp.url || '';
+                    if (!respUrl.includes('page=login') && pageParam !== 'login') {
+                        shellCache.put(APP_SHELL_KEY, resp.clone()).catch(() => {});
+                    }
                     shellCache.put(req, resp.clone()).catch(() => {});
                     shellCache.put(new URL('./', BASE).href, resp.clone()).catch(() => {});
                     shellCache.put(new URL('index.php', BASE).href, resp.clone()).catch(() => {});

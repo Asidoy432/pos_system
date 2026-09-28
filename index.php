@@ -859,7 +859,8 @@ function installSQLiteDB(PDO $db): void
         "unit_size VARCHAR(50) NULL",
         "promo_price DECIMAL(10,2) NULL",
         "promo_pack_price DECIMAL(10,2) NULL",
-        "promo_case_price DECIMAL(10,2) NULL"
+        "promo_case_price DECIMAL(10,2) NULL",
+        "image_path VARCHAR(255) NULL"
     ];
     foreach ($sqliteProdCols as $colDef) {
         try {
@@ -2723,21 +2724,43 @@ if (isset($_GET['api'])) {
 
             case 'get_product_image':
                 // Serves one product's photo as a real image (not JSON) so <img>
-                // tags can load it directly — lazily, in parallel, and cacheable —
-                // instead of it being crammed into the get_products payload above.
-                $pid = (int)($_GET['id'] ?? 0);
-                $ist = $db->prepare("SELECT image_data, image_path, updated_at FROM products WHERE id=? LIMIT 1");
-                $ist->execute([$pid]);
-                $prow = $ist->fetch();
-                if (!$prow || (!$prow['image_data'] && !$prow['image_path'])) {
-                    http_response_code(404);
+                // tags can load it directly — lazily, in parallel, and cacheable.
+                $streamDefaultImage = function() {
+                    $defFile = __DIR__ . '/assets/default-product.png';
+                    if (is_file($defFile)) {
+                        header('Content-Type: image/png');
+                        header('Cache-Control: public, max-age=86400');
+                        header('Content-Length: ' . filesize($defFile));
+                        readfile($defFile);
+                        exit;
+                    }
+                    header('Content-Type: image/svg+xml');
+                    header('Cache-Control: public, max-age=86400');
+                    echo '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><circle cx="32" cy="32" r="29" fill="#fff" stroke="#d5d5d5" stroke-width="3"/><path d="M17 20h5l4.5 17h16l3.5-12H25" fill="none" stroke="#5b5b5b" stroke-width="3.2" stroke-linejoin="round" stroke-linecap="round"/><circle cx="28" cy="45" r="3.2" fill="#5b5b5b"/><circle cx="40" cy="45" r="3.2" fill="#5b5b5b"/></svg>';
                     exit;
+                };
+
+                $pid = (int)($_GET['id'] ?? 0);
+                $prow = null;
+                try {
+                    $ist = $db->prepare("SELECT image_data, image_path, updated_at FROM products WHERE id=? LIMIT 1");
+                    $ist->execute([$pid]);
+                    $prow = $ist->fetch();
+                } catch (\Throwable $e) {
+                    try {
+                        $ist = $db->prepare("SELECT image_data, updated_at FROM products WHERE id=? LIMIT 1");
+                        $ist->execute([$pid]);
+                        $prow = $ist->fetch();
+                        if ($prow) $prow['image_path'] = null;
+                    } catch (\Throwable $e2) {
+                        $prow = null;
+                    }
+                }
+                if (!$prow || (!$prow['image_data'] && !$prow['image_path'])) {
+                    $streamDefaultImage();
                 }
 
                 // ── CLOUD PATH: photo lives in Supabase Storage (deploy-surviving storage) ──
-                // The DB only holds its URL — bounce the browser straight to the
-                // Supabase CDN. Short cache on the redirect itself so a replaced
-                // photo is picked up quickly while still skipping most DB hits.
                 if ($prow['image_path'] && preg_match('#^https?://#', $prow['image_path'])) {
                     header('Location: ' . $prow['image_path']);
                     header('Cache-Control: public, max-age=300');
@@ -2745,7 +2768,6 @@ if (isset($_GET['api'])) {
                 }
 
                 // ── FAST PATH: a real file on disk (new-style uploads) ──
-                // No DB blob to decode — just stream the file straight off disk.
                 if ($prow['image_path']) {
                     $fullPath = __DIR__ . '/' . $prow['image_path'];
                     if (is_file($fullPath)) {
@@ -2764,19 +2786,14 @@ if (isset($_GET['api'])) {
                         readfile($fullPath);
                         exit;
                     }
-                    // image_path was set but the file is missing (e.g. moved/deleted outside
-                    // the app) — fall through to the legacy DB-blob path below if there is one.
                 }
 
                 // ── LEGACY PATH: base64 blob still stored in the DB ──
                 $imgData = $prow['image_data'];
                 if (!$imgData) {
-                    http_response_code(404);
-                    exit;
+                    $streamDefaultImage();
                 }
 
-                // Validator-based caching so repeat loads skip the DB round trip + base64
-                // decode via a lightweight 304, even for these older DB-stored photos.
                 $etag = '"' . md5($pid . '|' . ($prow['updated_at'] ?? '')) . '"';
                 header('Cache-Control: public, max-age=2592000, immutable'); // 30 days
                 header('ETag: ' . $etag);
@@ -2789,14 +2806,16 @@ if (isset($_GET['api'])) {
                     header('Content-Type: ' . $m[1]);
                     $bytes = base64_decode($m[2]);
                 } else {
-                    // Legacy rows saved without the data-URI prefix
                     header('Content-Type: image/jpeg');
                     $bytes = base64_decode($imgData);
                 }
-                // SELF-HEAL: this DB backup just saved the photo after a disk wipe —
-                // quietly rewrite the disk file too, so future loads stream from disk
-                // again instead of hitting the DB every time.
-                if ($bytes !== false && $bytes !== '' && $prow['image_path'] && !preg_match('#^https?://#', $prow['image_path']) && !is_file(__DIR__ . '/' . $prow['image_path'])) {
+
+                if ($bytes === false || $bytes === '') {
+                    $streamDefaultImage();
+                }
+
+                // SELF-HEAL: rewrite the disk file so future loads stream from disk
+                if ($prow['image_path'] && !preg_match('#^https?://#', $prow['image_path']) && !is_file(__DIR__ . '/' . $prow['image_path'])) {
                     $healDir = dirname(__DIR__ . '/' . $prow['image_path']);
                     if (is_dir($healDir) || @mkdir($healDir, 0755, true)) {
                         @file_put_contents(__DIR__ . '/' . $prow['image_path'], $bytes);
@@ -11900,9 +11919,8 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
 <script src="https://cdnjs.cloudflare.com/ajax/libs/bcryptjs/2.4.3/bcrypt.min.js"></script>
 </head>
 <body<?= $showShiftLockOnLoad ? ' class="shift-locked"' : '' ?>>
-    <?php if (!$isAuthPage): ?>
-        <!-- ── NAV ── -->
-        <nav class="nav">
+    <!-- ── NAV ── -->
+    <nav class="nav" id="main-top-nav" style="<?= $isAuthPage ? 'display:none;' : '' ?>">
             <a href="?page=dashboard" onclick="return navigateToPage('dashboard', event);" class="nav-logo" style="display:flex;align-items:center;gap:8px;">
                 <?= renderShopNameHtml($storeSettings['shop_name'], 'b') ?>
             </a>
@@ -11930,19 +11948,15 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                 <button type="button" id="theme-toggle-btn" class="nav-link" style="padding:6px 9px;" title="Switch to light mode" onclick="toggleTheme()">🌙</button>
                 <span class="nav-user-name" title="<?= htmlspecialchars($currentUser['full_name']) ?>"><?= htmlspecialchars($currentUser['full_name']) ?></span>
                 <?php if ($isCashierRole): ?>
-                    <!-- Cashiers have no direct Logout link — the only way out is completing
-           the mandatory closing cash count via End Shift, which then redirects
-           to ?page=logout itself once the drawer count is submitted
-           (see submitShiftModal()'s close-shift branch). This keeps "No Count,
-           No Transaction" from being bypassed by simply logging out mid-shift. -->
                     <button class="btn btn-secondary btn-sm nav-logout-btn" onclick="requestEndShift()">End Shift</button>
+                    <a href="?page=logout" class="btn btn-secondary btn-sm nav-logout-btn" onclick="return attemptLogout(event)" style="margin-left:4px;">Logout</a>
                 <?php else: ?>
                     <a href="?page=logout" class="btn btn-secondary btn-sm nav-logout-btn" onclick="return attemptLogout(event)">Logout</a>
                 <?php endif; ?>
             </div>
         </nav>
         <!-- ── MOBILE NAV ── -->
-        <nav class="mob-nav">
+        <nav class="mob-nav" id="main-mob-nav" style="<?= $isAuthPage ? 'display:none;' : '' ?>">
             <div class="mob-nav-inner">
                 <a href="?page=dashboard" onclick="return navigateToPage('dashboard', event);" class="mob-btn <?= $page === 'dashboard' ? 'active' : '' ?>">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -12017,9 +12031,15 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                         </svg>End
                     </a>
                 <?php endif; ?>
+                <a href="javascript:void(0)" class="mob-btn" onclick="attemptLogout(event)" title="Sign Out" style="color:var(--text3);">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                        <polyline points="16 17 21 12 16 7" />
+                        <line x1="21" y1="12" x2="9" y2="12" />
+                    </svg>Logout
+                </a>
             </div>
         </nav>
-    <?php endif; ?>
 
     <!-- ── PWA FLOATING INSTALL PROMPT (shown on mobile when installable) ── -->
     <div id="pwa-install-banner" style="display:none;position:fixed;bottom:70px;left:14px;right:14px;max-width:420px;margin:0 auto;background:var(--surface2,#1e293b);border:1.5px solid var(--accent,#2563eb);border-radius:12px;padding:12px 14px;box-shadow:0 10px 25px rgba(0,0,0,0.5);z-index:99999;align-items:center;justify-content:space-between;gap:10px;">
@@ -12835,8 +12855,8 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
         </script>
     <?php endif; ?>
 
-    <?php if ($page === 'login'): ?>
-        <main class="public-auth-bg" style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;background:var(--bg);position:relative;overflow:hidden;">
+    <?php if ($page === 'login' || !$isAuthPage): ?>
+        <main class="public-auth-bg" style="<?= $page === 'login' ? 'min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;background:var(--bg);position:relative;overflow:hidden;' : 'min-height:100vh;display:none;align-items:center;justify-content:center;padding:24px;background:var(--bg);position:relative;overflow:hidden;' ?>">
             <div style="position:absolute;top:-10%;left:-15%;width:60%;height:120%;background:radial-gradient(circle, rgba(47,127,245,.25) 0%, transparent 70%);pointer-events:none;"></div>
             <div class="login-wrap">
                 <div class="login-logo">
@@ -15426,17 +15446,20 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                 }
             }).catch(() => {});
 
-            PosIDB.setItem('auth_state', {
-                key: 'current_user',
-                id: CURRENT_USER_ID,
-                name: CASHIER_NAME,
-                role: USER_ROLE,
-                store_id: CURRENT_STORE_ID,
-                savedAt: Date.now()
-            }).catch(() => {});
+            <?php if (loggedIn() && !$isAuthPage): ?>
+                localStorage.removeItem('explicit_logout');
+            <?php endif; ?>
 
-            // Pre-seed offline user in localStorage and synchronize user list immediately
-            if (CURRENT_USER_ID && CURRENT_USER_ID > 0) {
+            if (CURRENT_USER_ID && CURRENT_USER_ID > 0 && localStorage.getItem('explicit_logout') !== '1') {
+                PosIDB.setItem('auth_state', {
+                    key: 'current_user',
+                    id: CURRENT_USER_ID,
+                    name: CASHIER_NAME,
+                    role: USER_ROLE,
+                    store_id: CURRENT_STORE_ID,
+                    savedAt: Date.now()
+                }).catch(() => {});
+
                 const curUName = <?= json_encode($currentUser['username'] ?? '') ?>;
                 if (curUName) {
                     localStorage.setItem('offlineUser', JSON.stringify({
@@ -15490,7 +15513,7 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
 
             let _isReauthing = false;
             async function autoReauthServerSession() {
-                if (_isReauthing || !navigator.onLine || !_isServerReachable) return;
+                if (_isReauthing || !navigator.onLine || !_isServerReachable || localStorage.getItem('explicit_logout') === '1') return;
                 const offUserStr = localStorage.getItem('offlineUser');
                 if (!offUserStr) return;
                 let offUser = null;
@@ -15887,6 +15910,7 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                                     _prodCache.ts = Date.now();
                                     _writeProdSessionCache(fresh, _prodCache.ts);
                                     PosIDB.setAll('products', fresh.data).catch(() => {});
+                                    precacheProductImages(fresh.data);
                                     if (typeof onBackgroundUpdate === 'function') {
                                         onBackgroundUpdate(fresh);
                                     }
@@ -15916,6 +15940,7 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                         _prodCache.ts   = now;
                         _writeProdSessionCache(result, now);
                         PosIDB.setAll('products', result.data).catch(() => {});
+                        precacheProductImages(result.data);
                         return result;
                     }
                 } catch (e) {}
@@ -15930,6 +15955,21 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                 }
 
                 return _prodCache.data || { success: false, data: [] };
+            }
+
+            function precacheProductImages(products) {
+                if (!navigator.onLine || !Array.isArray(products) || typeof Image === 'undefined') return;
+                const itemsWithImg = products.filter(p => prodHasImage(p)).slice(0, 100);
+                if (!itemsWithImg.length) return;
+                let curIdx = 0;
+                function prefetchNext() {
+                    if (curIdx >= itemsWithImg.length || !navigator.onLine) return;
+                    const p = itemsWithImg[curIdx++];
+                    const img = new Image();
+                    img.src = prodImgUrl(p.id, p.updated_at);
+                    setTimeout(prefetchNext, 80);
+                }
+                setTimeout(prefetchNext, 1200);
             }
 
             function invalidateProdCache() {
@@ -16296,16 +16336,24 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
             // at all. The product id is passed as a data attribute, not interpolated
             // into an onerror string (which would fight HTML-attribute quoting).
             function imgFallback(el) {
+                if (el.dataset.fallbackApplied) {
+                    const div = document.createElement('div');
+                    div.className = (el.dataset.fallback === 'cart' ? 'cart-line-img' : 'product-card-ph');
+                    div.innerHTML = '<span style="font-size:1.5rem;opacity:0.4;">📦</span>';
+                    el.replaceWith(div);
+                    return;
+                }
+                el.dataset.fallbackApplied = '1';
                 const kind = el.dataset.fallback || 'emoji';
                 if (kind === 'div') {
                     const div = document.createElement('div');
                     div.className = 'product-card-ph';
-                    div.innerHTML = '<img src="' + DEFAULT_PRODUCT_IMG + '" class="default-prod-img" alt="">';
+                    div.innerHTML = '<img src="' + DEFAULT_PRODUCT_IMG + '" class="default-prod-img" alt="" onerror="this.onerror=null;this.parentNode.innerHTML=\'📦\';">';
                     el.replaceWith(div);
                 } else if (kind === 'cart') {
                     const div = document.createElement('div');
                     div.className = 'cart-line-img';
-                    div.innerHTML = '<img src="' + DEFAULT_PRODUCT_IMG + '" class="default-prod-img" alt="">';
+                    div.innerHTML = '<img src="' + DEFAULT_PRODUCT_IMG + '" class="default-prod-img" alt="" onerror="this.onerror=null;this.parentNode.innerHTML=\'📦\';">';
                     el.replaceWith(div);
                 } else if (kind === 'blank') {
                     el.remove();
@@ -16314,6 +16362,13 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                     ph.src = DEFAULT_PRODUCT_IMG;
                     ph.className = 'default-prod-img';
                     ph.alt = '';
+                    ph.onerror = function() {
+                        ph.onerror = null;
+                        const s = document.createElement('span');
+                        s.textContent = '📦';
+                        s.style.opacity = '0.4';
+                        ph.replaceWith(s);
+                    };
                     el.replaceWith(ph);
                 }
             }
@@ -16603,6 +16658,7 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
             // afterward, on the printed Z-Read receipt.
             async function performLogout() {
                 try {
+                    localStorage.setItem('explicit_logout', '1');
                     localStorage.removeItem('offlineUser');
                     sessionStorage.clear();
                     if (typeof PosIDB !== 'undefined') {
@@ -16614,22 +16670,40 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                     // Offline logout: smoothly switch to login screen without deleting the offline shell cache!
                     const allViews = document.querySelectorAll('.pos-page-view');
                     allViews.forEach(v => v.style.display = 'none');
+                    const topNav = document.getElementById('main-top-nav');
+                    const mobNav = document.getElementById('main-mob-nav');
+                    if (topNav) topNav.style.display = 'none';
+                    if (mobNav) mobNav.style.display = 'none';
+                    document.title = 'Sign In — ' + (typeof SHOP_NAME !== 'undefined' && SHOP_NAME ? SHOP_NAME : 'ProCast');
+                    if (window.history && window.history.replaceState) {
+                        window.history.replaceState(null, '', '?page=login');
+                    }
                     let authBg = document.querySelector('.public-auth-bg');
                     if (authBg) {
                         authBg.style.display = 'flex';
                         cur_page = 'login';
                     } else {
-                        location.href = '?page=login';
+                        window.location.replace('?page=login');
                     }
                     if (typeof toast === 'function') toast('Logged out (Offline mode)', 'info');
                     return;
                 }
-                location.href = '?page=logout';
+
+                // Online logout: call server logout to wipe PHP session and remember cookie, then replace URL
+                try {
+                    await fetch('?page=logout', { method: 'GET', credentials: 'same-origin', cache: 'no-store' });
+                } catch (e) {}
+                window.location.replace('?page=login');
             }
 
             function openShiftCloseModal(loggingOut) {
+                if (!navigator.onLine || !_isServerReachable) {
+                    if (loggingOut) performLogout();
+                    else toast('Shift close requires online sync', 'info');
+                    return;
+                }
                 apiGet('check_cash_float').then(r => {
-                    if (!r?.success || !r.data.initialized) {
+                    if (!r?.success || !r.data?.initialized) {
                         if (loggingOut) {
                             performLogout();
                         } else toast('No active shift to close', 'warning');
@@ -16654,6 +16728,8 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                     // 7-Eleven flow: Cash drawer kicks open automatically for end of shift cash count
                     triggerShiftDrawerKick();
                     toast('Cash drawer released — begin your closing count', 'default');
+                }).catch(() => {
+                    if (loggingOut) performLogout();
                 });
             }
 
@@ -16673,17 +16749,24 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
             // Intercepts the Logout link — forces a closing cash count first if a shift is open
             function attemptLogout(e) {
                 if (e) e.preventDefault();
-                if (USER_ROLE === 'owner') {
+                const role = (typeof USER_ROLE === 'string' ? USER_ROLE.toLowerCase() : '');
+                if (role === 'owner' || role === 'admin') {
                     performLogout();
                     return false;
                 }
-                apiGet('check_cash_float').then(r => {
-                    if (r?.success && r.data.initialized) {
-                        openShiftCloseModal(true);
-                    } else {
+                if (typeof apiGet === 'function' && navigator.onLine && _isServerReachable) {
+                    apiGet('check_cash_float').then(r => {
+                        if (r?.success && r.data?.initialized) {
+                            openShiftCloseModal(true);
+                        } else {
+                            performLogout();
+                        }
+                    }).catch(() => {
                         performLogout();
-                    }
-                });
+                    });
+                } else {
+                    performLogout();
+                }
                 return false;
             }
 
@@ -26028,38 +26111,65 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
             }
 
             document.addEventListener('DOMContentLoaded', function() {
-                // Offline Auth Interceptor
-                const offlineUser = localStorage.getItem('offlineUser');
-                if (offlineUser) {
-                    try {
-                        const u = JSON.parse(offlineUser);
-                        USER_ROLE = u.role || USER_ROLE;
-                        CASHIER_NAME = u.full_name || CASHIER_NAME;
-                        CURRENT_USER_ID = u.id || CURRENT_USER_ID || 1;
-                        document.querySelectorAll('.nav-user-name').forEach(el => {
-                            el.textContent = u.full_name;
-                            el.title = u.full_name;
-                        });
-                        if (u.role !== 'owner') {
-                            document.querySelectorAll('.owner-only, [data-role="owner"]').forEach(el => el.style.display = 'none');
-                        }
-                        const dashView = document.getElementById('view-dashboard');
-                        const authBg = document.querySelector('.public-auth-bg');
-                        if (dashView && authBg) {
-                            authBg.style.display = 'none';
-                            dashView.style.display = '';
-                            cur_page = 'dashboard';
-                            document.title = 'Dashboard & Checkout — ' + (typeof SHOP_NAME !== 'undefined' && SHOP_NAME ? SHOP_NAME : 'ProCast');
-                        }
-                        if (navigator.onLine) {
-                            setTimeout(autoReauthServerSession, 150);
-                        }
-                    } catch (e) {}
+                // If user explicitly logged out, keep login screen visible and do NOT auto-restore session
+                if (localStorage.getItem('explicit_logout') === '1') {
+                    const dashView = document.getElementById('view-dashboard');
+                    const authBg = document.querySelector('.public-auth-bg');
+                    const topNav = document.getElementById('main-top-nav');
+                    const mobNav = document.getElementById('main-mob-nav');
+                    if (topNav) topNav.style.display = 'none';
+                    if (mobNav) mobNav.style.display = 'none';
+                    if (dashView) dashView.style.display = 'none';
+                    if (authBg) authBg.style.display = 'flex';
+                    cur_page = 'login';
+                    document.title = 'Sign In — ' + (typeof SHOP_NAME !== 'undefined' && SHOP_NAME ? SHOP_NAME : 'ProCast');
+                } else {
+                    // Offline Auth Interceptor
+                    const offlineUser = localStorage.getItem('offlineUser');
+                    if (offlineUser) {
+                        try {
+                            const u = JSON.parse(offlineUser);
+                            USER_ROLE = u.role || USER_ROLE;
+                            CASHIER_NAME = u.full_name || CASHIER_NAME;
+                            CURRENT_USER_ID = u.id || CURRENT_USER_ID || 1;
+                            document.querySelectorAll('.nav-user-name').forEach(el => {
+                                el.textContent = u.full_name;
+                                el.title = u.full_name;
+                            });
+                            if (u.role !== 'owner') {
+                                document.querySelectorAll('.owner-only, [data-role="owner"]').forEach(el => el.style.display = 'none');
+                            }
+                            const dashView = document.getElementById('view-dashboard');
+                            const authBg = document.querySelector('.public-auth-bg');
+                            const topNav = document.getElementById('main-top-nav');
+                            const mobNav = document.getElementById('main-mob-nav');
+                            if (topNav) topNav.style.display = 'flex';
+                            if (mobNav) mobNav.style.display = 'block';
+                            if (window.history && window.history.replaceState) {
+                                window.history.replaceState(null, '', '?page=dashboard');
+                            }
+                            if (u.role === 'cashier') {
+                                document.querySelectorAll('.owner-only, [data-role="owner"], .nav-links a:not([href*="page=dashboard"]), .mob-nav-inner a:not([href*="page=dashboard"]):not([onclick*="Void"]):not([onclick*="End"])').forEach(el => el.style.display = 'none');
+                            } else {
+                                document.querySelectorAll('.owner-only, [data-role="owner"], .nav-links a, .mob-nav-inner a').forEach(el => el.style.display = '');
+                            }
+                            if (dashView && authBg) {
+                                authBg.style.display = 'none';
+                                dashView.style.display = '';
+                                cur_page = 'dashboard';
+                                document.title = 'Dashboard & Checkout — ' + (typeof SHOP_NAME !== 'undefined' && SHOP_NAME ? SHOP_NAME : 'ProCast');
+                            }
+                            if (navigator.onLine) {
+                                setTimeout(autoReauthServerSession, 150);
+                            }
+                        } catch (e) {}
+                    }
                 }
 
                 const loginForm = document.querySelector('form[action="?page=login"]');
                 if (loginForm) {
                     loginForm.addEventListener('submit', async (e) => {
+                        localStorage.removeItem('explicit_logout');
                         const isOffline = (navigator.onLine === false || !_isServerReachable);
                         if (isOffline) {
                             e.preventDefault();
@@ -26103,13 +26213,27 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                                 }
 
                                 if (match) {
+                                    localStorage.removeItem('explicit_logout');
                                     localStorage.setItem('offlineUser', JSON.stringify({ id: user.id || 'offline', username: user.username, full_name: user.full_name, role: user.role }));
                                     const dashView = document.getElementById('view-dashboard');
                                     const authBg = document.querySelector('.public-auth-bg');
+                                    const topNav = document.getElementById('main-top-nav');
+                                    const mobNav = document.getElementById('main-mob-nav');
+                                    if (topNav) topNav.style.display = 'flex';
+                                    if (mobNav) mobNav.style.display = 'block';
+                                    if (window.history && window.history.replaceState) {
+                                        window.history.replaceState(null, '', '?page=dashboard');
+                                    }
+                                    if (user.role === 'cashier') {
+                                        document.querySelectorAll('.owner-only, [data-role="owner"], .nav-links a:not([href*="page=dashboard"]), .mob-nav-inner a:not([href*="page=dashboard"]):not([onclick*="Void"]):not([onclick*="End"])').forEach(el => el.style.display = 'none');
+                                    } else {
+                                        document.querySelectorAll('.owner-only, [data-role="owner"], .nav-links a, .mob-nav-inner a').forEach(el => el.style.display = '');
+                                    }
                                     if (dashView && authBg) {
                                         authBg.style.display = 'none';
                                         dashView.style.display = '';
                                         cur_page = 'dashboard';
+                                        document.title = 'Dashboard & Checkout — ' + (typeof SHOP_NAME !== 'undefined' && SHOP_NAME ? SHOP_NAME : 'ProCast');
                                         USER_ROLE = user.role;
                                         CASHIER_NAME = user.full_name;
                                         CURRENT_USER_ID = user.id || 1;
