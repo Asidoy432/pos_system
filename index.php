@@ -11954,10 +11954,10 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                 <button type="button" id="theme-toggle-btn" class="nav-link" style="padding:6px 9px;" title="Switch to light mode" onclick="toggleTheme()">🌙</button>
                 <span class="nav-user-name" title="<?= htmlspecialchars($currentUser['full_name'] ?? '') ?>"><?= htmlspecialchars($currentUser['full_name'] ?? '') ?></span>
                 <?php if ($isCashierRole): ?>
-                    <button class="btn btn-secondary btn-sm nav-logout-btn" onclick="requestEndShift()">End Shift</button>
-                    <a href="?page=logout" class="btn btn-secondary btn-sm nav-logout-btn" onclick="return attemptLogout(event)" style="margin-left:4px;">Logout</a>
+                    <button type="button" class="btn btn-secondary btn-sm nav-logout-btn" onclick="requestEndShift()" aria-label="End Shift and count cash drawer">End Shift</button>
+                    <a href="?page=logout" class="btn btn-secondary btn-sm nav-logout-btn" onclick="return attemptLogout(event)" style="margin-left:4px;" aria-label="Sign out of your account" role="button">Logout</a>
                 <?php else: ?>
-                    <a href="?page=logout" class="btn btn-secondary btn-sm nav-logout-btn" onclick="return attemptLogout(event)">Logout</a>
+                    <a href="?page=logout" class="btn btn-secondary btn-sm nav-logout-btn" onclick="return attemptLogout(event)" aria-label="Sign out of your account" role="button">Logout</a>
                 <?php endif; ?>
             </div>
         </nav>
@@ -12037,7 +12037,7 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                         </svg>End
                     </a>
                 <?php endif; ?>
-                <a href="javascript:void(0)" class="mob-btn" onclick="attemptLogout(event)" title="Sign Out" style="color:var(--text3);">
+                <a href="?page=logout" class="mob-btn" onclick="return attemptLogout(event)" title="Sign Out" aria-label="Sign out of your account" role="button" style="color:var(--text3);">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
                         <polyline points="16 17 21 12 16 7" />
@@ -15453,7 +15453,9 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
             }).catch(() => {});
 
             <?php if (loggedIn() && !$isAuthPage): ?>
-                localStorage.removeItem('explicit_logout');
+                if (!window.location.search.includes('page=login') && cur_page !== 'login') {
+                    localStorage.removeItem('explicit_logout');
+                }
             <?php endif; ?>
 
             if (CURRENT_USER_ID && CURRENT_USER_ID > 0 && localStorage.getItem('explicit_logout') !== '1') {
@@ -16672,34 +16674,30 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                     }
                 } catch (err) {}
 
+                // IMMEDIATELY switch UI: hide all views, hide navbars, show login view
+                const allViews = document.querySelectorAll('.pos-page-view');
+                allViews.forEach(v => v.style.display = 'none');
+                const topNav = document.getElementById('main-top-nav');
+                const mobNav = document.getElementById('main-mob-nav');
+                if (topNav) topNav.style.display = 'none';
+                if (mobNav) mobNav.style.display = 'none';
+                document.title = 'Sign In — ' + (typeof SHOP_NAME !== 'undefined' && SHOP_NAME ? SHOP_NAME : 'ProCast');
+                let authBg = document.querySelector('.public-auth-bg');
+                if (authBg) {
+                    authBg.style.display = 'flex';
+                    cur_page = 'login';
+                }
+
                 if (navigator.onLine === false || !_isServerReachable) {
-                    // Offline logout: smoothly switch to login screen without deleting the offline shell cache!
-                    const allViews = document.querySelectorAll('.pos-page-view');
-                    allViews.forEach(v => v.style.display = 'none');
-                    const topNav = document.getElementById('main-top-nav');
-                    const mobNav = document.getElementById('main-mob-nav');
-                    if (topNav) topNav.style.display = 'none';
-                    if (mobNav) mobNav.style.display = 'none';
-                    document.title = 'Sign In — ' + (typeof SHOP_NAME !== 'undefined' && SHOP_NAME ? SHOP_NAME : 'ProCast');
                     if (window.history && window.history.replaceState) {
                         window.history.replaceState(null, '', '?page=login');
-                    }
-                    let authBg = document.querySelector('.public-auth-bg');
-                    if (authBg) {
-                        authBg.style.display = 'flex';
-                        cur_page = 'login';
-                    } else {
-                        window.location.replace('?page=login');
                     }
                     if (typeof toast === 'function') toast('Logged out (Offline mode)', 'info');
                     return;
                 }
 
-                // Online logout: call server logout to wipe PHP session and remember cookie, then replace URL
-                try {
-                    await fetch('?page=logout', { method: 'GET', credentials: 'same-origin', cache: 'no-store' });
-                } catch (e) {}
-                window.location.replace('?page=login');
+                // Online logout: navigate cleanly to ?page=logout so the server clears session cookies
+                window.location.href = '?page=logout';
             }
 
             function openShiftCloseModal(loggingOut) {
@@ -16752,27 +16750,10 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                 openShiftCloseModal(false);
             }
 
-            // Intercepts the Logout link — forces a closing cash count first if a shift is open
+            // Intercepts the Logout link — immediately logs out the current user cleanly
             function attemptLogout(e) {
                 if (e) e.preventDefault();
-                const role = (typeof USER_ROLE === 'string' ? USER_ROLE.toLowerCase() : '');
-                if (role === 'owner' || role === 'admin') {
-                    performLogout();
-                    return false;
-                }
-                if (typeof apiGet === 'function' && navigator.onLine && _isServerReachable) {
-                    apiGet('check_cash_float').then(r => {
-                        if (r?.success && r.data?.initialized) {
-                            openShiftCloseModal(true);
-                        } else {
-                            performLogout();
-                        }
-                    }).catch(() => {
-                        performLogout();
-                    });
-                } else {
-                    performLogout();
-                }
+                performLogout();
                 return false;
             }
 
@@ -26117,59 +26098,60 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
             }
 
             document.addEventListener('DOMContentLoaded', function() {
-                // If user explicitly logged out, keep login screen visible and do NOT auto-restore session
-                if (localStorage.getItem('explicit_logout') === '1') {
-                    const dashView = document.getElementById('view-dashboard');
+                const isExplicitLogout = localStorage.getItem('explicit_logout') === '1';
+                const isLoginPage = window.location.search.includes('page=login') || cur_page === 'login';
+                const offlineUser = localStorage.getItem('offlineUser');
+                const hasServerSession = (typeof CURRENT_USER_ID !== 'undefined' && CURRENT_USER_ID > 0 && !isExplicitLogout);
+
+                if (isExplicitLogout || isLoginPage || (!offlineUser && !hasServerSession)) {
+                    // Force login view, hide dashboard and all POS views
+                    const allViews = document.querySelectorAll('.pos-page-view');
+                    allViews.forEach(v => v.style.display = 'none');
                     const authBg = document.querySelector('.public-auth-bg');
                     const topNav = document.getElementById('main-top-nav');
                     const mobNav = document.getElementById('main-mob-nav');
                     if (topNav) topNav.style.display = 'none';
                     if (mobNav) mobNav.style.display = 'none';
-                    if (dashView) dashView.style.display = 'none';
                     if (authBg) authBg.style.display = 'flex';
                     cur_page = 'login';
                     document.title = 'Sign In — ' + (typeof SHOP_NAME !== 'undefined' && SHOP_NAME ? SHOP_NAME : 'ProCast');
-                } else {
-                    // Offline Auth Interceptor
-                    const offlineUser = localStorage.getItem('offlineUser');
-                    if (offlineUser) {
-                        try {
-                            const u = JSON.parse(offlineUser);
-                            USER_ROLE = u.role || USER_ROLE;
-                            CASHIER_NAME = u.full_name || CASHIER_NAME;
-                            CURRENT_USER_ID = u.id || CURRENT_USER_ID || 1;
-                            document.querySelectorAll('.nav-user-name').forEach(el => {
-                                el.textContent = u.full_name;
-                                el.title = u.full_name;
-                            });
-                            if (u.role !== 'owner') {
-                                document.querySelectorAll('.owner-only, [data-role="owner"]').forEach(el => el.style.display = 'none');
-                            }
-                            const dashView = document.getElementById('view-dashboard');
-                            const authBg = document.querySelector('.public-auth-bg');
-                            const topNav = document.getElementById('main-top-nav');
-                            const mobNav = document.getElementById('main-mob-nav');
-                            if (topNav) topNav.style.display = 'flex';
-                            if (mobNav) mobNav.style.display = 'block';
-                            if (window.history && window.history.replaceState) {
-                                window.history.replaceState(null, '', '?page=dashboard');
-                            }
-                            if (u.role === 'cashier') {
-                                document.querySelectorAll('.owner-only, [data-role="owner"], .nav-links a:not([href*="page=dashboard"]), .mob-nav-inner a:not([href*="page=dashboard"]):not([onclick*="Void"]):not([onclick*="End"])').forEach(el => el.style.display = 'none');
-                            } else {
-                                document.querySelectorAll('.owner-only, [data-role="owner"], .nav-links a, .mob-nav-inner a').forEach(el => el.style.display = '');
-                            }
-                            if (dashView && authBg) {
-                                authBg.style.display = 'none';
-                                dashView.style.display = '';
-                                cur_page = 'dashboard';
-                                document.title = 'Dashboard & Checkout — ' + (typeof SHOP_NAME !== 'undefined' && SHOP_NAME ? SHOP_NAME : 'ProCast');
-                            }
-                            if (navigator.onLine) {
-                                setTimeout(autoReauthServerSession, 150);
-                            }
-                        } catch (e) {}
-                    }
+                } else if (offlineUser) {
+                    try {
+                        const u = JSON.parse(offlineUser);
+                        USER_ROLE = u.role || USER_ROLE;
+                        CASHIER_NAME = u.full_name || CASHIER_NAME;
+                        CURRENT_USER_ID = u.id || CURRENT_USER_ID || 1;
+                        document.querySelectorAll('.nav-user-name').forEach(el => {
+                            el.textContent = u.full_name;
+                            el.title = u.full_name;
+                        });
+                        if (u.role !== 'owner') {
+                            document.querySelectorAll('.owner-only, [data-role="owner"]').forEach(el => el.style.display = 'none');
+                        }
+                        const dashView = document.getElementById('view-dashboard');
+                        const authBg = document.querySelector('.public-auth-bg');
+                        const topNav = document.getElementById('main-top-nav');
+                        const mobNav = document.getElementById('main-mob-nav');
+                        if (topNav) topNav.style.display = 'flex';
+                        if (mobNav) mobNav.style.display = 'block';
+                        if (window.history && window.history.replaceState) {
+                            window.history.replaceState(null, '', '?page=dashboard');
+                        }
+                        if (u.role === 'cashier') {
+                            document.querySelectorAll('.owner-only, [data-role="owner"], .nav-links a:not([href*="page=dashboard"]), .mob-nav-inner a:not([href*="page=dashboard"]):not([onclick*="Void"]):not([onclick*="End"])').forEach(el => el.style.display = 'none');
+                        } else {
+                            document.querySelectorAll('.owner-only, [data-role="owner"], .nav-links a, .mob-nav-inner a').forEach(el => el.style.display = '');
+                        }
+                        if (dashView && authBg) {
+                            authBg.style.display = 'none';
+                            dashView.style.display = '';
+                            cur_page = 'dashboard';
+                            document.title = 'Dashboard & Checkout — ' + (typeof SHOP_NAME !== 'undefined' && SHOP_NAME ? SHOP_NAME : 'ProCast');
+                        }
+                        if (navigator.onLine) {
+                            setTimeout(autoReauthServerSession, 150);
+                        }
+                    } catch (e) {}
                 }
 
                 const loginForm = document.querySelector('form[action="?page=login"]');

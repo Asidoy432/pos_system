@@ -4,7 +4,7 @@
 // works seamlessly with 100% functionality even when offline/no-network.
 // ═══════════════════════════════════════════════════════════════════════════
 
-const SHELL = 'pos-shell-v28';
+const SHELL = 'pos-shell-v29';
 const IMGS = 'pos-img-v5';
 const IMG_LIMIT = 500;
 const BASE = new URL('./', self.location).href;
@@ -163,6 +163,11 @@ self.addEventListener('fetch', e => {
         return;
     }
 
+    // Logout must ALWAYS bypass Service Worker to ensure PHP session & remember cookies are completely destroyed by server
+    if (url.searchParams.get('page') === 'logout') {
+        return;
+    }
+
     // ── IMAGES: Cache-first (instant after first view, works offline) ──
     if (isImageRequest(url, req)) {
         e.respondWith((async () => {
@@ -223,17 +228,6 @@ self.addEventListener('fetch', e => {
     // If network times out or drops: Immediately serve cached shell with zero delay.
     if (req.mode === 'navigate') {
         const pageParam = url.searchParams.get('page');
-        if (pageParam === 'logout') {
-            e.respondWith((async () => {
-                try {
-                    const resp = await fetch(req);
-                    return resp;
-                } catch (err) {
-                    return Response.redirect(new URL('?page=login', BASE).href, 302);
-                }
-            })());
-            return;
-        }
 
         e.respondWith((async () => {
             const shellCache = await caches.open(SHELL);
