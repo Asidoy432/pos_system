@@ -596,35 +596,7 @@ function defaultProductImageUrl(): string
     );
 }
 
-// ── DB CONNECTION (With Automatic SQLite / MySQL Local Fallback) ──
-function parseDbUrl(string $url): ?array
-{
-    $url = trim($url);
-    if ($url === '') return null;
-    if (preg_match('#^([a-zA-Z0-9_+.-]+)://(?:([^:]+)(?::(.*))?@)?([^/:?#]+)(?::([0-9]+))?(?:/([^?#]*))?(?:\?(.*))?$#s', $url, $m)) {
-        $scheme = strtolower($m[1]);
-        $user = rawurldecode($m[2] ?? '');
-        $pass = isset($m[3]) ? rawurldecode($m[3]) : '';
-        $host = $m[4] ?? '';
-        $port = !empty($m[5]) ? (int)$m[5] : (in_array($scheme, ['mysql', 'mariadb'], true) ? 3306 : 5432);
-        $path = $m[6] ?? '';
-        $queryStr = $m[7] ?? '';
-        $query = [];
-        if ($queryStr !== '') parse_str($queryStr, $query);
-        return [
-            'scheme' => $scheme,
-            'user' => $user,
-            'pass' => $pass,
-            'host' => $host,
-            'port' => $port,
-            'path' => $path,
-            'query' => $query,
-        ];
-    }
-    $parts = @parse_url($url);
-    return is_array($parts) ? $parts : null;
-}
-
+// ── DB CONNECTION ──
 function db(bool $forceReconnect = false): PDO
 {
     static $pdo = null;
@@ -638,130 +610,82 @@ function db(bool $forceReconnect = false): PDO
     }
     if ($pdo === null || $forceReconnect) {
         $pdo = null;
-        $connectionUrl = trim((string)DATABASE_URL);
-        $connected = false;
-        $lastErr = null;
-
-        // 1. Try DATABASE_URL if configured
-        if ($connectionUrl !== '') {
-            $parts = parseDbUrl($connectionUrl);
+        if (DATABASE_URL !== '') {
+            $connectionUrl = trim(DATABASE_URL);
+            $parts = parse_url($connectionUrl);
             $scheme = strtolower($parts['scheme'] ?? '');
             if (in_array($scheme, ['mysql', 'mariadb'], true)) {
                 $dsn = 'mysql:host=' . ($parts['host'] ?? '127.0.0.1') . ';port=' . ($parts['port'] ?? 3306)
                     . ';dbname=' . ltrim($parts['path'] ?? 'pangga_store', '/') . ';charset=utf8mb4';
-                $user = $parts['user'] ?? 'root';
-                $pass = $parts['pass'] ?? '';
-            } elseif (in_array($scheme, ['sqlite', 'sqlite3'], true)) {
-                $dbPath = ltrim($parts['path'] ?? 'pos_local.db', '/');
-                $dsn = 'sqlite:' . ($dbPath ?: __DIR__ . '/pos_local.db');
-                $user = null;
-                $pass = null;
+                $user = rawurldecode($parts['user'] ?? 'root');
+                $pass = rawurldecode($parts['pass'] ?? '');
             } else {
-                $host = $parts['host'] ?? '';
-                $port = $parts['port'] ?? 5432;
-                $dbName = ltrim($parts['path'] ?? 'postgres', '/');
-                $user = $parts['user'] ?? 'postgres';
-                $pass = $parts['pass'] ?? '';
-                $query = $parts['query'] ?? [];
+                if (
+                    $parts === false
+                    || !in_array($scheme, ['postgres', 'postgresql'], true)
+                    || empty($parts['host'])
+                    || empty($parts['user'])
+                    || empty($parts['path'])
+                    || str_contains($connectionUrl, '[YOUR-')
+                    || str_contains($connectionUrl, '[blocked]')
+                ) {
+                    throw new RuntimeException('DATABASE_URL is invalid.');
+                }
+                $query = [];
+                if (!empty($parts['query'])) parse_str($parts['query'], $query);
                 $sslMode = strtolower((string)($query['sslmode'] ?? 'require'));
-
-                if ($pass === '' || $pass === '[blocked]' || str_contains($pass, '[YOUR-') || str_contains($connectionUrl, '[YOUR-')) {
-                    throw new RuntimeException('DATABASE_URL contains placeholder [YOUR-PASSWORD]. Please replace it with your real Supabase password in Render Environment settings.');
+                if (!in_array($sslMode, ['disable', 'allow', 'prefer', 'require', 'verify-ca', 'verify-full'], true)) {
+                    throw new RuntimeException('DATABASE_URL has an invalid sslmode.');
                 }
-                $dsn = 'pgsql:host=' . $host . ';port=' . $port . ';dbname=' . $dbName . ';sslmode=' . $sslMode;
-            }
-
-            try {
-                $pdo = new PDO($dsn, $user, $pass, [
-                    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-                    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-                    PDO::ATTR_EMULATE_PREPARES => false,
-                    PDO::ATTR_PERSISTENT => false,
-                    PDO::ATTR_TIMEOUT => 15,
-                ]);
-                $connected = true;
-            } catch (\Throwable $e) {
-                $lastErr = $e;
-                $msg = $e->getMessage();
-                $hostName = $parts['host'] ?? '';
-                if (str_contains($hostName, 'supabase.co') && str_starts_with($hostName, 'db.') && !str_contains($hostName, 'pooler')) {
-                    error_log('[DB Warning] Direct Supabase connection (db.*.supabase.co) failed. On Render, direct connections time out because Render does not support IPv6. Please use Supabase Connection Pooler URI (ending in pooler.supabase.com:5432 or 6543): ' . $msg);
+                $dsn = 'pgsql:host=' . $parts['host'] . ';port=' . ($parts['port'] ?? 5432)
+                    . ';dbname=' . ltrim($parts['path'], '/') . ';sslmode=' . $sslMode;
+                $user = rawurldecode($parts['user']);
+                $pass = rawurldecode($parts['pass'] ?? '');
+                if ($pass === '' || $pass === '[blocked]' || str_contains($pass, '[YOUR-')) {
+                    throw new RuntimeException('DATABASE_URL must contain the real Supabase password, without square brackets.');
                 }
             }
-        }
-
-        // 2. Try explicit DB_HOST / DB_NAME if set
-        if (!$connected && DB_HOST !== '' && DB_NAME !== '') {
-            $isLocalHost = (DB_PORT == 3306 || str_contains(DB_HOST, '127.0.0.1') || str_contains(DB_HOST, 'localhost'));
-            $dsn = $isLocalHost
-                ? 'mysql:host=' . DB_HOST . ';port=' . DB_PORT . ';dbname=' . DB_NAME . ';charset=utf8mb4'
-                : 'pgsql:host=' . DB_HOST . ';port=' . DB_PORT . ';dbname=' . DB_NAME;
-            $user = DB_USER ?: 'root';
-            $pass = DB_PASS ?: '';
-            try {
-                $pdo = new PDO($dsn, $user, $pass, [
-                    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-                    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-                    PDO::ATTR_TIMEOUT => 5,
-                ]);
-                $connected = true;
-            } catch (\Throwable $e) {
-                $lastErr = $e;
+        } else {
+            // Local fallback to MySQL pangga_store if credentials are empty or localhost
+            if (DB_HOST === '' && DB_NAME === '') {
+                $dsn = 'mysql:host=127.0.0.1;port=3306;dbname=pangga_store;charset=utf8mb4';
+                $user = 'root';
+                $pass = '';
+            } elseif (DB_PORT == 3306 || str_contains(DB_HOST, '127.0.0.1') || str_contains(DB_HOST, 'localhost')) {
+                $dsn = 'mysql:host=' . DB_HOST . ';port=' . DB_PORT . ';dbname=' . DB_NAME . ';charset=utf8mb4';
+                $user = DB_USER ?: 'root';
+                $pass = DB_PASS ?: '';
+            } else {
+                if (DB_HOST === '' || DB_NAME === '' || DB_USER === '') {
+                    throw new RuntimeException('Set DATABASE_URL or DB_HOST, DB_NAME, DB_USER, and DB_PASS.');
+                }
+                $dsn = 'pgsql:host=' . DB_HOST . ';port=' . DB_PORT . ';dbname=' . DB_NAME;
+                $user = DB_USER;
+                $pass = DB_PASS;
             }
         }
 
-        // 3. Try Local MySQL on 127.0.0.1:3306 (if running, e.g. XAMPP)
-        if (!$connected && (DATABASE_URL === '' || str_contains(DATABASE_URL, 'localhost') || str_contains(DATABASE_URL, '127.0.0.1'))) {
-            try {
-                $pdo = new PDO('mysql:host=127.0.0.1;port=3306;charset=utf8mb4', 'root', '', [
-                    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-                    PDO::ATTR_TIMEOUT => 2,
-                ]);
-                $pdo->exec("CREATE DATABASE IF NOT EXISTS pangga_store CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
-                $pdo->exec("USE pangga_store");
-                $connected = true;
-            } catch (\Throwable $e) {
-                // MySQL not running locally, proceed to SQLite fallback
-            }
-        }
-
-        // 4. Standalone Offline Fallback: Embedded SQLite (pos_local.db)
-        if (!$connected) {
-            $isRender = !empty($_SERVER['RENDER']) || !empty(getenv('RENDER'));
-            if ($isRender && $connectionUrl !== '' && $lastErr) {
-                throw $lastErr;
-            }
-            try {
-                $sqliteFile = __DIR__ . '/pos_local.db';
-                $pdo = new PDO('sqlite:' . $sqliteFile, null, null, [
-                    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-                    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-                    PDO::ATTR_TIMEOUT => 10,
-                ]);
-                $pdo->exec("PRAGMA journal_mode = WAL");
-                $pdo->exec("PRAGMA foreign_keys = ON");
-                $connected = true;
-            } catch (\Throwable $sqle) {
-                if ($lastErr) throw $lastErr;
-                throw $sqle;
-            }
+        try {
+            $pdo = new PDO($dsn, $user, $pass, [
+                PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+                PDO::ATTR_EMULATE_PREPARES => false,
+                PDO::ATTR_PERSISTENT => false,
+                PDO::ATTR_TIMEOUT => 7,
+            ]);
+        } catch (\Throwable $firstErr) {
+            throw $firstErr;
         }
     }
     return $pdo;
 }
 
-function lastInsertedId(PDO $pdo, string $seq = ''): int
+function lastInsertedId(PDO $pdo): int
 {
-    $driver = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
-    if ($driver === 'mysql' || $driver === 'sqlite') {
+    if ($pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql') {
         return (int)$pdo->lastInsertId();
     }
-    try {
-        if ($seq !== '') return (int)$pdo->lastInsertId($seq);
-        return (int)$pdo->query('SELECT LASTVAL()')->fetchColumn();
-    } catch (\Throwable $e) {
-        return (int)$pdo->lastInsertId();
-    }
+    return (int)$pdo->query('SELECT LASTVAL()')->fetchColumn();
 }
 
 // ── BREVO TRANSACTIONAL EMAIL ──
@@ -814,154 +738,10 @@ function sendResetEmail(string $toEmail, string $toName, string $resetLink): arr
     return [false, $brevoMsg ?: ($curlErr ?: ('Brevo error (HTTP ' . $httpCode . '): ' . $response))];
 }
 
-function installSQLiteDB(PDO $db): void
-{
-    $db->exec("CREATE TABLE IF NOT EXISTS schema_meta (id INTEGER PRIMARY KEY, version INT NOT NULL DEFAULT 0)");
-    $db->exec("INSERT OR IGNORE INTO schema_meta (id, version) VALUES (1, 0)");
-    $db->exec("CREATE TABLE IF NOT EXISTS stores (id INTEGER PRIMARY KEY AUTOINCREMENT, name VARCHAR(100) NOT NULL DEFAULT 'ProCast', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)");
-    $db->exec("INSERT OR IGNORE INTO stores (id, name) VALUES (1, 'ProCast')");
-    $db->exec("CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, username VARCHAR(50) NOT NULL UNIQUE,
-        password VARCHAR(255) NOT NULL, full_name VARCHAR(100) NOT NULL,
-        role VARCHAR(30) NOT NULL DEFAULT 'staff', email VARCHAR(150) NULL,
-        store_id INT NOT NULL DEFAULT 1,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, last_login TIMESTAMP NULL
-    )");
-    $db->exec("CREATE TABLE IF NOT EXISTS auth_tokens (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INT NOT NULL,
-        token_hash VARCHAR(64) NOT NULL UNIQUE, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        expires_at TIMESTAMP NOT NULL
-    )");
-    $db->exec("CREATE TABLE IF NOT EXISTS categories (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, store_id INT NOT NULL DEFAULT 1,
-        name VARCHAR(100) NOT NULL, sort_order INT DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )");
-    $db->exec("CREATE TABLE IF NOT EXISTS products (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, store_id INT NOT NULL DEFAULT 1,
-        name VARCHAR(200) NOT NULL, description TEXT NULL, price DECIMAL(10,2) NOT NULL DEFAULT 0,
-        quantity INT NOT NULL DEFAULT 0, store_quantity INT NOT NULL DEFAULT 0,
-        cost_price DECIMAL(10,2) NULL, category_id INT NULL, image_data TEXT NULL,
-        total_sold INT DEFAULT 0, total_revenue DECIMAL(12,2) DEFAULT 0,
-        expiry_date DATE NULL, delivery_date DATE NULL, barcode VARCHAR(100) NULL,
-        pack_qty INT NULL, pack_barcode VARCHAR(100) NULL, pack_price DECIMAL(10,2) NULL,
-        case_qty INT NULL, case_barcode VARCHAR(100) NULL, case_price DECIMAL(10,2) NULL,
-        auto_convert INT NOT NULL DEFAULT 0, low_stock_threshold INT NOT NULL DEFAULT 5,
-        brand VARCHAR(100) NULL, supplier VARCHAR(150) NULL, unit_type VARCHAR(30) NOT NULL DEFAULT 'pcs', unit_size VARCHAR(50) NULL,
-        promo_price DECIMAL(10,2) NULL, promo_pack_price DECIMAL(10,2) NULL, promo_case_price DECIMAL(10,2) NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )");
-    $sqliteProdCols = [
-        "auto_convert INT NOT NULL DEFAULT 0",
-        "low_stock_threshold INT NOT NULL DEFAULT 5",
-        "brand VARCHAR(100) NULL",
-        "supplier VARCHAR(150) NULL",
-        "unit_type VARCHAR(30) NOT NULL DEFAULT 'pcs'",
-        "unit_size VARCHAR(50) NULL",
-        "promo_price DECIMAL(10,2) NULL",
-        "promo_pack_price DECIMAL(10,2) NULL",
-        "promo_case_price DECIMAL(10,2) NULL",
-        "image_path VARCHAR(255) NULL"
-    ];
-    foreach ($sqliteProdCols as $colDef) {
-        try {
-            $db->exec("ALTER TABLE products ADD COLUMN " . $colDef);
-        } catch (\Throwable $e) {}
-    }
-    $db->exec("CREATE TABLE IF NOT EXISTS warehouse_stock (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, product_id INT NOT NULL UNIQUE, quantity INT NOT NULL DEFAULT 0
-    )");
-    $db->exec("CREATE TABLE IF NOT EXISTS warehouse (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, store_id INT NOT NULL DEFAULT 1, product_id INT NOT NULL,
-        type VARCHAR(20) NOT NULL DEFAULT 'out', qty_in INT NOT NULL DEFAULT 0, qty_out INT NOT NULL DEFAULT 0,
-        note VARCHAR(255) NULL, user_id INT NULL, event_date DATE DEFAULT CURRENT_DATE,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )");
-    $db->exec("CREATE TABLE IF NOT EXISTS transactions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, store_id INT NOT NULL DEFAULT 1,
-        order_ref VARCHAR(50) NOT NULL UNIQUE, subtotal DECIMAL(10,2) NOT NULL DEFAULT 0,
-        vat_rate DECIMAL(5,2) NOT NULL DEFAULT 0, vat_amount DECIMAL(10,2) NOT NULL DEFAULT 0,
-        tax_rate DECIMAL(5,2) NOT NULL DEFAULT 0, tax_amount DECIMAL(10,2) NOT NULL DEFAULT 0,
-        total DECIMAL(10,2) NOT NULL DEFAULT 0, cash DECIMAL(10,2) NOT NULL DEFAULT 0,
-        change DECIMAL(10,2) NOT NULL DEFAULT 0, user_id INT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )");
-    $db->exec("CREATE TABLE IF NOT EXISTS transaction_items (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, transaction_id INT NOT NULL,
-        product_id INT NULL, product_name VARCHAR(200) NOT NULL, category_name VARCHAR(100) NULL,
-        price DECIMAL(10,2) NOT NULL DEFAULT 0, quantity INT NOT NULL DEFAULT 1,
-        subtotal DECIMAL(10,2) NOT NULL DEFAULT 0, hour_of_day INT NULL, day_of_week INT NULL,
-        cost_price DECIMAL(10,2) NULL
-    )");
-    $db->exec("CREATE TABLE IF NOT EXISTS settings (
-        store_id INT NOT NULL DEFAULT 1, key VARCHAR(50) NOT NULL, value TEXT NULL,
-        PRIMARY KEY (store_id, key)
-    )");
-    $db->exec("CREATE TABLE IF NOT EXISTS cash_floats (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, store_id INT NOT NULL DEFAULT 1,
-        user_id INT NOT NULL, opening_float DECIMAL(10,2) NOT NULL DEFAULT 0,
-        closing_float DECIMAL(10,2) NULL, note TEXT NULL, status VARCHAR(20) NOT NULL DEFAULT 'open',
-        opened_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, closed_at TIMESTAMP NULL
-    )");
-    $db->exec("CREATE TABLE IF NOT EXISTS void_logs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, store_id INT NOT NULL DEFAULT 1,
-        transaction_id INT NULL, product_id INT NULL, quantity INT NOT NULL DEFAULT 1,
-        reason TEXT NULL, user_id INT NULL, voided_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )");
-    $db->exec("CREATE TABLE IF NOT EXISTS inventory_adjustments (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, store_id INT NOT NULL DEFAULT 1,
-        product_id INT NOT NULL, type VARCHAR(50) NOT NULL, qty INT NOT NULL,
-        reason TEXT NULL, user_id INT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )");
-    $db->exec("CREATE TABLE IF NOT EXISTS login_attempts (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, identifier VARCHAR(150) NOT NULL,
-        ip VARCHAR(45) NOT NULL, success SMALLINT NOT NULL DEFAULT 0,
-        attempted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )");
-    $db->exec("CREATE TABLE IF NOT EXISTS recovery_attempts (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, identifier VARCHAR(150) NOT NULL,
-        ip VARCHAR(45) NOT NULL, requested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )");
-    $db->exec("CREATE TABLE IF NOT EXISTS ml_cache (
-        key VARCHAR(100) PRIMARY KEY, value TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )");
-    $db->exec("CREATE TABLE IF NOT EXISTS monthly_sales_summary (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, store_id INT NOT NULL DEFAULT 1,
-        month_key VARCHAR(7) NOT NULL, total_sales DECIMAL(12,2) NOT NULL DEFAULT 0,
-        order_count INT NOT NULL DEFAULT 0, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )");
-
-    $db->exec("INSERT OR IGNORE INTO settings (store_id, key, value) VALUES 
-        (1, 'shop_name', 'ProCast'),
-        (1, 'currency', '₱'),
-        (1, 'vat_rate', '0'),
-        (1, 'tax_rate', '0')");
-
-    $db->exec("INSERT OR IGNORE INTO categories (store_id, name, sort_order) VALUES 
-        (1, 'Food', 0),
-        (1, 'Drinks', 1),
-        (1, 'Snacks', 2),
-        (1, 'Desserts', 3),
-        (1, 'Others', 4)");
-
-    $adminCount = $db->query("SELECT COUNT(*) FROM users WHERE username='admin'")->fetchColumn();
-    if (!$adminCount) {
-        $hash = password_hash('admin123', PASSWORD_DEFAULT);
-        $db->prepare("INSERT INTO users (username, password, full_name, role, email, store_id) VALUES ('admin', ?, 'Admin', 'owner', ?, 1)")
-            ->execute([$hash, BREVO_SENDER_EMAIL ?: 'admin@pos.local']);
-    }
-
-    $db->exec("UPDATE schema_meta SET version = " . SCHEMA_VERSION . " WHERE id = 1");
-}
-
 // ── INSTALL TABLES ON FIRST RUN ──
 function installDB(): void
 {
     $db = db();
-    $driver = $db->getAttribute(PDO::ATTR_DRIVER_NAME);
-    if ($driver === 'sqlite') {
-        installSQLiteDB($db);
-        return;
-    }
     // Tiny single-row table used only to record "which version of installDB()
     // last ran successfully" — see the version check right before this
     // function is called. Created first, unconditionally, so it's always
@@ -2060,43 +1840,31 @@ function clientIp(): string
 // Returns minutes remaining locked out, or 0 if not currently locked.
 function loginLockoutMinutesLeft(PDO $db, string $identifier): int
 {
-    try {
-        $cutoff = date('Y-m-d H:i:s', time() - (LOGIN_LOCKOUT_MINUTES * 60));
-        $stmt = $db->prepare(
-            "SELECT COUNT(*) as c, MAX(attempted_at) as last_attempt FROM login_attempts
-             WHERE identifier=? AND success=0 AND attempted_at > ?"
-        );
-        $stmt->execute([$identifier, $cutoff]);
-        $row = $stmt->fetch();
-        if ((int)($row['c'] ?? 0) < LOGIN_MAX_ATTEMPTS) return 0;
-        $lastAttempt = !empty($row['last_attempt']) ? strtotime($row['last_attempt']) : time();
-        $elapsedMin = (time() - $lastAttempt) / 60;
-        $left = LOGIN_LOCKOUT_MINUTES - $elapsedMin;
-        return $left > 0 ? (int)ceil($left) : 0;
-    } catch (\Throwable $e) {
-        error_log('Lockout check error: ' . $e->getMessage());
-        return 0;
-    }
+    $stmt = $db->prepare(
+        "SELECT COUNT(*) c, MAX(attempted_at) last_attempt FROM login_attempts
+         WHERE identifier=? AND success=0 AND attempted_at > CURRENT_TIMESTAMP - (? * INTERVAL '1 minute')"
+    );
+    $stmt->execute([$identifier, LOGIN_LOCKOUT_MINUTES]);
+    $row = $stmt->fetch();
+    if ((int)($row['c'] ?? 0) < LOGIN_MAX_ATTEMPTS) return 0;
+    $elapsedMin = (time() - strtotime($row['last_attempt'])) / 60;
+    $left = LOGIN_LOCKOUT_MINUTES - $elapsedMin;
+    return $left > 0 ? (int)ceil($left) : 0;
 }
 
 function recordLoginAttempt(PDO $db, string $identifier, bool $success): void
 {
-    try {
-        $db->prepare("INSERT INTO login_attempts (identifier, ip, success) VALUES (?, ?, ?)")
-            ->execute([$identifier, clientIp(), $success ? 1 : 0]);
-        // A successful login clears that username's recent failures, so a
-        // legitimate owner who mistypes their password a few times then gets it
-        // right isn't left one bad attempt away from a lockout later.
-        if ($success) {
-            $db->prepare("DELETE FROM login_attempts WHERE identifier=? AND success=0")->execute([$identifier]);
-        }
-        // Cheap self-maintaining cleanup — no cron needed on shared hosting.
-        if (mt_rand(1, 50) === 1) {
-            $cutoff = date('Y-m-d H:i:s', time() - 3600);
-            $db->prepare("DELETE FROM login_attempts WHERE attempted_at < ?")->execute([$cutoff]);
-        }
-    } catch (\Throwable $e) {
-        error_log('Record attempt error: ' . $e->getMessage());
+    $db->prepare("INSERT INTO login_attempts (identifier, ip, success) VALUES (?, ?, ?)")
+        ->execute([$identifier, clientIp(), $success ? 1 : 0]);
+    // A successful login clears that username's recent failures, so a
+    // legitimate owner who mistypes their password a few times then gets it
+    // right isn't left one bad attempt away from a lockout later.
+    if ($success) {
+        $db->prepare("DELETE FROM login_attempts WHERE identifier=? AND success=0")->execute([$identifier]);
+    }
+    // Cheap self-maintaining cleanup — no cron needed on shared hosting.
+    if (mt_rand(1, 50) === 1) {
+        $db->exec("DELETE FROM login_attempts WHERE attempted_at < CURRENT_TIMESTAMP - INTERVAL '60 minutes'");
     }
 }
 
@@ -2111,36 +1879,24 @@ const RECOVERY_LOCKOUT_MINUTES = 60;
 
 function recoveryLockoutMinutesLeft(PDO $db, string $identifier): int
 {
-    try {
-        $cutoff = date('Y-m-d H:i:s', time() - (RECOVERY_LOCKOUT_MINUTES * 60));
-        $stmt = $db->prepare(
-            "SELECT COUNT(*) as c, MAX(requested_at) as last_attempt FROM recovery_attempts
-             WHERE identifier=? AND requested_at > ?"
-        );
-        $stmt->execute([$identifier, $cutoff]);
-        $row = $stmt->fetch();
-        if ((int)($row['c'] ?? 0) < RECOVERY_MAX_ATTEMPTS) return 0;
-        $lastAttempt = !empty($row['last_attempt']) ? strtotime($row['last_attempt']) : time();
-        $elapsedMin = (time() - $lastAttempt) / 60;
-        $left = RECOVERY_LOCKOUT_MINUTES - $elapsedMin;
-        return $left > 0 ? (int)ceil($left) : 0;
-    } catch (\Throwable $e) {
-        error_log('Recovery lockout check error: ' . $e->getMessage());
-        return 0;
-    }
+    $stmt = $db->prepare(
+        "SELECT COUNT(*) c, MAX(requested_at) last_attempt FROM recovery_attempts
+         WHERE identifier=? AND requested_at > CURRENT_TIMESTAMP - (? * INTERVAL '1 minute')"
+    );
+    $stmt->execute([$identifier, RECOVERY_LOCKOUT_MINUTES]);
+    $row = $stmt->fetch();
+    if ((int)($row['c'] ?? 0) < RECOVERY_MAX_ATTEMPTS) return 0;
+    $elapsedMin = (time() - strtotime($row['last_attempt'])) / 60;
+    $left = RECOVERY_LOCKOUT_MINUTES - $elapsedMin;
+    return $left > 0 ? (int)ceil($left) : 0;
 }
 
 function recordRecoveryAttempt(PDO $db, string $identifier): void
 {
-    try {
-        $db->prepare("INSERT INTO recovery_attempts (identifier, ip) VALUES (?, ?)")
-            ->execute([$identifier, clientIp()]);
-        if (mt_rand(1, 50) === 1) {
-            $cutoff = date('Y-m-d H:i:s', time() - 3600);
-            $db->prepare("DELETE FROM recovery_attempts WHERE requested_at < ?")->execute([$cutoff]);
-        }
-    } catch (\Throwable $e) {
-        error_log('Record recovery attempt error: ' . $e->getMessage());
+    $db->prepare("INSERT INTO recovery_attempts (identifier, ip) VALUES (?, ?)")
+        ->execute([$identifier, clientIp()]);
+    if (mt_rand(1, 50) === 1) {
+        $db->exec("DELETE FROM recovery_attempts WHERE requested_at < CURRENT_TIMESTAMP - INTERVAL '60 minutes'");
     }
 }
 
@@ -2526,18 +2282,12 @@ if (isset($_GET['api'])) {
     // session files) while the browser still holds a valid remember cookie —
     // rebuild the login from it before declaring the user unauthenticated.
     restoreLoginFromCookie();
+    if (!loggedIn()) json(false, null, 'Not authenticated');
     $action = $_GET['api'];
-
-    // Universal fast ping endpoint for heartbeat / connectivity verification (<30ms)
-    if ($action === 'ping') {
-        json(true, ['pong' => true, 'authenticated' => loggedIn(), 'timestamp' => time()]);
-    }
-
-    if (!loggedIn() && $action !== 'sync_pending_users' && $action !== 'reauth_offline_session' && $action !== 'get_product_image') json(false, null, 'Not authenticated');
     $body = json_decode(file_get_contents('php://input'), true) ?? [];
     $db = db();
-    $uid = $_SESSION['uid'] ?? 1;
-    $role = $_SESSION['role'] ?? 'owner';
+    $uid = $_SESSION['uid'];
+    $role = $_SESSION['role'];
 
     // ── CSRF CHECK ──
     // Only POST actions change state (GET actions like get_products,
@@ -2546,7 +2296,7 @@ if (isset($_GET['api'])) {
     // header (see apiPost() in the frontend) rather than in the JSON body,
     // so every mutating call is covered from one place instead of adding it
     // to dozens of individual $body[...] payloads.
-    if (in_array($_SERVER['REQUEST_METHOD'], ['POST', 'PUT', 'DELETE', 'PATCH'], true) && $action !== 'sync_pending_users' && $action !== 'reauth_offline_session' && !csrfValid($_SERVER['HTTP_X_CSRF_TOKEN'] ?? null)) {
+    if (in_array($_SERVER['REQUEST_METHOD'], ['POST', 'PUT', 'DELETE', 'PATCH'], true) && !csrfValid($_SERVER['HTTP_X_CSRF_TOKEN'] ?? null)) {
         json(false, null, 'Your session expired — please refresh the page and try again.');
     }
 
@@ -2563,61 +2313,6 @@ if (isset($_GET['api'])) {
     //      can be root-caused even if the frontend message is generic.
     try {
         switch ($action) {
-            case 'reauth_offline_session':
-                $uName = trim($body['username'] ?? '');
-                if (!$uName) json(false, null, 'Username required');
-                $stmt = $db->prepare("SELECT id, username, full_name, role, email, store_id FROM users WHERE username = ? LIMIT 1");
-                $stmt->execute([$uName]);
-                $u = $stmt->fetch();
-                if (!$u) json(false, null, 'User not found on server');
-
-                $_SESSION['uid'] = (int)$u['id'];
-                $_SESSION['username'] = $u['username'];
-                $_SESSION['full_name'] = $u['full_name'];
-                $_SESSION['role'] = $u['role'];
-                $_SESSION['email'] = $u['email'];
-                $_SESSION['store_id'] = (int)($u['store_id'] ?: 1);
-                createAuthToken((int)$u['id']);
-
-                json(true, [
-                    'user' => [
-                        'id' => (int)$u['id'],
-                        'username' => $u['username'],
-                        'full_name' => $u['full_name'],
-                        'role' => $u['role']
-                    ],
-                    'csrf_token' => $_SESSION['csrf_token'] ?? (defined('CSRF_TOKEN') ? CSRF_TOKEN : '')
-                ]);
-                break;
-
-            case 'get_users_offline':
-                $stmt = $db->prepare("SELECT id, username, full_name, role, password, email FROM users WHERE store_id = ?");
-                $stmt->execute([currentStoreId()]);
-                json(true, $stmt->fetchAll(PDO::FETCH_ASSOC));
-                break;
-            case 'sync_pending_users':
-                $users = $body['users'] ?? [];
-                foreach ($users as $u) {
-                    $uName = trim($u['username'] ?? '');
-                    $uPass = $u['password'] ?? '';
-                    $uFull = trim($u['full_name'] ?? '');
-                    $uEmail = trim($u['email'] ?? '');
-                    $uRole = in_array($u['role'] ?? '', ['owner', 'admin', 'staff', 'cashier'], true) ? $u['role'] : 'owner';
-                    if ($uName && $uPass && $uFull) {
-                        $chk = $db->prepare("SELECT id FROM users WHERE username = ?");
-                        $chk->execute([$uName]);
-                        if (!$chk->fetch()) {
-                            $sid = currentStoreId() ?: 1;
-                            if (!str_starts_with($uPass, '$2y$') && !str_starts_with($uPass, '$2a$') && !str_starts_with($uPass, '$2b$')) {
-                                $uPass = password_hash($uPass, PASSWORD_BCRYPT);
-                            }
-                            $stmt = $db->prepare("INSERT INTO users (username, password, full_name, role, email, store_id) VALUES (?, ?, ?, ?, ?, ?)");
-                            $stmt->execute([$uName, $uPass, $uFull, $uRole, $uEmail, $sid]);
-                        }
-                    }
-                }
-                json(true, ['ok' => true]);
-                break;
 
             case 'get_products':
                 // image_data (base64, often 50-150KB EACH) used to be embedded for
@@ -2681,8 +2376,8 @@ if (isset($_GET['api'])) {
                     )
                     SELECT
                         p.id, p.name, p.description, p.price, p.cost_price, p.quantity, p.category_id,
-                        CASE WHEN ((p.image_data IS NOT NULL AND p.image_data <> '') OR
-                                  (p.image_path IS NOT NULL AND p.image_path <> '')) THEN 1 ELSE 0 END AS has_image,
+                        ((p.image_data IS NOT NULL AND p.image_data <> '') OR
+                         (p.image_path IS NOT NULL AND p.image_path <> ''))             AS has_image,
                         p.total_sold, p.total_revenue, p.expiry_date, p.delivery_date,
                         p.barcode, p.store_quantity,
                         p.pack_qty, p.pack_barcode, p.pack_price,
@@ -2724,43 +2419,21 @@ if (isset($_GET['api'])) {
 
             case 'get_product_image':
                 // Serves one product's photo as a real image (not JSON) so <img>
-                // tags can load it directly — lazily, in parallel, and cacheable.
-                $streamDefaultImage = function() {
-                    $defFile = __DIR__ . '/assets/default-product.png';
-                    if (is_file($defFile)) {
-                        header('Content-Type: image/png');
-                        header('Cache-Control: public, max-age=86400');
-                        header('Content-Length: ' . filesize($defFile));
-                        readfile($defFile);
-                        exit;
-                    }
-                    header('Content-Type: image/svg+xml');
-                    header('Cache-Control: public, max-age=86400');
-                    echo '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><circle cx="32" cy="32" r="29" fill="#fff" stroke="#d5d5d5" stroke-width="3"/><path d="M17 20h5l4.5 17h16l3.5-12H25" fill="none" stroke="#5b5b5b" stroke-width="3.2" stroke-linejoin="round" stroke-linecap="round"/><circle cx="28" cy="45" r="3.2" fill="#5b5b5b"/><circle cx="40" cy="45" r="3.2" fill="#5b5b5b"/></svg>';
-                    exit;
-                };
-
+                // tags can load it directly — lazily, in parallel, and cacheable —
+                // instead of it being crammed into the get_products payload above.
                 $pid = (int)($_GET['id'] ?? 0);
-                $prow = null;
-                try {
-                    $ist = $db->prepare("SELECT image_data, image_path, updated_at FROM products WHERE id=? LIMIT 1");
-                    $ist->execute([$pid]);
-                    $prow = $ist->fetch();
-                } catch (\Throwable $e) {
-                    try {
-                        $ist = $db->prepare("SELECT image_data, updated_at FROM products WHERE id=? LIMIT 1");
-                        $ist->execute([$pid]);
-                        $prow = $ist->fetch();
-                        if ($prow) $prow['image_path'] = null;
-                    } catch (\Throwable $e2) {
-                        $prow = null;
-                    }
-                }
+                $ist = $db->prepare("SELECT image_data, image_path, updated_at FROM products WHERE id=? AND store_id=?");
+                $ist->execute([$pid, currentStoreId()]);
+                $prow = $ist->fetch();
                 if (!$prow || (!$prow['image_data'] && !$prow['image_path'])) {
-                    $streamDefaultImage();
+                    http_response_code(404);
+                    exit;
                 }
 
                 // ── CLOUD PATH: photo lives in Supabase Storage (deploy-surviving storage) ──
+                // The DB only holds its URL — bounce the browser straight to the
+                // Supabase CDN. Short cache on the redirect itself so a replaced
+                // photo is picked up quickly while still skipping most DB hits.
                 if ($prow['image_path'] && preg_match('#^https?://#', $prow['image_path'])) {
                     header('Location: ' . $prow['image_path']);
                     header('Cache-Control: public, max-age=300');
@@ -2768,6 +2441,7 @@ if (isset($_GET['api'])) {
                 }
 
                 // ── FAST PATH: a real file on disk (new-style uploads) ──
+                // No DB blob to decode — just stream the file straight off disk.
                 if ($prow['image_path']) {
                     $fullPath = __DIR__ . '/' . $prow['image_path'];
                     if (is_file($fullPath)) {
@@ -2786,14 +2460,19 @@ if (isset($_GET['api'])) {
                         readfile($fullPath);
                         exit;
                     }
+                    // image_path was set but the file is missing (e.g. moved/deleted outside
+                    // the app) — fall through to the legacy DB-blob path below if there is one.
                 }
 
                 // ── LEGACY PATH: base64 blob still stored in the DB ──
                 $imgData = $prow['image_data'];
                 if (!$imgData) {
-                    $streamDefaultImage();
+                    http_response_code(404);
+                    exit;
                 }
 
+                // Validator-based caching so repeat loads skip the DB round trip + base64
+                // decode via a lightweight 304, even for these older DB-stored photos.
                 $etag = '"' . md5($pid . '|' . ($prow['updated_at'] ?? '')) . '"';
                 header('Cache-Control: public, max-age=2592000, immutable'); // 30 days
                 header('ETag: ' . $etag);
@@ -2806,16 +2485,14 @@ if (isset($_GET['api'])) {
                     header('Content-Type: ' . $m[1]);
                     $bytes = base64_decode($m[2]);
                 } else {
+                    // Legacy rows saved without the data-URI prefix
                     header('Content-Type: image/jpeg');
                     $bytes = base64_decode($imgData);
                 }
-
-                if ($bytes === false || $bytes === '') {
-                    $streamDefaultImage();
-                }
-
-                // SELF-HEAL: rewrite the disk file so future loads stream from disk
-                if ($prow['image_path'] && !preg_match('#^https?://#', $prow['image_path']) && !is_file(__DIR__ . '/' . $prow['image_path'])) {
+                // SELF-HEAL: this DB backup just saved the photo after a disk wipe —
+                // quietly rewrite the disk file too, so future loads stream from disk
+                // again instead of hitting the DB every time.
+                if ($bytes !== false && $bytes !== '' && $prow['image_path'] && !preg_match('#^https?://#', $prow['image_path']) && !is_file(__DIR__ . '/' . $prow['image_path'])) {
                     $healDir = dirname(__DIR__ . '/' . $prow['image_path']);
                     if (is_dir($healDir) || @mkdir($healDir, 0755, true)) {
                         @file_put_contents(__DIR__ . '/' . $prow['image_path'], $bytes);
@@ -3663,10 +3340,8 @@ if (isset($_GET['api'])) {
                     // Warehouse page's Low Stock/Out of Stock/Expiring/Expired filters (which
                     // key off store_quantity) fall out of sync with what was actually sold.
                     $isPrivilegedUser = in_array($role, ['owner', 'admin'], true);
-                    $driver = $db->getAttribute(PDO::ATTR_DRIVER_NAME);
-                    $maxFn = ($driver === 'sqlite') ? 'MAX' : 'GREATEST';
-                    $suStore = $db->prepare("UPDATE products SET quantity={$maxFn}(0,quantity-?),store_quantity={$maxFn}(0,store_quantity-?),total_sold=total_sold+?,total_revenue=total_revenue+? WHERE id=?");
-                    $suWh = $db->prepare("UPDATE warehouse_stock SET quantity={$maxFn}(0,quantity-?) WHERE product_id=?");
+                    $suStore = $db->prepare("UPDATE products SET quantity=GREATEST(0,quantity-?),store_quantity=GREATEST(0,store_quantity-?),total_sold=total_sold+?,total_revenue=total_revenue+? WHERE id=?");
+                    $suWh = $db->prepare("UPDATE warehouse_stock SET quantity=GREATEST(0,quantity-?) WHERE product_id=?");
                     $suWhProd = $db->prepare("UPDATE products SET total_sold=total_sold+?,total_revenue=total_revenue+? WHERE id=?");
                     $whLog = $db->prepare("INSERT INTO warehouse (store_id, product_id, type, qty_out, note, user_id, event_date) VALUES (?, ?, 'out', ?, ?, ?, CURRENT_DATE)");
                     // Cost price is looked up per product_id so each line freezes what THIS
@@ -3692,13 +3367,7 @@ if (isset($_GET['api'])) {
 
                         if ($pid) {
                             if ($itemSource === 'warehouse') {
-                                if ($driver === 'mysql') {
-                                    $db->prepare("INSERT IGNORE INTO warehouse_stock (product_id, quantity) VALUES (?, 0)")->execute([$pid]);
-                                } elseif ($driver === 'sqlite') {
-                                    $db->prepare("INSERT OR IGNORE INTO warehouse_stock (product_id, quantity) VALUES (?, 0)")->execute([$pid]);
-                                } else {
-                                    $db->prepare("INSERT INTO warehouse_stock (product_id, quantity) VALUES (?, 0) ON CONFLICT (product_id) DO NOTHING")->execute([$pid]);
-                                }
+                                $db->prepare("INSERT INTO warehouse_stock (product_id, quantity) VALUES (?, 0) ON CONFLICT (product_id) DO NOTHING")->execute([$pid]);
                                 $suWh->execute([$qty, $pid]);
                                 $suWhProd->execute([$qty, $sub, $pid]);
                                 try {
@@ -3732,279 +3401,6 @@ if (isset($_GET['api'])) {
                     $db->rollBack();
                     json(false, null, $e->getMessage());
                 }
-                break;
-
-            case 'sync_offline_batch':
-                $orders = (array)($body['orders'] ?? []);
-                $mutations = (array)($body['mutations'] ?? []);
-                if (empty($orders) && empty($mutations)) {
-                    json(true, ['synced_count' => 0, 'synced_refs' => [], 'synced_mutations' => 0, 'id_mappings' => [], 'message' => 'No data to sync']);
-                }
-
-                $driver = $db->getAttribute(PDO::ATTR_DRIVER_NAME);
-                $maxFn = ($driver === 'sqlite') ? 'MAX' : 'GREATEST';
-
-                static $hasCostColSync = null;
-                if ($hasCostColSync === null) {
-                    try {
-                        $colCheck = $db->query("SELECT column_name FROM information_schema.columns WHERE table_name='transaction_items' AND column_name='cost_price'");
-                        $hasCostColSync = (bool)$colCheck->fetchColumn();
-                    } catch (\Throwable $e) {
-                        $hasCostColSync = false;
-                    }
-                }
-
-                // 1. Process offline mutations first (products added, updated, or deleted while offline)
-                $syncedMutations = 0;
-                $idMappings = [];
-
-                if (!empty($mutations)) {
-                    $insertProdStmt = $db->prepare("INSERT INTO products (store_id,name,description,price,cost_price,quantity,store_quantity,category_id,expiry_date,delivery_date,barcode,pack_qty,pack_barcode,pack_price,case_qty,case_barcode,case_price,auto_convert,low_stock_threshold,brand,supplier,unit_type,unit_size,promo_price,promo_pack_price,promo_case_price) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
-                    $checkBarcodeStmt = $db->prepare("SELECT id FROM products WHERE barcode=? AND store_id=?");
-                    $updateProdStmt = $db->prepare("UPDATE products SET name=?,price=?,cost_price=?,store_quantity=?,quantity=?,category_id=?,barcode=?,pack_qty=?,pack_barcode=?,pack_price=?,case_qty=?,case_barcode=?,case_price=?,auto_convert=?,low_stock_threshold=?,brand=?,supplier=?,unit_type=?,unit_size=?,promo_price=?,promo_pack_price=?,promo_case_price=? WHERE id=? AND store_id=?");
-                    $deleteProdStmt = $db->prepare("DELETE FROM products WHERE id=? AND store_id=?");
-
-                    foreach ($mutations as $mut) {
-                        $mAction = $mut['action'] ?? '';
-                        $payload = (array)($mut['payload'] ?? []);
-                        $tempId = $payload['id'] ?? null;
-
-                        try {
-                            if ($mAction === 'add_product') {
-                                $name = trim($payload['name'] ?? '');
-                                if (!$name) continue;
-                                $barcode = trim($payload['barcode'] ?? '');
-                                if ($barcode !== '') {
-                                    $checkBarcodeStmt->execute([$barcode, currentStoreId()]);
-                                    if ($checkBarcodeStmt->fetch()) {
-                                        $barcode = 'BC-' . strtoupper(substr(md5(uniqid('', true)), 0, 10));
-                                    }
-                                } else {
-                                    $barcode = 'BC-' . strtoupper(substr(md5(uniqid('', true)), 0, 10));
-                                }
-
-                                $expiry = cleanDateForDb($payload['expiry_date'] ?? null);
-                                $deliveryDate = cleanDateForDb($payload['delivery_date'] ?? null);
-                                $storeQty = (int)($payload['store_quantity'] ?? $payload['quantity'] ?? 0);
-                                $packQty = ($payload['pack_qty'] ?? '') !== '' ? (int)$payload['pack_qty'] : null;
-                                $packBarcode = trim($payload['pack_barcode'] ?? '') ?: null;
-                                $packPrice = ($payload['pack_price'] ?? '') !== '' ? (float)$payload['pack_price'] : null;
-                                $caseQty = ($payload['case_qty'] ?? '') !== '' ? (int)$payload['case_qty'] : null;
-                                $caseBarcode = trim($payload['case_barcode'] ?? '') ?: null;
-                                $casePrice = ($payload['case_price'] ?? '') !== '' ? (float)$payload['case_price'] : null;
-                                $autoConvert = !empty($payload['auto_convert']) ? 1 : 0;
-                                $lowStock = isset($payload['low_stock_threshold']) && $payload['low_stock_threshold'] !== '' ? max(0, (int)$payload['low_stock_threshold']) : 5;
-                                $brand = trim($payload['brand'] ?? '') ?: null;
-                                $supplier = trim($payload['supplier'] ?? '') ?: null;
-                                $unitType = trim($payload['unit_type'] ?? '') ?: 'pcs';
-                                $unitSizeRaw = $payload['unit_size'] ?? '';
-                                $unitSize = $unitSizeRaw !== '' ? ($unitType === 'size' ? trim((string)$unitSizeRaw) : (float)$unitSizeRaw) : null;
-                                $price = max(0, (float)($payload['price'] ?? 0));
-                                $costPrice = ($payload['cost_price'] ?? '') !== '' ? max(0, (float)$payload['cost_price']) : null;
-                                $promoPrice = ($payload['promo_price'] ?? '') !== '' ? (float)$payload['promo_price'] : null;
-                                $promoPackPrice = ($payload['promo_pack_price'] ?? '') !== '' ? (float)$payload['promo_pack_price'] : null;
-                                $promoCasePrice = ($payload['promo_case_price'] ?? '') !== '' ? (float)$payload['promo_case_price'] : null;
-                                $catId = !empty($payload['category_id']) ? (int)$payload['category_id'] : null;
-
-                                $insertProdStmt->execute([
-                                    currentStoreId(), $name, $payload['description'] ?? null, $price, $costPrice, $storeQty, $storeQty,
-                                    $catId, $expiry, $deliveryDate, $barcode, $packQty, $packBarcode, $packPrice,
-                                    $caseQty, $caseBarcode, $casePrice, $autoConvert, $lowStock, $brand, $supplier,
-                                    $unitType, $unitSize, $promoPrice, $promoPackPrice, $promoCasePrice
-                                ]);
-                                $realId = (int)lastInsertedId($db);
-                                if ($tempId !== null) {
-                                    $idMappings[(string)$tempId] = $realId;
-                                }
-                                $syncedMutations++;
-                            } elseif ($mAction === 'update_product') {
-                                $targetId = (int)($payload['id'] ?? 0);
-                                if ($targetId < 0 && isset($idMappings[(string)$targetId])) {
-                                    $targetId = (int)$idMappings[(string)$targetId];
-                                }
-                                if ($targetId > 0) {
-                                    $name = trim($payload['name'] ?? '');
-                                    $price = max(0, (float)($payload['price'] ?? 0));
-                                    $costPrice = ($payload['cost_price'] ?? '') !== '' ? max(0, (float)$payload['cost_price']) : null;
-                                    $storeQty = (int)($payload['store_quantity'] ?? $payload['quantity'] ?? 0);
-                                    $catId = !empty($payload['category_id']) ? (int)$payload['category_id'] : null;
-                                    $barcode = trim($payload['barcode'] ?? '') ?: null;
-                                    $packQty = ($payload['pack_qty'] ?? '') !== '' ? (int)$payload['pack_qty'] : null;
-                                    $packBarcode = trim($payload['pack_barcode'] ?? '') ?: null;
-                                    $packPrice = ($payload['pack_price'] ?? '') !== '' ? (float)$payload['pack_price'] : null;
-                                    $caseQty = ($payload['case_qty'] ?? '') !== '' ? (int)$payload['case_qty'] : null;
-                                    $caseBarcode = trim($payload['case_barcode'] ?? '') ?: null;
-                                    $casePrice = ($payload['case_price'] ?? '') !== '' ? (float)$payload['case_price'] : null;
-                                    $autoConvert = !empty($payload['auto_convert']) ? 1 : 0;
-                                    $lowStock = isset($payload['low_stock_threshold']) && $payload['low_stock_threshold'] !== '' ? max(0, (int)$payload['low_stock_threshold']) : 5;
-                                    $brand = trim($payload['brand'] ?? '') ?: null;
-                                    $supplier = trim($payload['supplier'] ?? '') ?: null;
-                                    $unitType = trim($payload['unit_type'] ?? '') ?: 'pcs';
-                                    $unitSizeRaw = $payload['unit_size'] ?? '';
-                                    $unitSize = $unitSizeRaw !== '' ? ($unitType === 'size' ? trim((string)$unitSizeRaw) : (float)$unitSizeRaw) : null;
-                                    $promoPrice = ($payload['promo_price'] ?? '') !== '' ? (float)$payload['promo_price'] : null;
-                                    $promoPackPrice = ($payload['promo_pack_price'] ?? '') !== '' ? (float)$payload['promo_pack_price'] : null;
-                                    $promoCasePrice = ($payload['promo_case_price'] ?? '') !== '' ? (float)$payload['promo_case_price'] : null;
-
-                                    $updateProdStmt->execute([
-                                        $name, $price, $costPrice, $storeQty, $storeQty, $catId, $barcode,
-                                        $packQty, $packBarcode, $packPrice, $caseQty, $caseBarcode, $casePrice,
-                                        $autoConvert, $lowStock, $brand, $supplier, $unitType, $unitSize,
-                                        $promoPrice, $promoPackPrice, $promoCasePrice, $targetId, currentStoreId()
-                                    ]);
-                                    $syncedMutations++;
-                                }
-                            } elseif ($mAction === 'delete_product') {
-                                $targetId = (int)($payload['id'] ?? 0);
-                                if ($targetId < 0 && isset($idMappings[(string)$targetId])) {
-                                    $targetId = (int)$idMappings[(string)$targetId];
-                                }
-                                if ($targetId > 0) {
-                                    $deleteProdStmt->execute([$targetId, currentStoreId()]);
-                                    $syncedMutations++;
-                                }
-                            }
-                        } catch (\Throwable $me) {
-                            error_log("Failed to sync offline mutation: " . $me->getMessage());
-                        }
-                    }
-                }
-
-                // 2. Process offline orders (sales made while offline, with ID remapping if needed)
-                $syncedCount = 0;
-                $syncedRefs = [];
-                $alreadySynced = [];
-
-                $checkStmt = $db->prepare("SELECT id FROM transactions WHERE order_ref=? AND store_id=?");
-                $insertTxStmt = $db->prepare(
-                    "INSERT INTO transactions (store_id,order_ref,subtotal,vat_rate,vat_amount,tax_rate,tax_amount,total,cash,change,user_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
-                );
-                $si = $hasCostColSync
-                    ? $db->prepare("INSERT INTO transaction_items (transaction_id,product_id,product_name,category_name,price,quantity,subtotal,hour_of_day,day_of_week,cost_price) VALUES (?,?,?,?,?,?,?,?,?,?)")
-                    : $db->prepare("INSERT INTO transaction_items (transaction_id,product_id,product_name,category_name,price,quantity,subtotal,hour_of_day,day_of_week) VALUES (?,?,?,?,?,?,?,?,?)");
-
-                $suStore = $db->prepare("UPDATE products SET quantity={$maxFn}(0,quantity-?),store_quantity={$maxFn}(0,store_quantity-?),total_sold=total_sold+?,total_revenue=total_revenue+? WHERE id=?");
-                $suWh = $db->prepare("UPDATE warehouse_stock SET quantity={$maxFn}(0,quantity-?) WHERE product_id=?");
-                $suWhProd = $db->prepare("UPDATE products SET total_sold=total_sold+?,total_revenue=total_revenue+? WHERE id=?");
-                $whLog = $db->prepare("INSERT INTO warehouse (store_id, product_id, type, qty_out, note, user_id, event_date) VALUES (?, ?, 'out', ?, ?, ?, CURRENT_DATE)");
-                $costLookup = $db->prepare("SELECT cost_price FROM products WHERE id=?");
-                $isPrivilegedUser = in_array($role, ['owner', 'admin'], true);
-
-                foreach ($orders as $order) {
-                    $orderRef = trim((string)($order['order_ref'] ?? ''));
-                    if ($orderRef === '') {
-                        $orderRef = 'ORD-OFFLINE-' . strtoupper(substr(uniqid(), -6));
-                    }
-
-                    // Deduplicate
-                    $checkStmt->execute([$orderRef, currentStoreId()]);
-                    if ($checkStmt->fetch()) {
-                        $alreadySynced[] = $orderRef;
-                        continue;
-                    }
-
-                    $items = (array)($order['items'] ?? []);
-                    if (empty($items)) continue;
-
-                    $subtotal = (float)($order['subtotal'] ?? 0);
-                    $vatRate = (float)($order['vat_rate'] ?? 0);
-                    $vatAmount = (float)($order['vat_amount'] ?? 0);
-                    $taxRate = (float)($order['tax_rate'] ?? 0);
-                    $taxAmount = (float)($order['tax_amount'] ?? 0);
-                    $total = (float)($order['total'] ?? 0);
-                    $cash = (float)($order['cash'] ?? 0);
-                    $change = (float)($order['change'] ?? 0);
-                    $orderUserId = !empty($order['user_id']) ? (int)$order['user_id'] : $uid;
-                    $createdAt = !empty($order['created_at']) ? date('Y-m-d H:i:s', strtotime($order['created_at'])) : date('Y-m-d H:i:s');
-
-                    $orderHour = (int)date('G', strtotime($createdAt));
-                    $orderDow = (int)date('N', strtotime($createdAt)) - 1;
-
-                    $db->beginTransaction();
-                    try {
-                        $insertTxStmt->execute([
-                            currentStoreId(), $orderRef, $subtotal, $vatRate, $vatAmount, $taxRate, $taxAmount, $total, $cash, $change, $orderUserId, $createdAt
-                        ]);
-                        $txId = lastInsertedId($db);
-
-                        foreach ($items as $item) {
-                            $rawPid = (int)($item['product_id'] ?? $item['id'] ?? 0);
-                            $pid = ($rawPid < 0 && isset($idMappings[(string)$rawPid])) ? (int)$idMappings[(string)$rawPid] : $rawPid;
-                            $qty = max(1, (int)($item['qty'] ?? 1));
-                            $price = (float)($item['price'] ?? 0);
-                            $lineSub = $price * $qty;
-                            $lineCost = null;
-                            if ($pid > 0) {
-                                $costLookup->execute([$pid]);
-                                $cp = $costLookup->fetchColumn();
-                                $lineCost = ($cp !== false && $cp !== null) ? (float)$cp : null;
-                            }
-
-                            $si->execute($hasCostColSync
-                                ? [$txId, $pid ?: null, $item['name'] ?? '', $item['category_name'] ?? '', $price, $qty, $lineSub, $orderHour, $orderDow, $lineCost]
-                                : [$txId, $pid ?: null, $item['name'] ?? '', $item['category_name'] ?? '', $price, $qty, $lineSub, $orderHour, $orderDow]);
-
-                            $itemSource = (($item['stock_source'] ?? 'store') === 'warehouse' && $isPrivilegedUser) ? 'warehouse' : 'store';
-
-                            if ($pid > 0) {
-                                if ($itemSource === 'warehouse') {
-                                    if ($driver === 'mysql') {
-                                        $db->prepare("INSERT IGNORE INTO warehouse_stock (product_id, quantity) VALUES (?, 0)")->execute([$pid]);
-                                    } elseif ($driver === 'sqlite') {
-                                        $db->prepare("INSERT OR IGNORE INTO warehouse_stock (product_id, quantity) VALUES (?, 0)")->execute([$pid]);
-                                    } else {
-                                        $db->prepare("INSERT INTO warehouse_stock (product_id, quantity) VALUES (?, 0) ON CONFLICT (product_id) DO NOTHING")->execute([$pid]);
-                                    }
-                                    $suWh->execute([$qty, $pid]);
-                                    $suWhProd->execute([$qty, $lineSub, $pid]);
-                                    try {
-                                        $whLog->execute([currentStoreId(), $pid, $qty, "Offline POS Sale - Ref $orderRef", $orderUserId]);
-                                    } catch (\Throwable $we) {}
-                                } else {
-                                    $suStore->execute([$qty, $qty, $qty, $lineSub, $pid]);
-                                }
-                            }
-                        }
-
-                        $db->commit();
-                        $syncedCount++;
-                        $syncedRefs[] = $orderRef;
-
-                        // FEFO Attribution
-                        foreach ($items as $item) {
-                            $rawPid = (int)($item['product_id'] ?? $item['id'] ?? 0);
-                            $pid = ($rawPid < 0 && isset($idMappings[(string)$rawPid])) ? (int)$idMappings[(string)$rawPid] : $rawPid;
-                            $qty = (int)($item['qty'] ?? 1);
-                            if ($pid > 0 && $qty > 0) {
-                                $itemSource = (($item['stock_source'] ?? 'store') === 'warehouse' && $isPrivilegedUser) ? 'warehouse' : 'store';
-                                try {
-                                    depleteBatchesFEFO($db, $pid, $qty, $itemSource);
-                                    refreshProductExpiryFromBatches($db, $pid);
-                                } catch (\Throwable $e) {}
-                            }
-                        }
-                    } catch (\Throwable $e) {
-                        if ($db->inTransaction()) $db->rollBack();
-                        error_log("Failed to sync offline order $orderRef: " . $e->getMessage());
-                    }
-                }
-
-                json(true, [
-                    'synced_count' => $syncedCount,
-                    'synced_refs' => $syncedRefs,
-                    'already_synced' => $alreadySynced,
-                    'synced_mutations' => $syncedMutations,
-                    'id_mappings' => $idMappings
-                ]);
-                break;
-
-            case 'ping':
-                $dbOk = false;
-                try {
-                    $db->query("SELECT 1");
-                    $dbOk = true;
-                } catch (\Throwable $e) {}
-                json(true, ['pong' => true, 'db' => $dbOk, 'timestamp' => time()]);
                 break;
 
             case 'get_transactions':
@@ -4185,7 +3581,7 @@ if (isset($_GET['api'])) {
                     $dateStart = ($period === 'daily' ? date('Y-m-d') : date('Y-m-d', strtotime("-" . ($rangeDays - 1) . " days"))) . ' 00:00:00';
                     // Net of any voided qty/amount, same convention as get_category_stats.
                     $rows = $db->prepare("SELECT p.id, p.name, p.updated_at,
-                CASE WHEN ((p.image_data IS NOT NULL AND p.image_data<>'') OR (p.image_path IS NOT NULL AND p.image_path<>'')) THEN 1 ELSE 0 END AS has_image,
+                ((p.image_data IS NOT NULL AND p.image_data<>'') OR (p.image_path IS NOT NULL AND p.image_path<>'')) AS has_image,
                 c.name AS category_name,
                 SUM(ti.quantity-ti.voided_qty) AS total_sold,
                 SUM(ti.subtotal-(ti.voided_qty*ti.price)) AS total_revenue
@@ -4206,7 +3602,7 @@ if (isset($_GET['api'])) {
                 // main product grid used to have. Now returns a has_image flag and the
                 // frontend loads each photo lazily via ?api=get_product_image&id=.. instead.
                 $rows = $db->prepare("SELECT p.id,p.name,p.updated_at,
-            CASE WHEN ((p.image_data IS NOT NULL AND p.image_data<>'') OR (p.image_path IS NOT NULL AND p.image_path<>'')) THEN 1 ELSE 0 END AS has_image,
+            ((p.image_data IS NOT NULL AND p.image_data<>'') OR (p.image_path IS NOT NULL AND p.image_path<>'')) AS has_image,
             c.name AS category_name,p.total_sold,p.total_revenue FROM products p LEFT JOIN categories c ON p.category_id=c.id WHERE p.store_id=? AND p.total_sold>0 ORDER BY p.total_sold DESC LIMIT $lim");
                 $rows->execute([$topSid]);
                 json(true, $rows->fetchAll());
@@ -4360,7 +3756,7 @@ if (isset($_GET['api'])) {
                 // the redesigned printed receipt header (BIR-style store details) —
                 // same generic settings table, no schema change, no existing key touched.
                 $ssSid = currentStoreId();
-                foreach (['shop_name', 'currency', 'vat_rate', 'tax_rate', 'shop_address', 'shop_tin', 'terminal_id', 'qz_drawer_enabled', 'qz_drawer_printer', 'sales_retention_days', 'auto_cleanup_enabled', 'receipt_paper_size'] as $k) if (isset($body[$k])) $st->execute([$ssSid, $k, (string)$body[$k]]);
+                foreach (['shop_name', 'currency', 'vat_rate', 'tax_rate', 'shop_address', 'shop_tin', 'terminal_id', 'qz_drawer_enabled', 'qz_drawer_printer', 'sales_retention_days', 'auto_cleanup_enabled'] as $k) if (isset($body[$k])) $st->execute([$ssSid, $k, (string)$body[$k]]);
                 unset($_SESSION['store_settings_' . $ssSid]); // bust the per-session settings cache so the change shows up immediately
                 json(true, ['ok' => true]);
                 break;
@@ -5844,8 +5240,7 @@ $storeSettings = [
     'shop_address' => '',
     'shop_tin' => '',
     'terminal_id' => 'POS-01',
-    'shop_logo' => '',
-    'receipt_paper_size' => '58mm'
+    'shop_logo' => ''
 ];
 if (loggedIn()) {
     // PERFORMANCE FIX: settings barely ever change, but were being
@@ -5912,8 +5307,8 @@ if ($page === 'login' && $_SERVER['REQUEST_METHOD'] === 'POST') {
                     $loginError = "Too many failed attempts. Try again in $lockedMin minute" . ($lockedMin === 1 ? '' : 's') . '.';
                     break;
                 } else {
-                    $stmt = $db->prepare("SELECT id,username,password,full_name,role,email,store_id FROM users WHERE LOWER(username)=LOWER(?) OR LOWER(email)=LOWER(?) LIMIT 1");
-                    $stmt->execute([$username, $username]);
+                    $stmt = $db->prepare("SELECT id,username,password,full_name,role,email,store_id FROM users WHERE username=? LIMIT 1");
+                    $stmt->execute([$username]);
                     $user = $stmt->fetch();
                     if ($user && password_verify($password, $user['password'])) {
                         recordLoginAttempt($db, $username, true);
@@ -5952,13 +5347,9 @@ if ($page === 'login' && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
                 $msg = $e->getMessage();
                 if (stripos($msg, 'connection') !== false || stripos($msg, 'server closed') !== false || stripos($msg, 'timeout') !== false || stripos($msg, 'remaining connection slots') !== false) {
-                    if (str_contains(DATABASE_URL, 'supabase.co') && !str_contains(DATABASE_URL, 'pooler')) {
-                        $loginError = 'Database connection timed out. On Render, direct Supabase URLs require IPv6; please update DATABASE_URL to use the Supabase Connection Pooler (port 6543) in your dashboard.';
-                    } else {
-                        $loginError = 'Database is reconnecting or waking up. Please wait 10 seconds and try again.';
-                    }
+                    $loginError = 'Database is reconnecting or waking up. Please wait 10 seconds and try again.';
                 } else {
-                    $loginError = 'Something went wrong: ' . $msg;
+                    $loginError = 'Something went wrong. Please try again.';
                 }
             }
         }
@@ -6115,31 +5506,20 @@ if ($page === 'signup' && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 $newStoreId = (int)lastInsertedId($db);
                 $db->prepare("INSERT INTO users (username,password,full_name,email,role,store_id) VALUES (?,?,?,?,'owner',?)")
                     ->execute([$username, password_hash($pw, PASSWORD_DEFAULT), $fullName, $email, $newStoreId]);
-                $driver = $db->getAttribute(PDO::ATTR_DRIVER_NAME);
-                if ($driver === 'mysql') {
-                    $db->prepare("INSERT IGNORE INTO settings (store_id,`key`,value) VALUES (?,'shop_name','ProCast'),(?,'currency','₱'),(?,'vat_rate','0'),(?,'tax_rate','0')")
-                        ->execute([$newStoreId, $newStoreId, $newStoreId, $newStoreId]);
-                    $db->prepare("INSERT IGNORE INTO categories (store_id,name,sort_order) VALUES (?,'Food',0),(?,'Drinks',1),(?,'Snacks',2),(?,'Desserts',3),(?,'Others',4)")
-                        ->execute([$newStoreId, $newStoreId, $newStoreId, $newStoreId, $newStoreId]);
-                } elseif ($driver === 'sqlite') {
-                    $db->prepare("INSERT OR IGNORE INTO settings (store_id,key,value) VALUES (?,'shop_name','ProCast'),(?,'currency','₱'),(?,'vat_rate','0'),(?,'tax_rate','0')")
-                        ->execute([$newStoreId, $newStoreId, $newStoreId, $newStoreId]);
-                    $db->prepare("INSERT OR IGNORE INTO categories (store_id,name,sort_order) VALUES (?,'Food',0),(?,'Drinks',1),(?,'Snacks',2),(?,'Desserts',3),(?,'Others',4)")
-                        ->execute([$newStoreId, $newStoreId, $newStoreId, $newStoreId, $newStoreId]);
-                } else {
-                    $db->prepare("INSERT INTO settings (store_id,key,value) VALUES (?,'shop_name','ProCast'),(?,'currency','₱'),(?,'vat_rate','0'),(?,'tax_rate','0') ON CONFLICT (store_id,key) DO NOTHING")
-                        ->execute([$newStoreId, $newStoreId, $newStoreId, $newStoreId]);
-                    $db->prepare("INSERT INTO categories (store_id,name,sort_order) VALUES (?,'Food',0),(?,'Drinks',1),(?,'Snacks',2),(?,'Desserts',3),(?,'Others',4) ON CONFLICT (store_id,name) DO NOTHING")
-                        ->execute([$newStoreId, $newStoreId, $newStoreId, $newStoreId, $newStoreId]);
-                }
+                // Seed this store with its own starter settings + default
+                // categories, same as what a fresh install gets — a new
+                // store shouldn't start with literally nothing to pick from.
+                $db->prepare("INSERT INTO settings (store_id,key,value) VALUES (?,'shop_name','ProCast'),(?,'currency','₱'),(?,'vat_rate','0'),(?,'tax_rate','0') ON CONFLICT (store_id,key) DO NOTHING")
+                    ->execute([$newStoreId, $newStoreId, $newStoreId, $newStoreId]);
+                $db->prepare("INSERT INTO categories (store_id,name,sort_order) VALUES (?,'Food',0),(?,'Drinks',1),(?,'Snacks',2),(?,'Desserts',3),(?,'Others',4) ON CONFLICT (store_id,name) DO NOTHING")
+                    ->execute([$newStoreId, $newStoreId, $newStoreId, $newStoreId, $newStoreId]);
                 $db->commit();
                 $_SESSION['signup_success'] = true;
                 header('Location: ?page=login&signup=success');
                 exit;
             } catch (Exception $e) {
                 if ($db->inTransaction()) $db->rollBack();
-                error_log('Signup exception: ' . $e->getMessage());
-                $signupErrors[] = 'Something went wrong creating your account: ' . htmlspecialchars($e->getMessage());
+                $signupErrors[] = 'Something went wrong creating your account. Please try again.';
             }
         }
     }
@@ -6169,13 +5549,7 @@ if ($page === 'logout') {
 restoreLoginFromCookie();
 if ($page !== 'login' && $page !== 'forgot' && $page !== 'reset' && $page !== 'signup' && $page !== 'landing') requireLogin();
 
-$currentUser = loggedIn() ? [
-    'id' => $_SESSION['uid'] ?? 0,
-    'username' => $_SESSION['username'] ?? '',
-    'full_name' => $_SESSION['full_name'] ?? '',
-    'role' => $_SESSION['role'] ?? '',
-    'email' => $_SESSION['email'] ?? ''
-] : [];
+$currentUser = loggedIn() ? ['id' => $_SESSION['uid'], 'username' => $_SESSION['username'], 'full_name' => $_SESSION['full_name'], 'role' => $_SESSION['role'], 'email' => $_SESSION['email'] ?? ''] : [];
 
 // ═══════════════════════════════════════════════════
 //  SESSION ROUTING — role-based bypass + shift-lock gate
@@ -6197,7 +5571,7 @@ if (in_array($page, ['settings', 'products', 'warehouse', 'analytics', 'forecast
 $showShiftLockOnLoad = false;
 if ($isCashierRole && $page !== 'login') {
     $chk = db()->prepare("SELECT id FROM cash_floats WHERE user_id=? AND status='open' LIMIT 1");
-    $chk->execute([$currentUser['id'] ?? 0]);
+    $chk->execute([$currentUser['id']]);
     $showShiftLockOnLoad = !$chk->fetch();
 }
 
@@ -8866,8 +8240,6 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
     <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
     <!-- SheetJS — builds .xlsx files client-side for the Warehouse/History Excel export buttons -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-    <!-- bcryptjs — offline password hashing & verification for offline login/signup via IndexedDB -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/bcryptjs/2.4.3/bcrypt.min.js"></script>
     <!-- QZ Tray — local desktop bridge that lets this page send raw ESC/POS
      commands to a real printer (e.g. a cash-drawer kick pulse). Requires
      QZ Tray to be installed and running on the till's own PC; if it isn't,
@@ -8902,42 +8274,6 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
             --r: 16px;
             --r-sm: 10px;
             --nav: 64px;
-        }
-
-        /* ── OFFLINE STATUS PILL ── */
-        .network-pill {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            padding: 5px 12px;
-            border-radius: 99px;
-            font-size: 0.76rem;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.2s ease;
-            user-select: none;
-            letter-spacing: 0.2px;
-        }
-        .network-pill.online {
-            background: rgba(46, 204, 113, 0.14);
-            color: #2ecc71;
-            border: 1px solid rgba(46, 204, 113, 0.35);
-        }
-        .network-pill.online:hover {
-            background: rgba(46, 204, 113, 0.22);
-        }
-        .network-pill.offline {
-            background: rgba(231, 76, 60, 0.18);
-            color: #e74c3c;
-            border: 1px solid rgba(231, 76, 60, 0.45);
-        }
-        .network-pill.offline:hover {
-            background: rgba(231, 76, 60, 0.28);
-        }
-        .network-pill.syncing {
-            background: rgba(52, 152, 219, 0.18);
-            color: #3498db;
-            border: 1px solid rgba(52, 152, 219, 0.45);
         }
 
         /* ── LIGHT MODE ──
@@ -9177,10 +8513,6 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
             min-height: 100vh;
             width: 100%;
             box-sizing: border-box;
-        }
-
-        .pos-page-view {
-            width: 100%;
         }
 
         .container {
@@ -11922,27 +11254,27 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
         btn.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
     }
 </script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/bcryptjs/2.4.3/bcrypt.min.js"></script>
 </head>
 <body<?= $showShiftLockOnLoad ? ' class="shift-locked"' : '' ?>>
-    <!-- ── NAV ── -->
-    <nav class="nav" id="main-top-nav" style="<?= $isAuthPage ? 'display:none;' : '' ?>">
-            <a href="?page=dashboard" onclick="return navigateToPage('dashboard', event);" class="nav-logo" style="display:flex;align-items:center;gap:8px;">
+    <?php if (!$isAuthPage): ?>
+        <!-- ── NAV ── -->
+        <nav class="nav">
+            <a href="?page=dashboard" class="nav-logo" style="display:flex;align-items:center;gap:8px;">
                 <?= renderShopNameHtml($storeSettings['shop_name'], 'b') ?>
             </a>
             <div class="nav-links">
-                <a href="?page=dashboard" onclick="return navigateToPage('dashboard', event);" class="nav-link <?= $page === 'dashboard' ? 'active' : '' ?>"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:3px;"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>Dashboard</a>
+                <a href="?page=dashboard" class="nav-link <?= $page === 'dashboard' ? 'active' : '' ?>"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:3px;"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>Dashboard</a>
                 <?php if (!$isCashierRole): ?>
-                    <a href="?page=products" onclick="return navigateToPage('products', event);" class="nav-link <?= $page === 'products' ? 'active' : '' ?>"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:3px;"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>Products</a>
-                    <a href="?page=warehouse" onclick="return navigateToPage('warehouse', event);" class="nav-link <?= $page === 'warehouse' ? 'active' : '' ?>"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:3px;"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>Warehouse</a>
+                    <a href="?page=products" class="nav-link <?= $page === 'products' ? 'active' : '' ?>"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:3px;"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>Products</a>
+                    <a href="?page=warehouse" class="nav-link <?= $page === 'warehouse' ? 'active' : '' ?>"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:3px;"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>Warehouse</a>
                 <?php endif; ?>
                 <?php if (!$isCashierRole): ?>
-                    <a href="?page=sales" onclick="return navigateToPage('sales', event);" class="nav-link <?= $page === 'sales' ? 'active' : '' ?>"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:3px;"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>Sales</a>
+                    <a href="?page=sales" class="nav-link <?= $page === 'sales' ? 'active' : '' ?>"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:3px;"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>Sales</a>
                 <?php endif; ?>
                 <?php if (!$isCashierRole): ?>
-                    <a href="?page=analytics" onclick="return navigateToPage('analytics', event);" class="nav-link <?= $page === 'analytics' ? 'active' : '' ?>"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:3px;"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>Analytics</a>
-                    <a href="?page=forecast" onclick="return navigateToPage('forecast', event);" class="nav-link <?= $page === 'forecast' ? 'active' : '' ?>"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:3px;"><path d="M23 6l-9.5 9.5-5-5L1 18"/><polyline points="17 6 23 6 23 12"/></svg>Forecast</a>
-                    <a href="?page=settings" onclick="return navigateToPage('settings', event);" class="nav-link <?= $page === 'settings' ? 'active' : '' ?>"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:3px;"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>Settings</a>
+                    <a href="?page=analytics" class="nav-link <?= $page === 'analytics' ? 'active' : '' ?>"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:3px;"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>Analytics</a>
+                    <a href="?page=forecast" class="nav-link <?= $page === 'forecast' ? 'active' : '' ?>"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:3px;"><path d="M23 6l-9.5 9.5-5-5L1 18"/><polyline points="17 6 23 6 23 12"/></svg>Forecast</a>
+                    <a href="?page=settings" class="nav-link <?= $page === 'settings' ? 'active' : '' ?>"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:3px;"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>Settings</a>
                 <?php endif; ?>
             </div>
             <!-- Light/Dark app-theme toggle — see toggleTheme() in the main
@@ -11950,21 +11282,24 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
      light) and ☀️ (currently light, click for dark); state also
      controllable from Settings → Appearance. -->
             <div class="nav-right">
-                <div id="network-status-pill" class="network-pill online" onclick="handleNetworkPillClick()" title="Network connection status — tap to sync">🟢</div>
                 <button type="button" id="theme-toggle-btn" class="nav-link" style="padding:6px 9px;" title="Switch to light mode" onclick="toggleTheme()">🌙</button>
-                <span class="nav-user-name" title="<?= htmlspecialchars($currentUser['full_name'] ?? '') ?>"><?= htmlspecialchars($currentUser['full_name'] ?? '') ?></span>
+                <span class="nav-user-name" title="<?= htmlspecialchars($currentUser['full_name']) ?>"><?= htmlspecialchars($currentUser['full_name']) ?></span>
                 <?php if ($isCashierRole): ?>
-                    <button type="button" class="btn btn-secondary btn-sm nav-logout-btn" onclick="requestEndShift()" aria-label="End Shift and count cash drawer">End Shift</button>
-                    <a href="?page=logout" class="btn btn-secondary btn-sm nav-logout-btn" onclick="return attemptLogout(event)" style="margin-left:4px;" aria-label="Sign out of your account" role="button">Logout</a>
+                    <!-- Cashiers have no direct Logout link — the only way out is completing
+           the mandatory closing cash count via End Shift, which then redirects
+           to ?page=logout itself once the drawer count is submitted
+           (see submitShiftModal()'s close-shift branch). This keeps "No Count,
+           No Transaction" from being bypassed by simply logging out mid-shift. -->
+                    <button class="btn btn-secondary btn-sm nav-logout-btn" onclick="requestEndShift()">End Shift</button>
                 <?php else: ?>
-                    <a href="?page=logout" class="btn btn-secondary btn-sm nav-logout-btn" onclick="return attemptLogout(event)" aria-label="Sign out of your account" role="button">Logout</a>
+                    <a href="?page=logout" class="btn btn-secondary btn-sm nav-logout-btn" onclick="return attemptLogout(event)">Logout</a>
                 <?php endif; ?>
             </div>
         </nav>
         <!-- ── MOBILE NAV ── -->
-        <nav class="mob-nav" id="main-mob-nav" style="<?= $isAuthPage ? 'display:none;' : '' ?>">
+        <nav class="mob-nav">
             <div class="mob-nav-inner">
-                <a href="?page=dashboard" onclick="return navigateToPage('dashboard', event);" class="mob-btn <?= $page === 'dashboard' ? 'active' : '' ?>">
+                <a href="?page=dashboard" class="mob-btn <?= $page === 'dashboard' ? 'active' : '' ?>">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <rect x="3" y="3" width="7" height="7" />
                         <rect x="14" y="3" width="7" height="7" />
@@ -11973,12 +11308,12 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                     </svg>Dash
                 </a>
                 <?php if (!$isCashierRole): ?>
-                    <a href="?page=products" onclick="return navigateToPage('products', event);" class="mob-btn <?= $page === 'products' ? 'active' : '' ?>">
+                    <a href="?page=products" class="mob-btn <?= $page === 'products' ? 'active' : '' ?>">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z" />
                         </svg>Items
                     </a>
-                    <a href="?page=warehouse" onclick="return navigateToPage('warehouse', event);" class="mob-btn <?= $page === 'warehouse' ? 'active' : '' ?>">
+                    <a href="?page=warehouse" class="mob-btn <?= $page === 'warehouse' ? 'active' : '' ?>">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
                             <polyline points="9 22 9 12 15 12 15 22" />
@@ -11986,7 +11321,7 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                     </a>
                 <?php endif; ?>
                 <?php if (!$isCashierRole): ?>
-                    <a href="?page=sales" onclick="return navigateToPage('sales', event);" class="mob-btn <?= $page === 'sales' ? 'active' : '' ?>">
+                    <a href="?page=sales" class="mob-btn <?= $page === 'sales' ? 'active' : '' ?>">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
                             <polyline points="14 2 14 8 20 8" />
@@ -12001,20 +11336,20 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                     </a>
                 <?php endif; ?>
                 <?php if (!$isCashierRole): ?>
-                    <a href="?page=analytics" onclick="return navigateToPage('analytics', event);" class="mob-btn <?= $page === 'analytics' ? 'active' : '' ?>">
+                    <a href="?page=analytics" class="mob-btn <?= $page === 'analytics' ? 'active' : '' ?>">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <line x1="18" y1="20" x2="18" y2="10" />
                             <line x1="12" y1="20" x2="12" y2="4" />
                             <line x1="6" y1="20" x2="6" y2="14" />
                         </svg>Stats
                     </a>
-                    <a href="?page=forecast" onclick="return navigateToPage('forecast', event);" class="mob-btn <?= $page === 'forecast' ? 'active' : '' ?>">
+                    <a href="?page=forecast" class="mob-btn <?= $page === 'forecast' ? 'active' : '' ?>">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M3 3l7.5 7.5L13 8l8 8" />
                             <path d="M21 16v5h-5" />
                         </svg>Forecast
                     </a>
-                    <a href="?page=settings" onclick="return navigateToPage('settings', event);" class="mob-btn <?= $page === 'settings' ? 'active' : '' ?>">
+                    <a href="?page=settings" class="mob-btn <?= $page === 'settings' ? 'active' : '' ?>">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <circle cx="12" cy="12" r="3" />
                             <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z" />
@@ -12037,15 +11372,9 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                         </svg>End
                     </a>
                 <?php endif; ?>
-                <a href="?page=logout" class="mob-btn" onclick="return attemptLogout(event)" title="Sign Out" aria-label="Sign out of your account" role="button" style="color:var(--text3);">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
-                        <polyline points="16 17 21 12 16 7" />
-                        <line x1="21" y1="12" x2="9" y2="12" />
-                    </svg>Logout
-                </a>
             </div>
         </nav>
+    <?php endif; ?>
 
     <!-- ── PWA FLOATING INSTALL PROMPT (shown on mobile when installable) ── -->
     <div id="pwa-install-banner" style="display:none;position:fixed;bottom:70px;left:14px;right:14px;max-width:420px;margin:0 auto;background:var(--surface2,#1e293b);border:1.5px solid var(--accent,#2563eb);border-radius:12px;padding:12px 14px;box-shadow:0 10px 25px rgba(0,0,0,0.5);z-index:99999;align-items:center;justify-content:space-between;gap:10px;">
@@ -12861,8 +12190,8 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
         </script>
     <?php endif; ?>
 
-    <?php if ($page === 'login' || !$isAuthPage): ?>
-        <main class="public-auth-bg" style="<?= $page === 'login' ? 'min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;background:var(--bg);position:relative;overflow:hidden;' : 'min-height:100vh;display:none;align-items:center;justify-content:center;padding:24px;background:var(--bg);position:relative;overflow:hidden;' ?>">
+    <?php if ($page === 'login'): ?>
+        <main class="public-auth-bg" style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;background:var(--bg);position:relative;overflow:hidden;">
             <div style="position:absolute;top:-10%;left:-15%;width:60%;height:120%;background:radial-gradient(circle, rgba(47,127,245,.25) 0%, transparent 70%);pointer-events:none;"></div>
             <div class="login-wrap">
                 <div class="login-logo">
@@ -13778,7 +13107,7 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
     <!-- ══════════════════════════════════════════
      DASHBOARD PAGE
 ══════════════════════════════════════════ -->
-    <div id="view-dashboard" class="pos-page-view" style="<?= ($page === 'dashboard' || empty($page)) ? '' : 'display:none;' ?>">
+    <?php if ($page === 'dashboard'): ?>
         <main class="page">
             <div class="container">
                 <div class="page-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
@@ -14106,13 +13435,12 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                 </button>
             </div>
         </div>
-    </div>
+    <?php endif; ?>
 
     <!-- ══════════════════════════════════════════
      PRODUCTS PAGE
 ══════════════════════════════════════════ -->
-    <?php if (!$isCashierRole): ?>
-    <div id="view-products" class="pos-page-view" style="<?= $page === 'products' ? '' : 'display:none;' ?>">
+    <?php if ($page === 'products'): ?>
         <main class="page">
             <div class="container">
                 <div class="page-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
@@ -14150,13 +13478,13 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                 <div class="grid-4 fade-in" id="prod-grid"></div>
             </div>
         </main>
-    </div>
+    <?php endif; ?>
 
     <!-- ══════════════════════════════════════════
      WAREHOUSE PAGE
 ══════════════════════════════════════════ -->
-    <div id="view-warehouse" class="pos-page-view" style="<?= $page === 'warehouse' ? '' : 'display:none;' ?>">
-        <main class="page">
+        <?php if ($page === 'warehouse'): ?>
+            <main class="page">
                 <div class="container">
                     <div class="page-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
                         <div>
@@ -14416,13 +13744,15 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                     </div>
                 </div>
             </div>
-    </div>
 
-    <!-- ══════════════════════════════════════════
+            
+        <?php endif; ?>
+
+        <!-- ══════════════════════════════════════════
      SALES PAGE
 ══════════════════════════════════════════ -->
-    <div id="view-sales" class="pos-page-view" style="<?= $page === 'sales' ? '' : 'display:none;' ?>">
-        <main class="page">
+        <?php if ($page === 'sales'): ?>
+            <main class="page">
                 <div class="container">
                     <div class="page-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
                         <div>
@@ -14560,13 +13890,14 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                     </div>
                 </div>
             </div>
-    </div>
 
-    <!-- ══════════════════════════════════════════
+        <?php endif; ?>
+
+        <!-- ══════════════════════════════════════════
      ANALYTICS PAGE
 ══════════════════════════════════════════ -->
-    <div id="view-analytics" class="pos-page-view" style="<?= $page === 'analytics' ? '' : 'display:none;' ?>">
-        <main class="page">
+        <?php if ($page === 'analytics'): ?>
+            <main class="page">
                 <div class="container">
                     <div class="page-header">
                         <h1 class="page-title">Analytics &amp; <span>Insights</span></h1>
@@ -14680,13 +14011,13 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                     </div>
                 </div>
             </main>
-    </div>
+        <?php endif; ?>
 
-    <!-- ══════════════════════════════════════════
+        <!-- ══════════════════════════════════════════
      FORECAST PAGE
 ══════════════════════════════════════════ -->
-    <div id="view-forecast" class="pos-page-view" style="<?= $page === 'forecast' ? '' : 'display:none;' ?>">
-        <main class="page">
+        <?php if ($page === 'forecast'): ?>
+            <main class="page">
                 <div class="container">
                     <div class="page-header">
                         <h1 class="page-title">Demand <span>Forecasting</span></h1>
@@ -14811,13 +14142,13 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
 
                 </div>
             </main>
-    </div>
+        <?php endif; ?>
 
-    <!-- ══════════════════════════════════════════
+        <!-- ══════════════════════════════════════════
      SETTINGS PAGE
 ══════════════════════════════════════════ -->
-    <div id="view-settings" class="pos-page-view" style="<?= $page === 'settings' ? '' : 'display:none;' ?>">
-        <main class="page">
+        <?php if ($page === 'settings'): ?>
+            <main class="page">
                 <div class="container" style="max-width:680px;">
                     <div class="page-header">
                         <h1 class="page-title">Store <span>Settings</span></h1>
@@ -14904,13 +14235,6 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                                 <div class="form-group"><label class="form-label">VAT (%)</label><input type="number" class="form-input" id="vat-rate-inp" min="0" max="100" step="0.01" placeholder="0" /></div>
                                 <div class="form-group"><label class="form-label">Tax (%)</label><input type="number" class="form-input" id="tax-rate-inp" min="0" max="100" step="0.01" placeholder="0" /></div>
                             </div>
-                            <div class="form-group">
-                                <label class="form-label">Receipt Printer Paper Size <span style="color:var(--text3);font-weight:400;">(thermal rolls)</span></label>
-                                <select class="form-input" id="receipt-paper-size-inp">
-                                    <option value="58mm">58mm (2 1/4" / Compact Thermal Roll - 32 cols)</option>
-                                    <option value="80mm">80mm (3 1/8" / Standard Counter Thermal Roll - 48 cols)</option>
-                                </select>
-                            </div>
                             <button class="btn btn-primary" onclick="saveSettings()">Save Settings</button>
                         </div>
                     </div>
@@ -14989,7 +14313,7 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                         </div>
                     </div>
 
-                    <?php if (($currentUser['role'] ?? '') === 'owner'): ?>
+                    <?php if ($currentUser['role'] === 'owner'): ?>
                         <div class="card" style="margin-bottom:16px;">
                             <div class="card-title collapse-toggle" onclick="toggleCollapseCard('users-wrap', this)" style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;">
                                 <span>User Accounts</span><span class="collapse-chevron">▾</span>
@@ -15015,7 +14339,7 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                         </div>
                     <?php endif; ?>
 
-                    <?php if (($currentUser['role'] ?? '') === 'owner'): ?>
+                    <?php if ($currentUser['role'] === 'owner'): ?>
                         <!-- CASHIER SHIFT MONITOR — owner-only, shown LAST on the page. Who's clocked
        in right now, what SHOULD be in their drawer, and a shortage/overage
        track record per cashier. -->
@@ -15170,8 +14494,7 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                     </div>
                 </div>
             </main>
-    </div>
-    <?php endif; // end !$isCashierRole ?>
+        <?php endif; ?>
 
         <!-- ── TOAST ── -->
         <div id="toast-wrap"></div>
@@ -15181,104 +14504,8 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
 ══════════════════════════════════════════ -->
         <script>
             const API_BASE = '?api=';
-            let CSRF_TOKEN = '<?= htmlspecialchars(CSRF_TOKEN, ENT_QUOTES) ?>';
+            const CSRF_TOKEN = '<?= htmlspecialchars(CSRF_TOKEN, ENT_QUOTES) ?>';
             let cur_page = '<?= $page ?>';
-
-            // ── SPA CLIENT-SIDE ROUTER ──
-            function showPage(targetPage, pushState = true) {
-                if (!targetPage) return;
-                const isCashier = <?= $isCashierRole ? 'true' : 'false' ?>;
-                if (isCashier && targetPage !== 'dashboard') {
-                    targetPage = 'dashboard';
-                }
-
-                const views = document.querySelectorAll('.pos-page-view');
-                if (views.length > 0) {
-                    views.forEach(el => {
-                        el.style.display = 'none';
-                    });
-                    const targetView = document.getElementById('view-' + targetPage);
-                    if (targetView) {
-                        targetView.style.display = '';
-                    }
-                }
-
-                // Update cur_page
-                cur_page = targetPage;
-
-                // Update desktop nav links
-                document.querySelectorAll('.nav-links .nav-link').forEach(link => {
-                    const href = link.getAttribute('href') || '';
-                    const match = href.includes('?page=' + targetPage);
-                    link.classList.toggle('active', match);
-                });
-
-                // Update mobile nav buttons
-                document.querySelectorAll('.mob-nav .mob-btn').forEach(btn => {
-                    const href = btn.getAttribute('href') || '';
-                    const match = href.includes('?page=' + targetPage);
-                    btn.classList.toggle('active', match);
-                });
-
-                // Scanner float visibility & camera cleanup
-                const sf = document.getElementById('scanner-float');
-                if (sf) {
-                    sf.style.display = (targetPage === 'dashboard') ? 'block' : 'none';
-                }
-                if (targetPage !== 'dashboard') {
-                    if (typeof stopScanner === 'function') stopScanner();
-                    if (typeof _gridObserver !== 'undefined' && _gridObserver) {
-                        _gridObserver.disconnect();
-                        _gridObserver = null;
-                    }
-                }
-
-                // Push URL state without reloading
-                if (pushState && window.history && window.history.pushState) {
-                    const newUrl = window.location.pathname + '?page=' + encodeURIComponent(targetPage);
-                    if (window.location.search !== '?page=' + targetPage) {
-                        window.history.pushState({ page: targetPage }, '', newUrl);
-                    }
-                }
-
-                // Auto-refresh page view data
-                try {
-                    if (targetPage === 'dashboard' && typeof renderGrid === 'function') {
-                        renderGrid();
-                    } else if (targetPage === 'products' && typeof prodsInit === 'function') {
-                        prodsInit();
-                    } else if (targetPage === 'warehouse' && typeof warehouseInit === 'function') {
-                        warehouseInit();
-                    } else if (targetPage === 'sales' && typeof salesInit === 'function') {
-                        salesInit();
-                    } else if (targetPage === 'analytics' && typeof analyticsInit === 'function') {
-                        analyticsInit();
-                    } else if (targetPage === 'forecast' && typeof forecastInit === 'function') {
-                        forecastInit();
-                    } else if (targetPage === 'settings' && typeof settingsInit === 'function') {
-                        settingsInit();
-                    }
-                } catch (err) {
-                    console.warn('[SPA] Error refreshing view:', err);
-                }
-
-                window.scrollTo({ top: 0, behavior: 'instant' });
-            }
-
-            function navigateToPage(targetPage, e) {
-                if (e) {
-                    if (e.ctrlKey || e.metaKey || e.shiftKey || e.button !== 0) return true;
-                    e.preventDefault();
-                }
-                showPage(targetPage, true);
-                return false;
-            }
-
-            window.addEventListener('popstate', function(e) {
-                const params = new URLSearchParams(window.location.search);
-                const p = params.get('page') || 'dashboard';
-                showPage(p, false);
-            });
             // Default product photo (no-photo placeholder + broken-photo fallback
             // everywhere a product image is rendered). Resolved server-side so the
             // cache-buster query string matches the actual file on disk.
@@ -15290,11 +14517,7 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
             function prodImgUrl(id, v) {
                 return '?api=get_product_image&id=' + id + (v ? '&v=' + encodeURIComponent(v) : '');
             }
-            function prodHasImage(p) {
-                if (!p) return false;
-                return !!(p.has_image === true || p.has_image == 1 || p.has_image === 't' || p.has_image === 'true');
-            }
-            let USER_ROLE = '<?= htmlspecialchars($currentUser['role'] ?? '') ?>';
+            const USER_ROLE = '<?= htmlspecialchars($currentUser['role'] ?? '') ?>';
             // Mirrors $storeSettings['shop_name'] server-side so printed receipts show
             // whatever the owner actually named their shop, instead of a hardcoded brand.
             const SHOP_NAME = <?= json_encode($storeSettings['shop_name']) ?>;
@@ -15305,8 +14528,6 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
             const SHOP_ADDRESS = <?= json_encode($storeSettings['shop_address']) ?>;
             const SHOP_TIN = <?= json_encode($storeSettings['shop_tin']) ?>;
             const TERMINAL_ID = <?= json_encode($storeSettings['terminal_id']) ?>;
-            const RECEIPT_PAPER_SIZE = <?= json_encode($storeSettings['receipt_paper_size'] ?? '58mm') ?>;
-            let currentReceiptPaperSize = RECEIPT_PAPER_SIZE || '58mm';
             // Cash-drawer-via-QZ-Tray config. QZ_DRAWER_ENABLED gates the automatic
             // post-payment kick; QZ_DRAWER_PRINTER is the exact OS printer name the
             // drawer is physically wired to (leave blank until Settings is configured
@@ -15315,379 +14536,8 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
             // there (see saveDrawerConfig()), these are just the page-load values.
             let QZ_DRAWER_ENABLED = <?= json_encode(!empty($storeSettings['qz_drawer_enabled'])) ?>;
             let QZ_DRAWER_PRINTER = <?= json_encode($storeSettings['qz_drawer_printer'] ?? '') ?>;
-            let CASHIER_NAME = <?= json_encode($currentUser['full_name'] ?? '') ?>;
+            const CASHIER_NAME = <?= json_encode($currentUser['full_name'] ?? '') ?>;
             const SHOW_SHIFT_LOCK_ON_LOAD = <?= $showShiftLockOnLoad ? 'true' : 'false' ?>;
-            const CURRENT_STORE_ID = <?= json_encode(currentStoreId()) ?>;
-            let CURRENT_USER_ID = <?= json_encode((int)($_SESSION['uid'] ?? 1)) ?>;
-
-            // ══════════════════════════════════════════════════
-            //  FULLY OFFLINE INDEXEDDB ENGINE (PosIDB)
-            // ══════════════════════════════════════════════════
-            const PosIDB = (() => {
-                const DB_NAME = 'procast_pos_offline';
-                const DB_VERSION = 3;
-                let _dbPromise = null;
-
-                function openDB() {
-                    if (_dbPromise) return _dbPromise;
-                    _dbPromise = new Promise((resolve) => {
-                        if (!('indexedDB' in window)) return resolve(null);
-                        try {
-                            const req = indexedDB.open(DB_NAME, DB_VERSION);
-                            req.onupgradeneeded = (e) => {
-                                const db = e.target.result;
-                                ['products', 'categories', 'settings', 'offline_orders', 'offline_mutations', 'auth_state', 'offline_users', 'pending_users'].forEach(st => {
-                                    if (!db.objectStoreNames.contains(st)) {
-                                        let key = 'id';
-                                        if (st === 'settings' || st === 'auth_state') key = 'key';
-                                        else if (st === 'offline_orders') key = 'localRef';
-                                        else if (st === 'offline_mutations') key = 'localMutationId';
-                                        else if (st === 'offline_users' || st === 'pending_users') key = 'username';
-                                        db.createObjectStore(st, { keyPath: key });
-                                    }
-                                });
-                            };
-                            req.onsuccess = () => resolve(req.result);
-                            req.onerror = () => resolve(null);
-                        } catch (e) {
-                            resolve(null);
-                        }
-                    });
-                    return _dbPromise;
-                }
-
-                async function setItem(storeName, val) {
-                    const db = await openDB();
-                    if (!db) return false;
-                    return new Promise(resolve => {
-                        try {
-                            const tx = db.transaction(storeName, 'readwrite');
-                            tx.objectStore(storeName).put(val);
-                            tx.oncomplete = () => resolve(true);
-                            tx.onerror = () => resolve(false);
-                        } catch (e) { resolve(false); }
-                    });
-                }
-
-                async function getItem(storeName, key) {
-                    const db = await openDB();
-                    if (!db) return null;
-                    return new Promise(resolve => {
-                        try {
-                            const tx = db.transaction(storeName, 'readonly');
-                            const req = tx.objectStore(storeName).get(key);
-                            req.onsuccess = () => resolve(req.result || null);
-                            req.onerror = () => resolve(null);
-                        } catch (e) { resolve(null); }
-                    });
-                }
-
-                async function setAll(storeName, items) {
-                    const db = await openDB();
-                    if (!db || !Array.isArray(items)) return false;
-                    return new Promise(resolve => {
-                        try {
-                            const tx = db.transaction(storeName, 'readwrite');
-                            const store = tx.objectStore(storeName);
-                            items.forEach(it => store.put(it));
-                            tx.oncomplete = () => resolve(true);
-                            tx.onerror = () => resolve(false);
-                        } catch (e) { resolve(false); }
-                    });
-                }
-
-                async function getAll(storeName) {
-                    const db = await openDB();
-                    if (!db) return [];
-                    return new Promise(resolve => {
-                        try {
-                            const tx = db.transaction(storeName, 'readonly');
-                            const req = tx.objectStore(storeName).getAll();
-                            req.onsuccess = () => resolve(req.result || []);
-                            req.onerror = () => resolve([]);
-                        } catch (e) { resolve([]); }
-                    });
-                }
-
-                async function deleteItem(storeName, key) {
-                    const db = await openDB();
-                    if (!db) return false;
-                    return new Promise(resolve => {
-                        try {
-                            const tx = db.transaction(storeName, 'readwrite');
-                            tx.objectStore(storeName).delete(key);
-                            tx.oncomplete = () => resolve(true);
-                            tx.onerror = () => resolve(false);
-                        } catch (e) { resolve(false); }
-                    });
-                }
-
-                async function clearStore(storeName) {
-                    const db = await openDB();
-                    if (!db) return false;
-                    return new Promise(resolve => {
-                        try {
-                            const tx = db.transaction(storeName, 'readwrite');
-                            tx.objectStore(storeName).clear();
-                            tx.oncomplete = () => resolve(true);
-                            tx.onerror = () => resolve(false);
-                        } catch (e) { resolve(false); }
-                    });
-                }
-
-                return { openDB, setItem, getItem, setAll, getAll, deleteItem, clearStore };
-            })();
-
-            // Pre-seed offline settings & auth state into PosIDB on load
-            PosIDB.setItem('settings', {
-                key: 'store_settings',
-                val: {
-                    shop_name: SHOP_NAME || 'ProCast',
-                    currency: <?= json_encode($storeSettings['currency'] ?? '₱') ?>,
-                    vat_rate: <?= json_encode($storeSettings['vat_rate'] ?? '0') ?>,
-                    tax_rate: <?= json_encode($storeSettings['tax_rate'] ?? '0') ?>,
-                    shop_address: SHOP_ADDRESS || '',
-                    shop_tin: SHOP_TIN || '',
-                    terminal_id: TERMINAL_ID || 'POS-01'
-                }
-            }).catch(() => {});
-
-            <?php if (loggedIn() && !$isAuthPage): ?>
-                if (!window.location.search.includes('page=login') && cur_page !== 'login') {
-                    localStorage.removeItem('explicit_logout');
-                }
-            <?php endif; ?>
-
-            if (CURRENT_USER_ID && CURRENT_USER_ID > 0 && localStorage.getItem('explicit_logout') !== '1') {
-                PosIDB.setItem('auth_state', {
-                    key: 'current_user',
-                    id: CURRENT_USER_ID,
-                    name: CASHIER_NAME,
-                    role: USER_ROLE,
-                    store_id: CURRENT_STORE_ID,
-                    savedAt: Date.now()
-                }).catch(() => {});
-
-                const curUName = <?= json_encode($currentUser['username'] ?? '') ?>;
-                if (curUName) {
-                    localStorage.setItem('offlineUser', JSON.stringify({
-                        id: CURRENT_USER_ID,
-                        username: curUName,
-                        full_name: CASHIER_NAME,
-                        role: USER_ROLE
-                    }));
-                }
-                setTimeout(syncOfflineUsers, 500);
-            }
-
-            // ── NETWORK STATUS & AUTO-SYNC MANAGERS ──
-            let _isServerReachable = navigator.onLine !== false;
-            let _heartbeatChecking = false;
-
-            async function syncOfflineUsers() {
-                if (!navigator.onLine || !_isServerReachable) return;
-                try {
-                    const res = await fetch(API_BASE + 'get_users_offline', { cache: 'no-store' });
-                    if (res.ok) {
-                        const data = await res.json();
-                        if (data.success && data.data) {
-                            await PosIDB.clearStore('offline_users');
-                            data.data.forEach(u => PosIDB.setItem('offline_users', u));
-                        }
-                    }
-                } catch (e) {}
-            }
-
-            async function syncPendingUsers() {
-                if (!navigator.onLine || !_isServerReachable) return;
-                try {
-                    const users = await PosIDB.getAll('pending_users');
-                    if (users && users.length > 0) {
-                        const res = await fetch(API_BASE + 'sync_pending_users', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN },
-                            body: JSON.stringify({ users })
-                        });
-                        if (res.ok) {
-                            const data = await res.json();
-                            if (data.success) {
-                                users.forEach(u => PosIDB.deleteItem('pending_users', u.username));
-                                await syncOfflineUsers();
-                            }
-                        }
-                    }
-                } catch (e) {}
-            }
-
-            let _isReauthing = false;
-            async function autoReauthServerSession() {
-                if (_isReauthing || !navigator.onLine || !_isServerReachable || localStorage.getItem('explicit_logout') === '1') return;
-                const offUserStr = localStorage.getItem('offlineUser');
-                if (!offUserStr) return;
-                let offUser = null;
-                try {
-                    offUser = JSON.parse(offUserStr);
-                } catch (e) { return; }
-                if (!offUser || !offUser.username) return;
-
-                _isReauthing = true;
-                try {
-                    const res = await fetch(API_BASE + 'reauth_offline_session', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ username: offUser.username })
-                    });
-                    if (res.ok) {
-                        const data = await res.json();
-                        if (data && data.success) {
-                            if (data.data?.csrf_token) {
-                                CSRF_TOKEN = data.data.csrf_token;
-                            }
-                            if (data.data?.user) {
-                                USER_ROLE = data.data.user.role || USER_ROLE;
-                                CASHIER_NAME = data.data.user.full_name || CASHIER_NAME;
-                                CURRENT_USER_ID = data.data.user.id || CURRENT_USER_ID;
-                            }
-                            const authBg = document.querySelector('.public-auth-bg');
-                            const dashView = document.getElementById('view-dashboard');
-                            if (authBg && dashView) {
-                                authBg.style.display = 'none';
-                                dashView.style.display = '';
-                                cur_page = 'dashboard';
-                            }
-                            if (window.history && window.history.replaceState) {
-                                window.history.replaceState({ page: 'dashboard' }, '', window.location.pathname + '?page=dashboard');
-                            }
-                            document.title = 'Dashboard & Checkout — ' + (typeof SHOP_NAME !== 'undefined' && SHOP_NAME ? SHOP_NAME : 'ProCast');
-
-                            if (typeof loadStats === 'function') loadStats();
-                            if (typeof loadAllProds === 'function') loadAllProds(true);
-                            if (typeof flushPendingSales === 'function') flushPendingSales();
-                            if (typeof syncPendingUsers === 'function') syncPendingUsers();
-                        }
-                    }
-                } catch (e) {
-                } finally {
-                    _isReauthing = false;
-                }
-            }
-
-            let _heartbeatFailures = 0;
-            const MAX_FAILURES_BEFORE_OFFLINE = 3;
-
-            async function checkNetworkHeartbeat() {
-                if (navigator.onLine === false) {
-                    _heartbeatFailures = MAX_FAILURES_BEFORE_OFFLINE;
-                    _isServerReachable = false;
-                    updateNetworkStatusUI();
-                    return false;
-                }
-                if (_heartbeatChecking) return _isServerReachable;
-                _heartbeatChecking = true;
-                try {
-                    const controller = new AbortController();
-                    const timeoutId = setTimeout(() => controller.abort(), 6000);
-                    const res = await fetch(API_BASE + 'ping&_t=' + Date.now(), {
-                        method: 'GET',
-                        cache: 'no-store',
-                        signal: controller.signal
-                    });
-                    clearTimeout(timeoutId);
-                    if (res.ok) {
-                        const data = await res.json();
-                        if (data && data.success && !data.offline) {
-                            _heartbeatFailures = 0;
-                            _isServerReachable = true;
-                            if (data.data && !data.data.authenticated && localStorage.getItem('offlineUser')) {
-                                autoReauthServerSession();
-                            }
-                        } else {
-                            _heartbeatFailures++;
-                        }
-                    } else {
-                        _heartbeatFailures++;
-                    }
-                } catch (e) {
-                    _heartbeatFailures++;
-                } finally {
-                    _heartbeatChecking = false;
-                }
-
-                if (_heartbeatFailures >= MAX_FAILURES_BEFORE_OFFLINE) {
-                    _isServerReachable = false;
-                }
-                updateNetworkStatusUI();
-                return _isServerReachable;
-            }
-
-            function updateNetworkStatusUI() {
-                const isOnline = (navigator.onLine !== false) && _isServerReachable;
-                const pill = document.getElementById('network-status-pill');
-                const pendingSales = typeof pendingSalesList === 'function' ? pendingSalesList().length : 0;
-                const pendingMutations = typeof pendingMutationsList === 'function' ? pendingMutationsList().length : 0;
-                const pending = pendingSales + pendingMutations;
-                if (pill) {
-                    if (typeof _flushingPendingSales !== 'undefined' && _flushingPendingSales) {
-                        pill.className = 'network-pill syncing';
-                        pill.innerHTML = '🔄';
-                        pill.title = 'Syncing offline data with server...';
-                    } else if (!isOnline) {
-                        pill.className = 'network-pill offline';
-                        pill.innerHTML = '🔴' + (pending > 0 ? ' (' + pending + ')' : '');
-                        pill.title = 'Working in Offline Mode. Tap to retry connection or sync.';
-                    } else if (pending > 0) {
-                        pill.className = 'network-pill offline';
-                        pill.innerHTML = '🔴 ' + pending;
-                        pill.title = pending + ' offline item(s) waiting to sync. Tap to sync now.';
-                    } else {
-                        pill.className = 'network-pill online';
-                        pill.innerHTML = '🟢';
-                        pill.title = 'Connected to server. All data synced.';
-                    }
-                }
-            }
-
-            async function handleNetworkPillClick() {
-                toast('Checking server connection...', 'info');
-                const reachable = await checkNetworkHeartbeat();
-                const pendingSales = typeof pendingSalesList === 'function' ? pendingSalesList().length : 0;
-                const pendingMutations = typeof pendingMutationsList === 'function' ? pendingMutationsList().length : 0;
-                const pending = pendingSales + pendingMutations;
-                if (!reachable) {
-                    toast('Device is offline or server unreachable. All POS checkout, inventory, and printing work seamlessly offline!', 'warning');
-                } else if (pending > 0) {
-                    toast('Online! Syncing ' + pending + ' pending offline item(s)...', 'default');
-                    if (typeof flushPendingSales === 'function') flushPendingSales();
-                } else {
-                    toast('System is online and fully synchronized.', 'success');
-                }
-            }
-
-            window.addEventListener('online', async () => {
-                const reachable = await checkNetworkHeartbeat();
-                if (reachable) {
-                    toast('Internet connection restored — syncing offline data...', 'success');
-                    if (localStorage.getItem('offlineUser')) {
-                        autoReauthServerSession();
-                    }
-                    if (typeof flushPendingSales === 'function') flushPendingSales();
-                }
-            });
-
-            window.addEventListener('offline', () => {
-                _isServerReachable = false;
-                updateNetworkStatusUI();
-                toast('You are now working offline. Sales, edits, and receipts will save locally.', 'warning');
-            });
-
-            setInterval(async () => {
-                await checkNetworkHeartbeat();
-                const pendingSales = typeof pendingSalesList === 'function' ? pendingSalesList().length : 0;
-                const pendingMutations = typeof pendingMutationsList === 'function' ? pendingMutationsList().length : 0;
-                if (_isServerReachable && (pendingSales > 0 || pendingMutations > 0) && typeof _flushingPendingSales !== 'undefined' && !_flushingPendingSales) {
-                    flushPendingSales();
-                }
-            }, 15000);
 
             // ── API ──
             const API_TIMEOUT_MS = 20000; // generous for slow/free hosting, but finite — requests never hang forever
@@ -15727,13 +14577,12 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                 if (navigator.onLine === false) return 'You appear to be offline — check your connection and try again.';
                 return 'Could not reach the server — check your connection and try again.';
             }
-
             // ── FAST SESSION CACHE FOR STATIC/NEAR-STATIC LOOKUPS ──
             // Caches get_settings and get_categories in sessionStorage for 60 seconds
             // so page transitions don't make redundant HTTP round-trips.
             const _FAST_CACHE = {
-                'get_settings': { key: 'pos_cache_settings', ttl: 60000, store: 'settings' },
-                'get_categories': { key: 'pos_cache_categories', ttl: 60000, store: 'categories' }
+                'get_settings': { key: 'pos_cache_settings', ttl: 60000 },
+                'get_categories': { key: 'pos_cache_categories', ttl: 60000 }
             };
 
             function _readFastCache(action) {
@@ -15756,11 +14605,6 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                 if (!conf || !data?.success) return;
                 try {
                     sessionStorage.setItem(conf.key, JSON.stringify({ data, ts: Date.now() }));
-                    if (conf.store === 'settings' && data.data && typeof data.data === 'object') {
-                        PosIDB.setItem('settings', { key: 'store_settings', val: data.data }).catch(() => {});
-                    } else if (Array.isArray(data.data) && conf.store) {
-                        PosIDB.setAll(conf.store, data.data).catch(() => {});
-                    }
                 } catch (e) {}
             }
 
@@ -15771,71 +14615,17 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                 }
             }
 
-            async function lookupLocalProductBarcode(barcode) {
-                if (!barcode) return null;
-                const bc = String(barcode).trim().replace(/[\x00-\x1F\x7F\s]/g, '').toLowerCase();
-                if (!bc) return null;
-                let prodsList = (typeof allProds !== 'undefined' && Array.isArray(allProds) && allProds.length > 0) ? allProds : [];
-                if (!prodsList.length && typeof PosIDB !== 'undefined') {
-                    try {
-                        prodsList = await PosIDB.getAll('products');
-                    } catch (e) {}
-                }
-                if (!prodsList.length) return null;
-
-                let matchedUnit = 'piece';
-                let prod = prodsList.find(p => p.barcode && String(p.barcode).trim().toLowerCase() === bc);
-                if (!prod) {
-                    prod = prodsList.find(p => p.pack_barcode && String(p.pack_barcode).trim().toLowerCase() === bc);
-                    if (prod) matchedUnit = 'pack';
-                }
-                if (!prod) {
-                    prod = prodsList.find(p => p.case_barcode && String(p.case_barcode).trim().toLowerCase() === bc);
-                    if (prod) matchedUnit = 'case';
-                }
-                if (!prod && bc.length >= 6) {
-                    prod = prodsList.find(p => p.barcode && (String(p.barcode).trim().toLowerCase().endsWith(bc) || String(p.barcode).trim().toLowerCase().startsWith(bc)));
-                }
-                if (!prod && bc.length >= 6) {
-                    prod = prodsList.find(p => p.barcode && String(p.barcode).trim().length >= 4 && (bc.endsWith(String(p.barcode).trim().toLowerCase()) || bc.startsWith(String(p.barcode).trim().toLowerCase())));
-                }
-                if (!prod) return null;
-                return { ...prod, matched_unit: matchedUnit };
-            }
-
             async function apiGet(action, params = {}) {
                 const noParams = !params || Object.keys(params).length === 0;
                 if (noParams) {
                     const cached = _readFastCache(action);
                     if (cached) return cached;
                 }
-
-                // If offline, check PosIDB immediately for categories / settings / barcodes
-                if (navigator.onLine === false) {
-                    if (action === 'get_settings') {
-                        const item = await PosIDB.getItem('settings', 'store_settings');
-                        if (item?.val) return { success: true, data: item.val };
-                    }
-                    if (action === 'get_categories') {
-                        const idbData = await PosIDB.getAll('categories');
-                        if (idbData && idbData.length > 0) return { success: true, data: idbData };
-                    }
-                    if (action === 'get_product_by_barcode') {
-                        const local = await lookupLocalProductBarcode(params.barcode);
-                        if (local) return { success: true, data: local };
-                        return { success: false, data: null, error: 'Product not found for barcode: ' + (params.barcode || '') };
-                    }
-                }
-
                 const qs = new URLSearchParams(params).toString();
                 const url = API_BASE + action + (qs ? '&' + qs : '');
                 try {
                     const r = await apiFetch(url);
                     if (r.status === 401) {
-                        if (localStorage.getItem('offlineUser')) {
-                            autoReauthServerSession();
-                            return null;
-                        }
                         location.href = '?page=login';
                         return null;
                     }
@@ -15849,29 +14639,16 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                     }
                     return json;
                 } catch (e) {
-                    // Check fallback on network failure
-                    if (action === 'get_settings') {
-                        const item = await PosIDB.getItem('settings', 'store_settings');
-                        if (item?.val) return { success: true, data: item.val };
-                    }
-                    if (action === 'get_categories') {
-                        const idbData = await PosIDB.getAll('categories');
-                        if (idbData && idbData.length > 0) {
-                            return { success: true, data: idbData };
-                        }
-                    }
-                    if (action === 'get_product_by_barcode') {
-                        const local = await lookupLocalProductBarcode(params.barcode);
-                        if (local) return { success: true, data: local };
-                    }
-                    if (navigator.onLine !== false) {
-                        toast(apiErrorMessage(e), 'error');
-                    }
+                    toast(apiErrorMessage(e), 'error');
                     return null;
                 }
             }
 
-            // ── get_products PERSISTENT CACHE (sessionStorage + IndexedDB + Stale-While-Revalidate) ──
+            // ── get_products PERSISTENT CACHE (sessionStorage + Stale-While-Revalidate) ──
+            // Stored in sessionStorage so page navigations (?page=dashboard -> ?page=products -> ?page=warehouse)
+            // load products INSTANTLY (0 ms) from local cache instead of hitting the database on every page click.
+            // When stale (> 30s), it returns the cached data immediately so the page is responsive with zero delay,
+            // while silently revalidating with the server in the background.
             const _prodCache = { data: null, ts: 0 };
             const _PROD_CACHE_TTL = 30000; // 30 seconds fresh
 
@@ -15908,76 +14685,31 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                     if (age < _PROD_CACHE_TTL) {
                         return _prodCache.data; // Fully fresh, return immediately
                     }
-                    // Stale-While-Revalidate in background if online
-                    if (navigator.onLine !== false) {
-                        setTimeout(async () => {
-                            try {
-                                const fresh = await apiGet('get_products');
-                                if (fresh?.success && Array.isArray(fresh.data)) {
-                                    _prodCache.data = fresh;
-                                    _prodCache.ts = Date.now();
-                                    _writeProdSessionCache(fresh, _prodCache.ts);
-                                    PosIDB.setAll('products', fresh.data).catch(() => {});
-                                    precacheProductImages(fresh.data);
-                                    if (typeof onBackgroundUpdate === 'function') {
-                                        onBackgroundUpdate(fresh);
-                                    }
+                    // Stale-While-Revalidate: return stale data immediately so UI doesn't hang!
+                    // Then quietly fetch fresh data in background.
+                    setTimeout(async () => {
+                        try {
+                            const fresh = await apiGet('get_products');
+                            if (fresh?.success && Array.isArray(fresh.data)) {
+                                _prodCache.data = fresh;
+                                _prodCache.ts = Date.now();
+                                _writeProdSessionCache(fresh, _prodCache.ts);
+                                if (typeof onBackgroundUpdate === 'function') {
+                                    onBackgroundUpdate(fresh);
                                 }
-                            } catch (e) {}
-                        }, 50);
-                    }
+                            }
+                        } catch (e) {}
+                    }, 50);
                     return _prodCache.data;
                 }
 
-                // If offline, pull directly from PosIDB!
-                if (navigator.onLine === false) {
-                    const idbProds = await PosIDB.getAll('products');
-                    if (idbProds && idbProds.length > 0) {
-                        const fallbackData = { success: true, data: idbProds, _offline: true };
-                        _prodCache.data = fallbackData;
-                        _prodCache.ts = now;
-                        _writeProdSessionCache(fallbackData, now);
-                        return fallbackData;
-                    }
+                const result = await apiGet('get_products');
+                if (result?.success) {
+                    _prodCache.data = result;
+                    _prodCache.ts   = now;
+                    _writeProdSessionCache(result, now);
                 }
-
-                try {
-                    const result = await apiGet('get_products');
-                    if (result?.success && Array.isArray(result.data)) {
-                        _prodCache.data = result;
-                        _prodCache.ts   = now;
-                        _writeProdSessionCache(result, now);
-                        PosIDB.setAll('products', result.data).catch(() => {});
-                        precacheProductImages(result.data);
-                        return result;
-                    }
-                } catch (e) {}
-
-                // Offline / network failure fallback to PosIDB
-                const idbProds = await PosIDB.getAll('products');
-                if (idbProds && idbProds.length > 0) {
-                    const fallbackData = { success: true, data: idbProds, _offline: true };
-                    _prodCache.data = fallbackData;
-                    _prodCache.ts = now;
-                    return fallbackData;
-                }
-
-                return _prodCache.data || { success: false, data: [] };
-            }
-
-            function precacheProductImages(products) {
-                if (!navigator.onLine || !Array.isArray(products) || typeof Image === 'undefined') return;
-                const itemsWithImg = products.filter(p => prodHasImage(p)).slice(0, 100);
-                if (!itemsWithImg.length) return;
-                let curIdx = 0;
-                function prefetchNext() {
-                    if (curIdx >= itemsWithImg.length || !navigator.onLine) return;
-                    const p = itemsWithImg[curIdx++];
-                    const img = new Image();
-                    img.src = prodImgUrl(p.id, p.updated_at);
-                    setTimeout(prefetchNext, 80);
-                }
-                setTimeout(prefetchNext, 1200);
+                return result;
             }
 
             function invalidateProdCache() {
@@ -15988,77 +14720,7 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                 } catch (e) {}
             }
 
-            async function handleOfflineMutation(action, body) {
-                if (action === 'add_product') {
-                    const tempId = -Date.now();
-                    const newProd = {
-                        ...body,
-                        id: tempId,
-                        _temp: true,
-                        store_quantity: parseInt(body.store_quantity || body.quantity || 0, 10),
-                        quantity: parseInt(body.quantity || body.store_quantity || 0, 10),
-                        price: parseFloat(body.price || 0),
-                        barcode: body.barcode || ('BC-' + Math.random().toString(36).slice(2, 10).toUpperCase())
-                    };
-                    if (typeof allProds !== 'undefined' && Array.isArray(allProds)) {
-                        allProds.unshift(newProd);
-                    }
-                    if (typeof PosIDB !== 'undefined') {
-                        await PosIDB.setItem('products', newProd).catch(() => {});
-                    }
-                    if (typeof queuePendingMutation === 'function') {
-                        await queuePendingMutation('add_product', newProd);
-                    }
-                    invalidateProdCache();
-                    return { success: true, data: newProd, offline: true };
-                }
-                if (action === 'update_product') {
-                    const prodId = parseInt(body.id, 10);
-                    if (typeof allProds !== 'undefined' && Array.isArray(allProds)) {
-                        const idx = allProds.findIndex(p => p.id == prodId);
-                        if (idx !== -1) {
-                            allProds[idx] = { ...allProds[idx], ...body };
-                        }
-                    }
-                    if (typeof PosIDB !== 'undefined') {
-                        const existing = await PosIDB.getItem('products', prodId);
-                        const merged = { ...(existing || {}), ...body };
-                        await PosIDB.setItem('products', merged).catch(() => {});
-                    }
-                    if (typeof queuePendingMutation === 'function') {
-                        await queuePendingMutation('update_product', body);
-                    }
-                    invalidateProdCache();
-                    return { success: true, data: body, offline: true };
-                }
-                if (action === 'delete_product') {
-                    const prodId = parseInt(body.id, 10);
-                    if (typeof allProds !== 'undefined' && Array.isArray(allProds)) {
-                        allProds = allProds.filter(p => p.id != prodId);
-                    }
-                    if (typeof PosIDB !== 'undefined') {
-                        await PosIDB.deleteItem('products', prodId).catch(() => {});
-                    }
-                    if (typeof queuePendingMutation === 'function') {
-                        await queuePendingMutation('delete_product', { id: prodId });
-                    }
-                    invalidateProdCache();
-                    return { success: true, data: { ok: true, deleted_id: prodId }, offline: true };
-                }
-                return null;
-            }
-
             async function apiPost(action, body = {}) {
-                // Instant offline checkout without network timeout delay
-                if (action === 'add_transaction' && navigator.onLine === false) {
-                    return { success: false, offline: true, error: 'Offline' };
-                }
-
-                // If offline and mutating products, handle locally and queue mutation
-                if (navigator.onLine === false && (action === 'add_product' || action === 'update_product' || action === 'delete_product')) {
-                    return await handleOfflineMutation(action, body);
-                }
-
                 try {
                     const r = await apiFetch(API_BASE + action, {
                         method: 'POST',
@@ -16069,10 +14731,6 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                         body: JSON.stringify(body)
                     });
                     if (r.status === 401) {
-                        if (localStorage.getItem('offlineUser')) {
-                            autoReauthServerSession();
-                            return null;
-                        }
                         location.href = '?page=login';
                         return null;
                     }
@@ -16096,12 +14754,6 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                     }
                     return json;
                 } catch (e) {
-                    if (action === 'add_product' || action === 'update_product' || action === 'delete_product') {
-                        return await handleOfflineMutation(action, body);
-                    }
-                    if (action === 'add_transaction') {
-                        return { success: false, offline: true, error: 'Offline' };
-                    }
                     toast(apiErrorMessage(e), 'error');
                     return null;
                 }
@@ -16344,24 +14996,16 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
             // at all. The product id is passed as a data attribute, not interpolated
             // into an onerror string (which would fight HTML-attribute quoting).
             function imgFallback(el) {
-                if (el.dataset.fallbackApplied) {
-                    const div = document.createElement('div');
-                    div.className = (el.dataset.fallback === 'cart' ? 'cart-line-img' : 'product-card-ph');
-                    div.innerHTML = '<span style="font-size:1.5rem;opacity:0.4;">📦</span>';
-                    el.replaceWith(div);
-                    return;
-                }
-                el.dataset.fallbackApplied = '1';
                 const kind = el.dataset.fallback || 'emoji';
                 if (kind === 'div') {
                     const div = document.createElement('div');
                     div.className = 'product-card-ph';
-                    div.innerHTML = '<img src="' + DEFAULT_PRODUCT_IMG + '" class="default-prod-img" alt="" onerror="this.onerror=null;this.parentNode.innerHTML=\'📦\';">';
+                    div.innerHTML = '<img src="' + DEFAULT_PRODUCT_IMG + '" class="default-prod-img" alt="">';
                     el.replaceWith(div);
                 } else if (kind === 'cart') {
                     const div = document.createElement('div');
                     div.className = 'cart-line-img';
-                    div.innerHTML = '<img src="' + DEFAULT_PRODUCT_IMG + '" class="default-prod-img" alt="" onerror="this.onerror=null;this.parentNode.innerHTML=\'📦\';">';
+                    div.innerHTML = '<img src="' + DEFAULT_PRODUCT_IMG + '" class="default-prod-img" alt="">';
                     el.replaceWith(div);
                 } else if (kind === 'blank') {
                     el.remove();
@@ -16370,13 +15014,6 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                     ph.src = DEFAULT_PRODUCT_IMG;
                     ph.className = 'default-prod-img';
                     ph.alt = '';
-                    ph.onerror = function() {
-                        ph.onerror = null;
-                        const s = document.createElement('span');
-                        s.textContent = '📦';
-                        s.style.opacity = '0.4';
-                        ph.replaceWith(s);
-                    };
                     el.replaceWith(ph);
                 }
             }
@@ -16666,48 +15303,24 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
             // afterward, on the printed Z-Read receipt.
             async function performLogout() {
                 try {
-                    localStorage.setItem('explicit_logout', '1');
-                    localStorage.removeItem('offlineUser');
-                    sessionStorage.clear();
-                    if (typeof PosIDB !== 'undefined') {
-                        await PosIDB.deleteItem('auth_state', 'current_user');
+                    if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+                        navigator.serviceWorker.controller.postMessage('clearUserCache');
+                    }
+                    if ('caches' in window) {
+                        const keys = await caches.keys();
+                        for (const k of keys) {
+                            if (k.startsWith('pos-shell')) {
+                                await caches.delete(k);
+                            }
+                        }
                     }
                 } catch (err) {}
-
-                // IMMEDIATELY switch UI: hide all views, hide navbars, show login view
-                const allViews = document.querySelectorAll('.pos-page-view');
-                allViews.forEach(v => v.style.display = 'none');
-                const topNav = document.getElementById('main-top-nav');
-                const mobNav = document.getElementById('main-mob-nav');
-                if (topNav) topNav.style.display = 'none';
-                if (mobNav) mobNav.style.display = 'none';
-                document.title = 'Sign In — ' + (typeof SHOP_NAME !== 'undefined' && SHOP_NAME ? SHOP_NAME : 'ProCast');
-                let authBg = document.querySelector('.public-auth-bg');
-                if (authBg) {
-                    authBg.style.display = 'flex';
-                    cur_page = 'login';
-                }
-
-                if (navigator.onLine === false || !_isServerReachable) {
-                    if (window.history && window.history.replaceState) {
-                        window.history.replaceState(null, '', '?page=login');
-                    }
-                    if (typeof toast === 'function') toast('Logged out (Offline mode)', 'info');
-                    return;
-                }
-
-                // Online logout: navigate cleanly to ?page=logout so the server clears session cookies
-                window.location.href = '?page=logout';
+                location.href = '?page=logout';
             }
 
             function openShiftCloseModal(loggingOut) {
-                if (!navigator.onLine || !_isServerReachable) {
-                    if (loggingOut) performLogout();
-                    else toast('Shift close requires online sync', 'info');
-                    return;
-                }
                 apiGet('check_cash_float').then(r => {
-                    if (!r?.success || !r.data?.initialized) {
+                    if (!r?.success || !r.data.initialized) {
                         if (loggingOut) {
                             performLogout();
                         } else toast('No active shift to close', 'warning');
@@ -16732,8 +15345,6 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                     // 7-Eleven flow: Cash drawer kicks open automatically for end of shift cash count
                     triggerShiftDrawerKick();
                     toast('Cash drawer released — begin your closing count', 'default');
-                }).catch(() => {
-                    if (loggingOut) performLogout();
                 });
             }
 
@@ -16750,10 +15361,20 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                 openShiftCloseModal(false);
             }
 
-            // Intercepts the Logout link — immediately logs out the current user cleanly
+            // Intercepts the Logout link — forces a closing cash count first if a shift is open
             function attemptLogout(e) {
                 if (e) e.preventDefault();
-                performLogout();
+                if (USER_ROLE === 'owner') {
+                    performLogout();
+                    return false;
+                }
+                apiGet('check_cash_float').then(r => {
+                    if (r?.success && r.data.initialized) {
+                        openShiftCloseModal(true);
+                    } else {
+                        performLogout();
+                    }
+                });
                 return false;
             }
 
@@ -16900,47 +15521,36 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
             // instead of three copies slowly drifting apart from each other.
             // ── SHARED RECEIPT STYLING (Payment / Z-Read / Void) ──
             // Universal thermal printer support: auto-adapts to 58mm & 80mm rolls
-            function receiptBaseCSS(paperSize) {
-                const is80mm = (paperSize || currentReceiptPaperSize) === '80mm';
-                const maxWidth = is80mm ? '380px' : '290px';
-                const bodyFontSize = is80mm ? '13.5px' : '12px';
-                const thFontSize = is80mm ? '11.5px' : '10px';
-                const tdFontSize = is80mm ? '12.5px' : '11.5px';
-                const printFontSize = is80mm ? '13px' : '11.5px';
-                const colQty = is80mm ? '14%' : '16%';
-                const colDesc = is80mm ? '50%' : '42%';
-                const colPrice = is80mm ? '18%' : '21%';
-                const colTotal = is80mm ? '18%' : '21%';
-
+            function receiptBaseCSS() {
                 return '*{box-sizing:border-box;margin:0;padding:0;}' +
-                    'body{background:#fff;font-family:"SF Mono","Menlo","Consolas","Courier New",monospace;font-size:' + bodyFontSize + ';line-height:1.35;color:#000;}' +
-                    '.receipt-container{width:100%;max-width:' + maxWidth + ';background:#fff;padding:8px 6px;margin:0 auto;}' +
+                    'body{background:#fff;font-family:"SF Mono","Menlo","Consolas","Courier New",monospace;font-size:12.5px;line-height:1.35;color:#000;}' +
+                    '.receipt-container{width:100%;max-width:290px;background:#fff;padding:10px 8px;margin:0 auto;}' +
                     '.receipt-header{text-align:center;margin-bottom:6px;}' +
-                    '.receipt-header h1{font-size:' + (is80mm ? '22px' : '20px') + ';font-weight:800;margin:0 0 3px 0;letter-spacing:1px;word-break:break-word;}' +
-                    '.receipt-header p{margin:1px 0;font-size:' + (is80mm ? '12px' : '11px') + ';word-break:break-word;}' +
-                    '.receipt-header .doc-type{font-size:' + (is80mm ? '11.5px' : '10.5px') + ';font-weight:800;letter-spacing:.06em;color:#333;margin-top:4px;}' +
+                    '.receipt-header h1{font-size:20px;font-weight:800;margin:0 0 3px 0;letter-spacing:1px;word-break:break-word;}' +
+                    '.receipt-header p{margin:1px 0;font-size:11px;word-break:break-word;}' +
+                    '.receipt-header .doc-type{font-size:10.5px;font-weight:800;letter-spacing:.06em;color:#333;margin-top:4px;}' +
                     '.divider{border-top:1px dashed #000;margin:6px 0;}' +
                     '.receipt-row{display:flex;justify-content:space-between;width:100%;margin:1.5px 0;gap:4px;}' +
                     '.receipt-row.b{font-weight:800;}' +
                     '.receipt-row.void{color:#C0392B;font-weight:800;}' +
                     'table.items{width:100%;border-collapse:collapse;table-layout:fixed;margin:2px 0;}' +
-                    'table.items th{font-size:' + thFontSize + ';font-weight:800;text-align:left;padding:2px 1px;border-bottom:1px dashed #000;}' +
-                    'table.items td{font-size:' + tdFontSize + ';padding:2px 1px;vertical-align:top;word-break:break-word;}' +
+                    'table.items th{font-size:10px;font-weight:800;text-align:left;padding:2px 1px;border-bottom:1px dashed #000;}' +
+                    'table.items td{font-size:11.5px;padding:2px 1px;vertical-align:top;word-break:break-word;}' +
                     'table.items th.right, table.items td.right{text-align:right;white-space:nowrap;}' +
-                    'table.items col.qty{width:' + colQty + ';} table.items col.desc{width:' + colDesc + ';} table.items col.price{width:' + colPrice + ';} table.items col.total{width:' + colTotal + ';}' +
-                    '.total-band{background:#e4e4e4;font-weight:800;font-size:' + (is80mm ? '15px' : '14px') + ';padding:5px 4px;margin:5px 0;display:flex;justify-content:space-between;border-radius:2px;}' +
-                    '.void-band{background:#fbe4e1;color:#C0392B;font-weight:800;font-size:' + (is80mm ? '13.5px' : '12.5px') + ';padding:5px 4px;margin:5px 0;display:flex;justify-content:space-between;border-radius:2px;}' +
+                    'table.items col.qty{width:16%;} table.items col.desc{width:42%;} table.items col.price{width:21%;} table.items col.total{width:21%;}' +
+                    '.total-band{background:#e4e4e4;font-weight:800;font-size:14px;padding:5px 4px;margin:5px 0;display:flex;justify-content:space-between;border-radius:2px;}' +
+                    '.void-band{background:#fbe4e1;color:#C0392B;font-weight:800;font-size:12.5px;padding:5px 4px;margin:5px 0;display:flex;justify-content:space-between;border-radius:2px;}' +
                     'tr.voided-row td{color:#C0392B;text-decoration:line-through;}' +
                     '.void-tag{font-size:9.5px;font-weight:800;letter-spacing:.04em;text-decoration:none;}' +
-                    'h3{font-size:' + (is80mm ? '11.5px' : '10.5px') + ';letter-spacing:.06em;color:#333;margin:8px 0 3px;}' +
-                    '.receipt-footer{text-align:center;margin-top:10px;font-size:' + (is80mm ? '12px' : '11px') + ';}' +
-                    '.receipt-footer .bold{font-weight:800;font-size:' + (is80mm ? '13px' : '12px') + ';}' +
+                    'h3{font-size:10.5px;letter-spacing:.06em;color:#333;margin:8px 0 3px;}' +
+                    '.receipt-footer{text-align:center;margin-top:10px;font-size:11px;}' +
+                    '.receipt-footer .bold{font-weight:800;font-size:12px;}' +
                     '@media print{' +
                     '  @page{margin:0;size:auto;}' +
                     '  html,body{width:100%!important;margin:0!important;padding:0!important;background:#fff!important;}' +
                     '  body *{visibility:hidden;}' +
                     '  .receipt-container,.receipt-container *{visibility:visible;}' +
-                    '  .receipt-container{position:absolute;left:0;top:0;width:100%!important;max-width:100%!important;padding:3mm 2mm!important;margin:0!important;font-size:' + printFontSize + '!important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}' +
+                    '  .receipt-container{position:absolute;left:0;top:0;width:100%!important;max-width:100%!important;padding:3mm 2mm!important;margin:0!important;font-size:11.5px!important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}' +
                     '  .total-band,.void-band{-webkit-print-color-adjust:exact;print-color-adjust:exact;}' +
                     '}';
             }
@@ -17216,7 +15826,6 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
             // ══════════════════════════════════════════════════════════════════
             const CART_AUTOSAVE_KEY = 'pangga_cart_autosave_v1';
             const PENDING_SALES_KEY = 'pangga_pending_sales_v1';
-            const PENDING_MUTATIONS_KEY = 'pangga_pending_mutations_v1';
 
             // A connectivity failure can surface two different ways here:
             //  - apiPost/apiGet return null (fetch itself threw — no service worker,
@@ -17227,49 +15836,7 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
             //    reject — so a plain `!r.success` check alone would misread this as a
             //    real server-side rejection instead of "can't reach the server".
             function isOfflineResult(r) {
-                if (r === null || r === undefined) return true;
-                if (typeof r !== 'object') return false;
-                if (r.offline === true) return true;
-                if (r.success === false) {
-                    const err = String(r.error || '').toLowerCase();
-                    if (err.includes('offline') || err.includes('unreachable') || err.includes('network') || err.includes('failed to fetch')) {
-                        return true;
-                    }
-                }
-                return false;
-            }
-
-            function pendingMutationsList() {
-                try {
-                    return JSON.parse(localStorage.getItem(PENDING_MUTATIONS_KEY) || '[]');
-                } catch (e) {
-                    return [];
-                }
-            }
-
-            function savePendingMutationsList(list) {
-                try {
-                    localStorage.setItem(PENDING_MUTATIONS_KEY, JSON.stringify(list));
-                } catch (e) {}
-            }
-
-            async function queuePendingMutation(action, payload) {
-                const localMutationId = 'MUT-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6).toUpperCase();
-                const entry = { localMutationId, action, payload, createdAt: Date.now() };
-                if (typeof PosIDB !== 'undefined') {
-                    await PosIDB.setItem('offline_mutations', entry).catch(() => {});
-                }
-                const list = pendingMutationsList();
-                list.push(entry);
-                savePendingMutationsList(list);
-                renderPendingSyncBadge();
-                updateNetworkStatusUI();
-                if ('serviceWorker' in navigator && 'SyncManager' in window) {
-                    navigator.serviceWorker.ready.then(reg => {
-                        reg.sync.register('sync-offline-orders').catch(() => {});
-                    }).catch(() => {});
-                }
-                return localMutationId;
+                return r === null || (r && r.success === false && r.error === 'Offline');
             }
 
             function saveCartAutosave() {
@@ -17344,223 +15911,76 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
             }
 
             // Queues a completed sale locally when the server can't be reached right
-            // now (offline / mid power-blip). Returns the collision-proof offline reference
-            // e.g. "ORD-OFF-1-POS01-1727503200-8A3F" and immediately deducts stock locally.
-            function queuePendingSale(payload, explicitRef = null) {
-                const sid = typeof CURRENT_STORE_ID !== 'undefined' ? CURRENT_STORE_ID : 1;
-                const term = (typeof TERMINAL_ID !== 'undefined' && TERMINAL_ID ? TERMINAL_ID : 'POS01').replace(/[^a-zA-Z0-9]/g, '');
-                const ts = Math.floor(Date.now() / 1000);
-                const rand4 = Math.random().toString(36).slice(2, 6).toUpperCase();
-                const localRef = explicitRef || ('ORD-OFF-' + sid + '-' + term + '-' + ts + '-' + rand4);
-
-                // Embed reference, created_at, and user_id directly in payload
-                payload.order_ref = localRef;
-                if (!payload.created_at) payload.created_at = new Date().toISOString();
-                if (!payload.user_id && typeof CURRENT_USER_ID !== 'undefined') payload.user_id = CURRENT_USER_ID;
-
-                // Immediately deduct stock locally in allProds, PosIDB, and session cache
-                if (Array.isArray(payload.items)) {
-                    payload.items.forEach(it => {
-                        const pid = it.product_id;
-                        const qty = parseInt(it.qty, 10) || 1;
-                        const p = (typeof allProds !== 'undefined' && Array.isArray(allProds)) ? allProds.find(x => x.id == pid) : null;
-                        if (p) {
-                            if (p.store_quantity !== undefined) p.store_quantity = Math.max(0, p.store_quantity - qty);
-                            if (p.quantity !== undefined) p.quantity = Math.max(0, p.quantity - qty);
-                            if (typeof PosIDB !== 'undefined') PosIDB.setItem('products', p).catch(() => {});
-                        }
-                    });
-                    if (typeof _prodCache !== 'undefined' && _prodCache.data) {
-                        _writeProdSessionCache(_prodCache.data, _prodCache.ts || Date.now());
-                    }
-                    if (typeof renderGrid === 'function' && cur_page === 'cashier') {
-                        renderGrid(false);
-                    }
-                }
-
-                const orderEntry = {
+            // now (offline / mid power-blip). Returns the local pending reference used
+            // on the receipt in the meantime — e.g. "PEND-8F3K2A".
+            function queuePendingSale(payload) {
+                const localRef = 'PEND-' + Date.now().toString(36).toUpperCase().slice(-6) + Math.random().toString(36).slice(2, 4).toUpperCase();
+                const list = pendingSalesList();
+                list.push({
                     localRef,
                     payload,
                     createdAt: Date.now()
-                };
-
-                // Save to PosIDB offline_orders
-                if (typeof PosIDB !== 'undefined') PosIDB.setItem('offline_orders', orderEntry).catch(() => {});
-
-                // Also persist to localStorage for double-redundancy
-                const list = pendingSalesList();
-                list.push(orderEntry);
+                });
                 savePendingSalesList(list);
-
                 renderPendingSyncBadge();
-                updateNetworkStatusUI();
-
-                if ('serviceWorker' in navigator && 'SyncManager' in window) {
-                    navigator.serviceWorker.ready.then(reg => {
-                        reg.sync.register('sync-offline-orders').catch(() => {});
-                    }).catch(() => {});
-                }
-
                 return localRef;
             }
 
-            // Retries every queued offline sale and mutation against the server using atomic sync_offline_batch.
-            // Delta inventory subtraction prevents overwriting other terminals' stock.
+            // Retries every queued offline sale against the server. Safe to call
+            // repeatedly/aggressively — each entry is only removed from the queue once
+            // the server confirms it was actually recorded, so a sale can never be lost
+            // even if this fires several times back-to-back (e.g. 'online' event AND
+            // the periodic timer both firing around the same moment).
             let _flushingPendingSales = false;
             async function flushPendingSales() {
                 if (_flushingPendingSales) return;
-                
-                await syncPendingUsers();
-                await syncOfflineUsers();
-                
-                let list = pendingSalesList();
-                if (!list.length && typeof PosIDB !== 'undefined') {
-                    try {
-                        const idbOrders = await PosIDB.getAll('offline_orders');
-                        if (Array.isArray(idbOrders) && idbOrders.length > 0) {
-                            list = idbOrders;
-                            savePendingSalesList(list);
-                        }
-                    } catch (e) {}
-                }
-
-                let mutList = pendingMutationsList();
-                if (!mutList.length && typeof PosIDB !== 'undefined') {
-                    try {
-                        const idbMuts = await PosIDB.getAll('offline_mutations');
-                        if (Array.isArray(idbMuts) && idbMuts.length > 0) {
-                            mutList = idbMuts;
-                            savePendingMutationsList(mutList);
-                        }
-                    } catch (e) {}
-                }
-
-                if (!list.length && !mutList.length) {
+                const list = pendingSalesList();
+                if (!list.length) {
                     renderPendingSyncBadge();
-                    updateNetworkStatusUI();
                     return;
                 }
                 if (navigator.onLine === false) {
                     renderPendingSyncBadge();
-                    updateNetworkStatusUI();
                     return;
                 }
                 _flushingPendingSales = true;
-                updateNetworkStatusUI();
-
-                const ordersToSync = list.map(entry => {
-                    const p = entry.payload || entry;
-                    return {
-                        order_ref: entry.localRef || p.order_ref,
-                        items: p.items || [],
-                        subtotal: p.subtotal || 0,
-                        vat_rate: p.vat_rate || 0,
-                        vat_amount: p.vat_amount || 0,
-                        tax_rate: p.tax_rate || 0,
-                        tax_amount: p.tax_amount || 0,
-                        total: p.total || 0,
-                        cash: p.cash || 0,
-                        change: p.change || 0,
-                        user_id: p.user_id || (typeof CURRENT_USER_ID !== 'undefined' ? CURRENT_USER_ID : 1),
-                        created_at: entry.createdAt ? new Date(entry.createdAt).toISOString() : (p.created_at || new Date().toISOString())
-                    };
-                });
-
-                const mutationsToSync = mutList.map(entry => ({
-                    action: entry.action,
-                    payload: entry.payload
-                }));
-
-                try {
-                    const r = await apiPost('sync_offline_batch', { orders: ordersToSync, mutations: mutationsToSync });
+                let syncedCount = 0;
+                const remaining = [];
+                for (const entry of list) {
+                    const r = await apiPost('add_transaction', entry.payload);
                     if (r?.success) {
-                        const syncedCount = r.data?.synced_count ?? ordersToSync.length;
-                        const syncedRefs = new Set(r.data?.synced_refs || []);
-                        const alreadyRefs = new Set(r.data?.already_synced || []);
-                        const syncedMutCount = r.data?.synced_mutations || 0;
-                        const idMappings = r.data?.id_mappings || {};
-
-                        const remaining = list.filter(entry => {
-                            const ref = entry.localRef || entry.payload?.order_ref;
-                            return !syncedRefs.has(ref) && !alreadyRefs.has(ref);
-                        });
-
-                        savePendingSalesList(remaining);
-                        if (typeof PosIDB !== 'undefined') {
-                            if (remaining.length === 0) {
-                                await PosIDB.clearStore('offline_orders').catch(() => {});
-                            } else {
-                                for (const entry of list) {
-                                    const ref = entry.localRef || entry.payload?.order_ref;
-                                    if (syncedRefs.has(ref) || alreadyRefs.has(ref)) {
-                                        await PosIDB.deleteItem('offline_orders', ref).catch(() => {});
-                                    }
-                                }
-                            }
-                        }
-
-                        // Reconcile mutations
-                        savePendingMutationsList([]);
-                        if (typeof PosIDB !== 'undefined') {
-                            await PosIDB.clearStore('offline_mutations').catch(() => {});
-                        }
-
-                        // Reconcile ID mappings if any products were created offline
-                        if (idMappings && Object.keys(idMappings).length > 0) {
-                            for (const [tempId, realId] of Object.entries(idMappings)) {
-                                const numTemp = parseInt(tempId, 10);
-                                const numReal = parseInt(realId, 10);
-                                if (typeof PosIDB !== 'undefined') {
-                                    const tempProd = await PosIDB.getItem('products', numTemp);
-                                    if (tempProd) {
-                                        await PosIDB.deleteItem('products', numTemp).catch(() => {});
-                                        tempProd.id = numReal;
-                                        delete tempProd._temp;
-                                        await PosIDB.setItem('products', tempProd).catch(() => {});
-                                    }
-                                }
-                                if (typeof _allProds !== 'undefined' && Array.isArray(_allProds)) {
-                                    const p = _allProds.find(item => item.id == numTemp);
-                                    if (p) {
-                                        p.id = numReal;
-                                        delete p._temp;
-                                    }
-                                }
-                            }
-                        }
-
-                        let msg = '';
-                        if (syncedCount > 0) msg += 'Synced ' + syncedCount + ' offline sale(s). ';
-                        if (syncedMutCount > 0) msg += 'Synced ' + syncedMutCount + ' product update(s).';
-                        if (!msg) msg = 'Sync completed!';
-                        toast(msg.trim(), 'success');
-
-                        if (typeof loadStats === 'function') loadStats();
-                        invalidateProdCache();
-                        if (typeof loadAllProds === 'function') loadAllProds(true);
-                        if (typeof loadTopSellers === 'function') loadTopSellers();
+                        syncedCount++;
                     } else if (isOfflineResult(r)) {
-                        // Still unreachable, retain queue
+                        // Still can't reach the server — keep this and every entry after it
+                        // queued, and stop trying for now rather than hammering repeatedly.
+                        remaining.push(entry);
+                        const idx = list.indexOf(entry);
+                        remaining.push(...list.slice(idx + 1));
+                        break;
                     } else {
-                        toast('Offline sync error: ' + (r?.error || 'Server error'), 'error');
+                        // Server reachable but rejected it (e.g. stock validation) — surface
+                        // it instead of retrying forever on a sale that will never succeed.
+                        toast('Offline sale ' + entry.localRef + ' failed to sync: ' + (r?.error || 'unknown error') + ' — please review manually', 'error');
                     }
-                } catch (e) {
-                    // Network threw
-                } finally {
-                    _flushingPendingSales = false;
-                    renderPendingSyncBadge();
-                    updateNetworkStatusUI();
+                }
+                savePendingSalesList(remaining);
+                _flushingPendingSales = false;
+                renderPendingSyncBadge();
+                if (syncedCount > 0) {
+                    toast('Synced ' + syncedCount + ' offline sale(s) to the server', 'success');
+                    loadStats();
+                    invalidateProdCache();
+                    loadAllProds(true);
+                    loadTopSellers();
                 }
             }
 
             // Small persistent badge (auto-injected, no HTML markup needed) showing how
-            // many items are still waiting to sync — tap it to retry immediately.
+            // many sales are still waiting to sync — tap it to retry immediately.
             function renderPendingSyncBadge() {
-                const salesList = pendingSalesList();
-                const mutList = typeof pendingMutationsList === 'function' ? pendingMutationsList() : [];
-                const totalPending = salesList.length + mutList.length;
+                const list = pendingSalesList();
                 let badge = document.getElementById('pending-sync-badge');
-                if (!totalPending) {
+                if (!list.length) {
                     if (badge) badge.remove();
                     return;
                 }
@@ -17574,56 +15994,15 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                     };
                     document.body.appendChild(badge);
                 }
-                const parts = [];
-                if (salesList.length > 0) parts.push(salesList.length + ' sale' + (salesList.length > 1 ? 's' : ''));
-                if (mutList.length > 0) parts.push(mutList.length + ' update' + (mutList.length > 1 ? 's' : ''));
-                badge.innerHTML = parts.join(', ') + ' pending sync — tap to retry';
+                badge.innerHTML = list.length + ' sale(s) pending sync — tap to retry';
             }
 
-            // Syncs memory/localStorage queue with persistent IndexedDB so badge and queue are 100% consistent
-            async function syncPendingBadgeFromIDB() {
-                if (typeof PosIDB === 'undefined') return;
-                try {
-                    const idbOrders = await PosIDB.getAll('offline_orders');
-                    if (Array.isArray(idbOrders) && idbOrders.length > 0) {
-                        const localOrders = pendingSalesList();
-                        const orderMap = new Map();
-                        localOrders.forEach(o => {
-                            const ref = o.localRef || o.payload?.order_ref;
-                            if (ref) orderMap.set(ref, o);
-                        });
-                        idbOrders.forEach(o => {
-                            const ref = o.localRef || o.payload?.order_ref;
-                            if (ref) orderMap.set(ref, o);
-                        });
-                        const mergedOrders = Array.from(orderMap.values());
-                        if (mergedOrders.length !== localOrders.length) {
-                            savePendingSalesList(mergedOrders);
-                        }
-                    }
-
-                    const idbMuts = await PosIDB.getAll('offline_mutations');
-                    if (Array.isArray(idbMuts) && idbMuts.length > 0) {
-                        const localMuts = typeof pendingMutationsList === 'function' ? pendingMutationsList() : [];
-                        const mutMap = new Map();
-                        localMuts.forEach(m => {
-                            if (m.localMutationId) mutMap.set(m.localMutationId, m);
-                        });
-                        idbMuts.forEach(m => {
-                            if (m.localMutationId) mutMap.set(m.localMutationId, m);
-                        });
-                        const mergedMuts = Array.from(mutMap.values());
-                        if (mergedMuts.length !== localMuts.length) {
-                            savePendingMutationsList(mergedMuts);
-                        }
-                    }
-                } catch (e) {}
-                renderPendingSyncBadge();
-                if (typeof updateNetworkStatusUI === 'function') updateNetworkStatusUI();
-            }
-
-            // Initial badge reconciliation on load
-            syncPendingBadgeFromIDB();
+            // Retry whenever the browser regains connectivity, plus a periodic sweep
+            // every 20s in case the 'online' event doesn't fire reliably on this
+            // device, and once immediately on page load in case sales were queued
+            // during a previous, now-closed session.
+            window.addEventListener('online', flushPendingSales);
+            setInterval(flushPendingSales, 20000);
 
 
 
@@ -17643,7 +16022,7 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                 loadStats();
                 loadAllProds();
                 loadTopSellers();
-                if (USER_ROLE !== 'staff') setTimeout(loadAIHighlights, 800);
+                if (USER_ROLE !== 'staff') loadAIHighlights();
                 // Offline/power-loss protections: offer to restore any cart left over
                 // from a crash/power loss, and try syncing any sales that were queued
                 // locally while the server was unreachable.
@@ -17730,54 +16109,14 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                 document.getElementById('s-profit-label').textContent = label + ' profit';
             }
 
-            async function loadOfflineStatsFallback() {
-                try {
-                    const prods = (typeof PosIDB !== 'undefined') ? (await PosIDB.getAll('products') || []) : [];
-                    const orders = (typeof PosIDB !== 'undefined') ? (await PosIDB.getAll('offline_orders') || []) : [];
-                    
-                    const todayDateStr = new Date().toDateString();
-                    const todayOrders = orders.filter(o => {
-                        const dt = o.created_at ? new Date(o.created_at) : (o.createdAt ? new Date(o.createdAt) : null);
-                        return dt && dt.toDateString() === todayDateStr;
-                    });
-
-                    const todayRev = todayOrders.reduce((sum, o) => sum + (parseFloat(o.total || o.payload?.total || 0) || 0), 0);
-                    const lowStock = prods.filter(p => {
-                        const q = parseInt(p.store_quantity ?? p.quantity ?? 0, 10);
-                        return q <= 5;
-                    }).length;
-
-                    const revEl = document.getElementById('s-today-rev');
-                    const cntEl = document.getElementById('s-today-cnt');
-                    const prodsEl = document.getElementById('s-prods');
-                    const lowstockEl = document.getElementById('s-lowstock');
-                    const weekEl = document.getElementById('s-week');
-                    const weekLbl = document.getElementById('s-week-label');
-                    const profitEl = document.getElementById('s-profit');
-                    const profitLbl = document.getElementById('s-profit-label');
-
-                    if (revEl) revEl.textContent = fmt(todayRev);
-                    if (cntEl) cntEl.textContent = todayOrders.length + ' transactions' + (!navigator.onLine || !_isServerReachable ? ' (offline)' : '');
-                    if (prodsEl) prodsEl.textContent = prods.length;
-                    if (lowstockEl) lowstockEl.textContent = lowStock + ' low stock';
-                    if (weekEl) weekEl.textContent = fmt(todayRev);
-                    if (weekLbl) weekLbl.textContent = "today's revenue";
-                    if (profitEl) profitEl.textContent = fmt(todayRev * 0.25);
-                    if (profitLbl) profitLbl.textContent = "estimated profit";
-                } catch (e) {}
-            }
-
             function loadStats() {
-                if (navigator.onLine === false || !_isServerReachable) {
-                    loadOfflineStatsFallback();
-                    return;
-                }
                 apiGet('get_stats').then(r => {
+                    // Previously a silent return here — if this call ever failed, every
+                    // dashboard card just sat on its "—" placeholder forever with no
+                    // indication anything was wrong. Now it says so, so a real backend
+                    // issue is visible instead of looking like the app is just slow.
                     if (!r?.success) {
-                        loadOfflineStatsFallback();
-                        if (navigator.onLine !== false && _isServerReachable && !r?.offline) {
-                            toast(r?.error ? ('Dashboard stats: ' + r.error) : 'Could not load dashboard stats', 'error');
-                        }
+                        toast(r?.error ? ('Dashboard stats: ' + r.error) : 'Could not load dashboard stats', 'error');
                         return;
                     }
                     const d = r.data;
@@ -17788,8 +16127,6 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                     document.getElementById('s-lowstock').textContent = d.low_stock + ' low stock';
                     renderDashPeriodButtons();
                     renderPeriodStats();
-                }).catch(() => {
-                    loadOfflineStatsFallback();
                 });
             }
 
@@ -18048,7 +16385,7 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                 }
 
                 const promoInfo = getPromoInfo(p);
-                const img = prodHasImage(p) ?
+                const img = p.has_image == 1 ?
                     '<img src="' + prodImgUrl(p.id, p.updated_at) + '" class="product-card-img" loading="lazy" data-fallback="div" onerror="imgFallback(this)"/>' :
                     '<div class="product-card-ph"><img src="' + DEFAULT_PRODUCT_IMG + '" class="default-prod-img" alt=""></div>';
                 const priceHTML = promoInfo.active ?
@@ -18158,7 +16495,7 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                     }
                     el.innerHTML = tops.map((p, i) => {
                         const rc = i === 0 ? 'gold' : i === 1 ? 'silver' : i === 2 ? 'bronze' : '';
-                        const imgEl = prodHasImage(p) ? '<img src="' + prodImgUrl(p.id, p.updated_at) + '" loading="lazy" style="width:100%;height:100%;object-fit:cover;" onerror="imgFallback(this)"/>' : '<img src="' + DEFAULT_PRODUCT_IMG + '" class="default-prod-img" alt="">';
+                        const imgEl = p.has_image ? '<img src="' + prodImgUrl(p.id, p.updated_at) + '" loading="lazy" style="width:100%;height:100%;object-fit:cover;" onerror="imgFallback(this)"/>' : '<img src="' + DEFAULT_PRODUCT_IMG + '" class="default-prod-img" alt="">';
                         return '<div class="top-row">' +
                             '<div class="top-rank ' + rc + '">' + (i + 1) + '</div>' +
                             '<div class="top-img">' + imgEl + '</div>' +
@@ -18304,7 +16641,7 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                         regular_price: parseFloat(p.price),
                         catalog_price: catalogPrice,
                         manual_discount: null,
-                        has_image: prodHasImage(p),
+                        has_image: p.has_image == 1,
                         img_v: p.updated_at || '',
                         category_name: p.category_name || '',
                         description: p.description || '',
@@ -19056,9 +17393,6 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
             // ── NATIVE THERMAL PRINT AGENT & CASH DRAWER HELPERS ──
             async function tryNativePrintAgent(payload) {
                 try {
-                    if (payload && !payload.paper_size) {
-                        payload.paper_size = (typeof currentReceiptPaperSize !== 'undefined' ? currentReceiptPaperSize : '58mm');
-                    }
                     const ctrl = new AbortController();
                     const timer = setTimeout(() => ctrl.abort(), 1200);
                     const res = await fetch('http://127.0.0.1:9100/print', {
@@ -19401,7 +17735,7 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                 grid.innerHTML = list.map(p => {
                     const storeQ = p.store_quantity !== undefined ? p.store_quantity : p.quantity;
                     const stockColor = storeQ <= 0 ? 'var(--danger)' : storeQ <= 5 ? 'var(--accent2)' : 'var(--green)';
-                    const img = prodHasImage(p) ? '<img src="' + prodImgUrl(p.id, p.updated_at) + '" class="product-card-img" loading="lazy" data-fallback="div" onerror="imgFallback(this)"/>' : '<div class="product-card-ph"><img src="' + DEFAULT_PRODUCT_IMG + '" class="default-prod-img" alt=""></div>';
+                    const img = p.has_image == 1 ? '<img src="' + prodImgUrl(p.id, p.updated_at) + '" class="product-card-img" loading="lazy" data-fallback="div" onerror="imgFallback(this)"/>' : '<div class="product-card-ph"><img src="' + DEFAULT_PRODUCT_IMG + '" class="default-prod-img" alt=""></div>';
                     const promoInfo = getPromoInfo(p);
                     const priceHTML = promoInfo.active ?
                         '<span class="promo-strike">' + CUR + promoInfo.price.toFixed(2) + '</span><span class="promo-now">' + CUR + promoInfo.promo.toFixed(2) + '</span>' :
@@ -19699,7 +18033,7 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                 const removeBtn = document.getElementById('img-remove-btn');
                 const qrWrap = document.getElementById('qr-preview-wrap');
                 if (qrWrap) qrWrap.style.display = 'none';
-                if (prodHasImage(p)) {
+                if (p.has_image == 1) {
                     if (preview) {
                         preview.src = prodImgUrl(p.id, p.updated_at);
                         preview.style.display = 'block';
@@ -20112,7 +18446,7 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                     const tops = top.data || [];
                     el.innerHTML = tops.length ? tops.map((p, i) => {
                         const rc = i === 0 ? 'gold' : i === 1 ? 'silver' : i === 2 ? 'bronze' : '';
-                        const imgEl = prodHasImage(p) ? '<img src="' + prodImgUrl(p.id, p.updated_at) + '" loading="lazy" style="width:100%;height:100%;object-fit:cover;" onerror="imgFallback(this)"/>' : '<img src="' + DEFAULT_PRODUCT_IMG + '" class="default-prod-img" alt="">';
+                        const imgEl = p.has_image ? '<img src="' + prodImgUrl(p.id, p.updated_at) + '" loading="lazy" style="width:100%;height:100%;object-fit:cover;" onerror="imgFallback(this)"/>' : '<img src="' + DEFAULT_PRODUCT_IMG + '" class="default-prod-img" alt="">';
                         return '<div class="top-row">' +
                             '<div class="top-rank ' + rc + '">' + (i + 1) + '</div>' +
                             '<div class="top-img">' + imgEl + '</div>' +
@@ -21635,9 +19969,6 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                     if (tii) tii.value = s.terminal_id || 'POS-01';
                     if (vri) vri.value = s.vat_rate || 0;
                     if (tri) tri.value = s.tax_rate || 0;
-                    // Paper size — sync select to stored value (default 58mm)
-                    const psi = document.getElementById('receipt-paper-size-inp');
-                    if (psi) psi.value = s.receipt_paper_size || '58mm';
                     // System Theme controls populate from localStorage (this is a
                     // per-browser display preference, not a store-wide setting — see
                     // saveSystemTheme()/resetSystemTheme() below), not from server settings.
@@ -22194,25 +20525,16 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                 const terminal_id = document.getElementById('terminal-id-inp')?.value.trim() || 'POS-01';
                 const vat_rate = Math.max(0, parseFloat(document.getElementById('vat-rate-inp')?.value || 0));
                 const tax_rate = Math.max(0, parseFloat(document.getElementById('tax-rate-inp')?.value || 0));
-                const receipt_paper_size = document.getElementById('receipt-paper-size-inp')?.value || '58mm';
                 apiPost('save_settings', {
                     shop_name,
                     currency,
                     shop_address,
                     shop_tin,
-                    terminal_id,
-                    vat_rate,
-                    tax_rate,
-                    receipt_paper_size
+                    terminal_id
+                    , vat_rate
+                    , tax_rate
                 }).then(r => {
-                    if (r?.success) {
-                        // Update the live JS variable so browser-print receipts immediately
-                        // use the newly selected paper width — no page reload needed.
-                        currentReceiptPaperSize = receipt_paper_size;
-                        toast('Settings saved!', 'success');
-                    } else {
-                        toast('Error saving settings', 'error');
-                    }
+                    toast(r?.success ? 'Settings saved!' : 'Error saving settings', r?.success ? 'success' : 'error');
                 });
             }
 
@@ -24712,7 +23034,7 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                     '<div style="display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid var(--border);font-size:.85rem;"><span style="color:var(--text3);">' + label + '</span><span style="font-weight:600;text-align:right;">' + value + '</span></div>' :
                     '';
 
-                const img = prodHasImage(p) ?
+                const img = p.has_image == 1 ?
                     '<img src="' + prodImgUrl(p.id, p.updated_at) + '" style="width:100%;max-width:160px;aspect-ratio:1;object-fit:cover;border-radius:var(--r-sm);display:block;margin:0 auto 12px;" data-fallback="blank" onerror="imgFallback(this)"/>' :
                     '';
 
@@ -26098,202 +24420,6 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
             }
 
             document.addEventListener('DOMContentLoaded', function() {
-                const isExplicitLogout = localStorage.getItem('explicit_logout') === '1';
-                const isLoginPage = window.location.search.includes('page=login') || cur_page === 'login';
-                const offlineUser = localStorage.getItem('offlineUser');
-                const hasServerSession = (typeof CURRENT_USER_ID !== 'undefined' && CURRENT_USER_ID > 0 && !isExplicitLogout);
-
-                if (isExplicitLogout || isLoginPage || (!offlineUser && !hasServerSession)) {
-                    // Force login view, hide dashboard and all POS views
-                    const allViews = document.querySelectorAll('.pos-page-view');
-                    allViews.forEach(v => v.style.display = 'none');
-                    const authBg = document.querySelector('.public-auth-bg');
-                    const topNav = document.getElementById('main-top-nav');
-                    const mobNav = document.getElementById('main-mob-nav');
-                    if (topNav) topNav.style.display = 'none';
-                    if (mobNav) mobNav.style.display = 'none';
-                    if (authBg) authBg.style.display = 'flex';
-                    cur_page = 'login';
-                    document.title = 'Sign In — ' + (typeof SHOP_NAME !== 'undefined' && SHOP_NAME ? SHOP_NAME : 'ProCast');
-                } else if (offlineUser) {
-                    try {
-                        const u = JSON.parse(offlineUser);
-                        USER_ROLE = u.role || USER_ROLE;
-                        CASHIER_NAME = u.full_name || CASHIER_NAME;
-                        CURRENT_USER_ID = u.id || CURRENT_USER_ID || 1;
-                        document.querySelectorAll('.nav-user-name').forEach(el => {
-                            el.textContent = u.full_name;
-                            el.title = u.full_name;
-                        });
-                        if (u.role !== 'owner') {
-                            document.querySelectorAll('.owner-only, [data-role="owner"]').forEach(el => el.style.display = 'none');
-                        }
-                        const dashView = document.getElementById('view-dashboard');
-                        const authBg = document.querySelector('.public-auth-bg');
-                        const topNav = document.getElementById('main-top-nav');
-                        const mobNav = document.getElementById('main-mob-nav');
-                        if (topNav) topNav.style.display = 'flex';
-                        if (mobNav) mobNav.style.display = 'block';
-                        if (window.history && window.history.replaceState) {
-                            window.history.replaceState(null, '', '?page=dashboard');
-                        }
-                        if (u.role === 'cashier') {
-                            document.querySelectorAll('.owner-only, [data-role="owner"], .nav-links a:not([href*="page=dashboard"]), .mob-nav-inner a:not([href*="page=dashboard"]):not([onclick*="Void"]):not([onclick*="End"])').forEach(el => el.style.display = 'none');
-                        } else {
-                            document.querySelectorAll('.owner-only, [data-role="owner"], .nav-links a, .mob-nav-inner a').forEach(el => el.style.display = '');
-                        }
-                        if (dashView && authBg) {
-                            authBg.style.display = 'none';
-                            dashView.style.display = '';
-                            cur_page = 'dashboard';
-                            document.title = 'Dashboard & Checkout — ' + (typeof SHOP_NAME !== 'undefined' && SHOP_NAME ? SHOP_NAME : 'ProCast');
-                        }
-                        if (navigator.onLine) {
-                            setTimeout(autoReauthServerSession, 150);
-                        }
-                    } catch (e) {}
-                }
-
-                const loginForm = document.querySelector('form[action="?page=login"]');
-                if (loginForm) {
-                    loginForm.addEventListener('submit', async (e) => {
-                        localStorage.removeItem('explicit_logout');
-                        const isOffline = (navigator.onLine === false || !_isServerReachable);
-                        if (isOffline) {
-                            e.preventDefault();
-                            const username = loginForm.querySelector('[name="username"]').value.trim();
-                            const password = loginForm.querySelector('[name="password"]').value;
-
-                            let user = await PosIDB.getItem('offline_users', username) || await PosIDB.getItem('pending_users', username);
-                            if (!user) {
-                                try {
-                                    const allUsers = await PosIDB.getAll('offline_users');
-                                    if (Array.isArray(allUsers)) {
-                                        user = allUsers.find(u => u.username && u.username.toLowerCase() === username.toLowerCase());
-                                    }
-                                } catch(err) {}
-                            }
-                            if (!user && offlineUser) {
-                                try {
-                                    const parsed = JSON.parse(offlineUser);
-                                    if (parsed.username && parsed.username.toLowerCase() === username.toLowerCase()) {
-                                        user = parsed;
-                                    }
-                                } catch(err) {}
-                            }
-
-                            if (user) {
-                                const bcrypt = (window.dcodeIO && window.dcodeIO.bcrypt) || window.bcrypt || null;
-                                let match = false;
-                                if (user.password) {
-                                    if (bcrypt) {
-                                        try {
-                                            match = bcrypt.compareSync(password, user.password);
-                                        } catch (err) {
-                                            match = false;
-                                        }
-                                    } else {
-                                        // Fallback if bcrypt failed to load offline
-                                        match = (password.length >= 4);
-                                    }
-                                } else {
-                                    match = (password.length >= 4);
-                                }
-
-                                if (match) {
-                                    localStorage.removeItem('explicit_logout');
-                                    localStorage.setItem('offlineUser', JSON.stringify({ id: user.id || 'offline', username: user.username, full_name: user.full_name, role: user.role }));
-                                    const dashView = document.getElementById('view-dashboard');
-                                    const authBg = document.querySelector('.public-auth-bg');
-                                    const topNav = document.getElementById('main-top-nav');
-                                    const mobNav = document.getElementById('main-mob-nav');
-                                    if (topNav) topNav.style.display = 'flex';
-                                    if (mobNav) mobNav.style.display = 'block';
-                                    if (window.history && window.history.replaceState) {
-                                        window.history.replaceState(null, '', '?page=dashboard');
-                                    }
-                                    if (user.role === 'cashier') {
-                                        document.querySelectorAll('.owner-only, [data-role="owner"], .nav-links a:not([href*="page=dashboard"]), .mob-nav-inner a:not([href*="page=dashboard"]):not([onclick*="Void"]):not([onclick*="End"])').forEach(el => el.style.display = 'none');
-                                    } else {
-                                        document.querySelectorAll('.owner-only, [data-role="owner"], .nav-links a, .mob-nav-inner a').forEach(el => el.style.display = '');
-                                    }
-                                    if (dashView && authBg) {
-                                        authBg.style.display = 'none';
-                                        dashView.style.display = '';
-                                        cur_page = 'dashboard';
-                                        document.title = 'Dashboard & Checkout — ' + (typeof SHOP_NAME !== 'undefined' && SHOP_NAME ? SHOP_NAME : 'ProCast');
-                                        USER_ROLE = user.role;
-                                        CASHIER_NAME = user.full_name;
-                                        CURRENT_USER_ID = user.id || 1;
-                                        document.querySelectorAll('.nav-user-name').forEach(el => {
-                                            el.textContent = user.full_name;
-                                            el.title = user.full_name;
-                                        });
-                                        if (typeof dashInit === 'function') dashInit();
-                                        if (typeof toast === 'function') toast('Logged in offline as ' + user.full_name, 'success');
-                                    } else {
-                                        window.location.href = '?page=dashboard';
-                                    }
-                                } else {
-                                    if (typeof toast === 'function') toast('Incorrect password (Offline mode).', 'error');
-                                    else alert('Incorrect password (Offline mode).');
-                                }
-                            } else {
-                                if (typeof toast === 'function') toast('User not found in offline cache. Please connect online once to sync accounts.', 'error');
-                                else alert('User not found in offline cache. Please connect online once to sync accounts.');
-                            }
-                        }
-                    });
-                }
-
-                const signupForm = document.querySelector('form[action="?page=signup"]');
-                if (signupForm) {
-                    signupForm.addEventListener('submit', async (e) => {
-                        if (navigator.onLine === false || !_isServerReachable) {
-                            e.preventDefault();
-                            const username = signupForm.querySelector('[name="username"]').value.trim();
-                            const password = signupForm.querySelector('[name="password"]').value;
-                            const confirmPw = signupForm.querySelector('[name="confirm_password"]') ? signupForm.querySelector('[name="confirm_password"]').value : password;
-                            const fullName = signupForm.querySelector('[name="full_name"]').value.trim();
-                            const email = (signupForm.querySelector('[name="email"]') || {}).value || '';
-
-                            if (!username || !password || !fullName) {
-                                if (typeof toast === 'function') toast('Please fill in all required fields.', 'error');
-                                else alert('Please fill in all required fields.');
-                                return;
-                            }
-                            if (password !== confirmPw) {
-                                if (typeof toast === 'function') toast('Passwords do not match.', 'error');
-                                else alert('Passwords do not match.');
-                                return;
-                            }
-                            if (password.length < 6) {
-                                if (typeof toast === 'function') toast('Password must be at least 6 characters.', 'error');
-                                else alert('Password must be at least 6 characters.');
-                                return;
-                            }
-
-                            const bcrypt = (window.dcodeIO && window.dcodeIO.bcrypt) || window.bcrypt || null;
-                            const hash = (bcrypt && typeof bcrypt.hashSync === 'function') ? bcrypt.hashSync(password, 10) : password;
-                            const newUser = { username, password: hash, full_name: fullName, email, role: 'owner' };
-                            await PosIDB.setItem('pending_users', newUser);
-                            await PosIDB.setItem('offline_users', newUser);
-                            localStorage.setItem('offlineUser', JSON.stringify({ id: 'offline', username, full_name: fullName, role: 'owner' }));
-                            
-                            const dashView = document.getElementById('view-dashboard');
-                            const authBg = document.querySelector('.public-auth-bg');
-                            if (dashView && authBg) {
-                                authBg.style.display = 'none';
-                                dashView.style.display = '';
-                                cur_page = 'dashboard';
-                                if (typeof dashInit === 'function') dashInit();
-                            } else {
-                                window.location.href = '?page=dashboard';
-                            }
-                        }
-                    });
-                }
-
                 dashInit();
                 prodsInit();
                 salesInit();
@@ -26304,13 +24430,24 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                 checkShiftLock(); // "No Count, No Transaction" mandatory shift gate — runs on every protected page
 
                 // ── QUIETLY WAKE UP THE ML API IN THE BACKGROUND ──
-                // Non-blocking deferred warm-up ping after UI paint is done
-                setTimeout(function() {
+                // Render's free tier puts pos-ml-api-johv.onrender.com to sleep after a
+                // period of no traffic, and the first request after that can take
+                // 20-30s to respond while it spins back up. Rather than the user
+                // eating that wait the moment they actually open Forecast/Combos,
+                // fire a throwaway request the instant the app itself loads — by
+                // the time they navigate there, the instance has had a head start.
+                // Deliberately NOT awaited — this must never block or be visible to
+                // the user, success or failure. Once per browser tab per 10 minutes
+                // (not on every single page click) so it doesn't add needless load.
+                (function warmMlApiInBackground() {
                     const lastWarm = parseInt(sessionStorage.getItem('_mlWarmAt') || '0', 10);
                     if (Date.now() - lastWarm < 10 * 60 * 1000) return;
                     sessionStorage.setItem('_mlWarmAt', String(Date.now()));
+                    // Raw fetch on purpose, NOT apiGet() — apiGet() toasts on failure
+                    // and redirects to login on a 401, neither of which should ever
+                    // happen to the user because of a silent background warm-up ping.
                     fetch(API_BASE + 'get_ml_stores').catch(() => {});
-                }, 3000);
+                })();
 
                 // Show & init draggable scanner on dashboard only
                 const sf = document.getElementById('scanner-float');
@@ -27218,7 +25355,7 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
             // ════════════════════════════════════════════════
             (function() {
                 if (!('serviceWorker' in navigator)) return;
-                if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') return;
+                if (location.protocol !== 'https:' && location.hostname !== 'localhost') return;
                 const regPromise = navigator.serviceWorker.register('sw.js', { scope: './' })
                     .catch(() => navigator.serviceWorker.register('sw.php', { scope: './' }))
                     .catch(() => navigator.serviceWorker.register('index.php?pwa=sw', { scope: './' }))
@@ -27231,15 +25368,6 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                         }
                     }
                 }).catch(() => {});
-
-                // Listen for TRIGGER_SYNC signal from Service Worker (fired on background sync)
-                navigator.serviceWorker.addEventListener('message', (e) => {
-                    if (e.data && e.data.type === 'TRIGGER_SYNC') {
-                        if (typeof flushPendingSales === 'function') {
-                            flushPendingSales();
-                        }
-                    }
-                });
             })();
 
             let deferredPwaPrompt = null;
