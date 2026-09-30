@@ -6,19 +6,45 @@ echo   PROCAST - Starting in Kiosk / Silent Print Mode
 echo ========================================================
 echo.
 
-:: Locate Chrome
-set CHROME_PATH=
-if exist "C:\Program Files\Google\Chrome\Application\chrome.exe" set CHROME_PATH="C:\Program Files\Google\Chrome\Application\chrome.exe"
-if exist "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe" set CHROME_PATH="C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"
-if exist "%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe" set CHROME_PATH="%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"
+:: 1. Locate Chromium Browser (Google Chrome preferred, Microsoft Edge fallback)
+set BROWSER_PATH=
+set BROWSER_NAME=
 
-if "%CHROME_PATH%"=="" (
-    echo [ERROR] Google Chrome was not found. Please install Chrome or launch your browser with --kiosk-printing.
+if exist "C:\Program Files\Google\Chrome\Application\chrome.exe" (
+    set BROWSER_PATH="C:\Program Files\Google\Chrome\Application\chrome.exe"
+    set BROWSER_NAME=Google Chrome
+)
+if "%BROWSER_PATH%"=="" if exist "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe" (
+    set BROWSER_PATH="C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"
+    set BROWSER_NAME=Google Chrome
+)
+if "%BROWSER_PATH%"=="" if exist "%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe" (
+    set BROWSER_PATH="%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"
+    set BROWSER_NAME=Google Chrome
+)
+
+:: Edge Fallback (built-in on Windows 10 & Windows 11)
+if "%BROWSER_PATH%"=="" if exist "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" (
+    set BROWSER_PATH="C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
+    set BROWSER_NAME=Microsoft Edge
+)
+if "%BROWSER_PATH%"=="" if exist "C:\Program Files\Microsoft\Edge\Application\msedge.exe" (
+    set BROWSER_PATH="C:\Program Files\Microsoft\Edge\Application\msedge.exe"
+    set BROWSER_NAME=Microsoft Edge
+)
+if "%BROWSER_PATH%"=="" if exist "%LOCALAPPDATA%\Microsoft\Edge\Application\msedge.exe" (
+    set BROWSER_PATH="%LOCALAPPDATA%\Microsoft\Edge\Application\msedge.exe"
+    set BROWSER_NAME=Microsoft Edge
+)
+
+if "%BROWSER_PATH%"=="" (
+    echo [ERROR] Neither Google Chrome nor Microsoft Edge was found on this system.
+    echo Please install Google Chrome or Microsoft Edge to use Auto-Print Kiosk mode.
     pause
     exit /b 1
 )
 
-:: Check if XAMPP Apache is running on port 80
+:: 2. Check local server (XAMPP on port 80 or standalone PHP on port 8000)
 set TARGET_URL=http://localhost/pos_system/index.php
 
 powershell -NoProfile -Command "$t = New-Object System.Net.Sockets.TcpClient; try { $t.Connect('127.0.0.1', 80); exit 0 } catch { exit 1 }"
@@ -38,11 +64,20 @@ if %ERRORLEVEL% EQU 0 (
     )
 )
 
-:: Start Native Print Agent in background (if not already running)
-start "" wscript.exe "%~dp0start-print-agent-silent.vbs"
+:: 3. Setup Dedicated POS Profile Directory
+set "PROFILE_DIR=C:\POS-Profile"
+mkdir "C:\POS-Profile" 2>nul
+if not exist "C:\POS-Profile" (
+    set "PROFILE_DIR=%LOCALAPPDATA%\POS-Profile"
+)
 
-echo [OK] Launching POS with Silent Printing enabled...
-start "" %CHROME_PATH% --kiosk-printing --user-data-dir="C:\POS-Profile" --app="%TARGET_URL%"
+:: 4. Start Native Print Agent in background (if not already running)
+if exist "%~dp0start-print-agent-silent.vbs" (
+    start "" wscript.exe "%~dp0start-print-agent-silent.vbs"
+)
+
+echo [OK] Launching POS via %BROWSER_NAME% with Silent Printing enabled...
+start "" %BROWSER_PATH% --kiosk-printing --user-data-dir="%PROFILE_DIR%" --unsafely-treat-insecure-origin-as-secure=http://127.0.0.1:9100 --allow-running-insecure-content --app="%TARGET_URL%"
 echo.
 echo POS is now running with:
 echo  - Silent direct thermal printing (no print preview dialog)

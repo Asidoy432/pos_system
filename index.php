@@ -647,11 +647,24 @@ function db(bool $forceReconnect = false): PDO
                 }
             }
         } else {
-            // Local fallback to MySQL pangga_store if credentials are empty or localhost
+            // Local fallback to MySQL POS_System / pangga_store if credentials are empty or localhost
             if (DB_HOST === '' && DB_NAME === '') {
-                $dsn = 'mysql:host=127.0.0.1;port=3306;dbname=pangga_store;charset=utf8mb4';
                 $user = 'root';
                 $pass = '';
+                $dsn = 'mysql:host=127.0.0.1;port=3306;dbname=POS_System;charset=utf8mb4';
+                try {
+                    $testPdo = new PDO($dsn, $user, $pass, [
+                        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+                        PDO::ATTR_EMULATE_PREPARES => false,
+                        PDO::ATTR_PERSISTENT => false,
+                        PDO::ATTR_TIMEOUT => 2,
+                    ]);
+                    $pdo = $testPdo;
+                    return $pdo;
+                } catch (\Throwable $e) {
+                    $dsn = 'mysql:host=127.0.0.1;port=3306;dbname=pangga_store;charset=utf8mb4';
+                }
             } elseif (DB_PORT == 3306 || str_contains(DB_HOST, '127.0.0.1') || str_contains(DB_HOST, 'localhost')) {
                 $dsn = 'mysql:host=' . DB_HOST . ';port=' . DB_PORT . ';dbname=' . DB_NAME . ';charset=utf8mb4';
                 $user = DB_USER ?: 'root';
@@ -2289,7 +2302,7 @@ if (isset($_GET['api'])) {
     // ── CLOUD SYNC ENDPOINTS (AUTHENTICATED VIA SYNC_TOKEN) ──
     // Allows local POS systems to sync data bidirectionally with this online deployment
     // over HTTPS without needing user session cookies or CSRF tokens.
-    if (in_array($action, ['cloud_sync_ping', 'cloud_sync_pull', 'cloud_sync_push'], true)) {
+    if (in_array($action, ['cloud_sync_ping', 'cloud_sync_pull', 'cloud_sync_push', 'cloud_auth_login'], true)) {
         $headerToken = $_SERVER['HTTP_X_SYNC_TOKEN'] ?? '';
         $queryToken = $_GET['sync_token'] ?? ($_POST['sync_token'] ?? '');
         $providedToken = trim((string)($headerToken !== '' ? $headerToken : $queryToken));
@@ -2324,18 +2337,71 @@ if (isset($_GET['api'])) {
                 ]);
             }
 
+            if ($action === 'cloud_auth_login') {
+                $username = trim($body['username'] ?? ($_POST['username'] ?? ''));
+                $password = (string)($body['password'] ?? ($_POST['password'] ?? ''));
+                if ($username === '' || $password === '') {
+                    json(false, null, 'Username and password are required.');
+                }
+
+                $uStmt = $db->prepare("SELECT id, username, password, full_name, role, email, store_id FROM users WHERE username = ? LIMIT 1");
+                $uStmt->execute([$username]);
+                $u = $uStmt->fetch();
+
+                if ($u && password_verify($password, $u['password'])) {
+                    $sid = (int)($u['store_id'] ?: 1);
+                    $storeName = 'Store #' . $sid;
+                    $storeCurrency = '₱';
+                    try {
+                        $sStmt = $db->prepare("SELECT name, currency FROM stores WHERE id = ?");
+                        $sStmt->execute([$sid]);
+                        $st = $sStmt->fetch();
+                        if ($st) {
+                            if (!empty($st['name'])) $storeName = $st['name'];
+                            if (!empty($st['currency']) && !str_contains($st['currency'], '?')) $storeCurrency = $st['currency'];
+                        }
+                    } catch (\Throwable $e) {}
+
+                    json(true, [
+                        'user' => [
+                            'id' => (int)$u['id'],
+                            'username' => $u['username'],
+                            'password' => $u['password'],
+                            'full_name' => $u['full_name'],
+                            'role' => $u['role'],
+                            'email' => $u['email'],
+                            'store_id' => $sid
+                        ],
+                        'store' => [
+                            'id' => $sid,
+                            'name' => $storeName,
+                            'currency' => $storeCurrency
+                        ]
+                    ]);
+                } else {
+                    json(false, null, 'Invalid username or password.');
+                }
+            }
+
             if ($action === 'cloud_sync_pull') {
+                $filterStoreId = isset($_GET['store_id']) ? (int)$_GET['store_id'] : (isset($body['store_id']) ? (int)$body['store_id'] : 0);
+
                 // Categories
                 $categories = [];
                 try {
-                    $catStmt = $db->query("SELECT id, name, sort_order FROM categories ORDER BY sort_order ASC, name ASC");
+                    if ($filterStoreId > 0) {
+                        $catStmt = $db->prepare("SELECT id, name, sort_order, store_id FROM categories WHERE store_id = ? ORDER BY sort_order ASC, name ASC");
+                        $catStmt->execute([$filterStoreId]);
+                    } else {
+                        $catStmt = $db->query("SELECT id, name, sort_order, store_id FROM categories ORDER BY sort_order ASC, name ASC");
+                    }
                     if ($catStmt) $categories = $catStmt->fetchAll();
                 } catch (\Throwable $e) {}
 
                 // Products
                 $products = [];
                 try {
-                    $prodStmt = $db->query("
+                    $prodSql = "
                         SELECT 
                             p.id, p.name, p.barcode, p.description, p.price, p.cost_price,
                             p.promo_price, p.store_quantity, p.quantity,
@@ -2344,13 +2410,24 @@ if (isset($_GET['api'])) {
                             p.pack_qty, p.pack_barcode, p.pack_price,
                             p.case_qty, p.case_barcode, p.case_price,
                             p.low_stock_threshold, p.expiry_date, p.delivery_date,
-                            p.brand, p.supplier, p.category_id,
+                            p.brand, p.supplier, p.category_id, p.store_id,
                             c.name AS category_name
                         FROM products p
                         LEFT JOIN categories c ON c.id = p.category_id
                         LEFT JOIN warehouse_stock ws ON ws.product_id = p.id
-                        ORDER BY p.name ASC
-                    ");
+                    ";
+                    if ($filterStoreId > 0) {
+                        $prodSql .= " WHERE p.store_id = ? ";
+                    }
+                    $prodSql .= " ORDER BY p.name ASC";
+
+                    if ($filterStoreId > 0) {
+                        $prodStmt = $db->prepare($prodSql);
+                        $prodStmt->execute([$filterStoreId]);
+                    } else {
+                        $prodStmt = $db->query($prodSql);
+                    }
+
                     if ($prodStmt) {
                         $rawProds = $prodStmt->fetchAll();
                         $hostUrl = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http') . '://' . ($_SERVER['HTTP_HOST'] ?? 'localhost');
@@ -2376,7 +2453,14 @@ if (isset($_GET['api'])) {
                     }
                 } catch (\Throwable $e) {
                     try {
-                        $simpleStmt = $db->query("SELECT p.*, c.name AS category_name FROM products p LEFT JOIN categories c ON c.id = p.category_id ORDER BY p.name ASC");
+                        $simpleSql = "SELECT p.*, c.name AS category_name FROM products p LEFT JOIN categories c ON c.id = p.category_id";
+                        if ($filterStoreId > 0) {
+                            $simpleSql .= " WHERE p.store_id = ?";
+                            $simpleStmt = $db->prepare($simpleSql);
+                            $simpleStmt->execute([$filterStoreId]);
+                        } else {
+                            $simpleStmt = $db->query($simpleSql);
+                        }
                         if ($simpleStmt) {
                             $products = $simpleStmt->fetchAll();
                         }
@@ -2386,18 +2470,45 @@ if (isset($_GET['api'])) {
                 // Batches
                 $batches = [];
                 try {
-                    $bStmt = $db->query("SELECT * FROM batches ORDER BY id ASC");
+                    if ($filterStoreId > 0) {
+                        $bStmt = $db->prepare("
+                            SELECT b.* FROM batches b
+                            JOIN products p ON p.id = b.product_id
+                            WHERE p.store_id = ?
+                            ORDER BY b.id ASC
+                        ");
+                        $bStmt->execute([$filterStoreId]);
+                    } else {
+                        $bStmt = $db->query("SELECT * FROM batches ORDER BY id ASC");
+                    }
                     if ($bStmt) $batches = $bStmt->fetchAll();
                 } catch (\Throwable $e) {}
 
-                // Users (allows all online users/cashiers to log in offline)
+                // Users (allows offline login for this store)
                 $users = [];
                 try {
-                    $uStmt = $db->query("SELECT id, username, password, full_name, role, email, store_id FROM users ORDER BY id ASC");
+                    if ($filterStoreId > 0) {
+                        $uStmt = $db->prepare("SELECT id, username, password, full_name, role, email, store_id FROM users WHERE store_id = ? ORDER BY id ASC");
+                        $uStmt->execute([$filterStoreId]);
+                    } else {
+                        $uStmt = $db->query("SELECT id, username, password, full_name, role, email, store_id FROM users ORDER BY id ASC");
+                    }
                     if ($uStmt) $users = $uStmt->fetchAll();
                 } catch (\Throwable $e) {}
 
+                // Store details
+                $storeInfo = null;
+                if ($filterStoreId > 0) {
+                    try {
+                        $stStmt = $db->prepare("SELECT id, name, currency FROM stores WHERE id = ?");
+                        $stStmt->execute([$filterStoreId]);
+                        $storeInfo = $stStmt->fetch();
+                    } catch (\Throwable $e) {}
+                }
+
                 json(true, [
+                    'store_id'   => $filterStoreId,
+                    'store'      => $storeInfo,
                     'categories' => $categories,
                     'products'   => $products,
                     'batches'    => $batches,
@@ -2411,6 +2522,7 @@ if (isset($_GET['api'])) {
                     json(true, ['synced_count' => 0, 'synced_local_ids' => []]);
                 }
 
+                $payloadStoreId = (int)($body['store_id'] ?? 0);
                 $syncedLocalIds = [];
                 $hasCostCol = false;
                 try {
@@ -2420,6 +2532,7 @@ if (isset($_GET['api'])) {
 
                 foreach ($txList as $tx) {
                     $localId = $tx['local_id'] ?? null;
+                    $txStoreId = !empty($tx['store_id']) ? (int)$tx['store_id'] : ($payloadStoreId > 0 ? $payloadStoreId : 1);
                     $ref = trim((string)($tx['receipt_no'] ?? ($tx['order_ref'] ?? '')));
                     if ($ref === '') {
                         $ref = 'TX-' . ($localId ? 'L' . $localId . '-' : '') . strtoupper(substr(uniqid(), -6));
@@ -2457,7 +2570,7 @@ if (isset($_GET['api'])) {
                             INSERT INTO transactions ({$q}store_id{$q}, {$q}order_ref{$q}, {$q}subtotal{$q}, {$q}vat_rate{$q}, {$q}vat_amount{$q}, {$q}tax_rate{$q}, {$q}tax_amount{$q}, {$q}total{$q}, {$q}cash{$q}, {$q}change{$q}, {$q}user_id{$q}, {$q}created_at{$q})
                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
                         ");
-                        $insTx->execute([$syncStoreId, $ref, $subtotal, $vatRate, $vatAmount, $taxRate, $taxAmount, $total, $cash, $change, $createdAt]);
+                        $insTx->execute([$txStoreId, $ref, $subtotal, $vatRate, $vatAmount, $taxRate, $taxAmount, $total, $cash, $change, $createdAt]);
                         $cloudTxId = lastInsertedId($db);
 
                         $items = $tx['items'] ?? [];
@@ -15702,11 +15815,7 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                     receiptPrintScript() +
                     '</body></html>';
 
-                const win = window.open('', '_blank', 'width=380,height=550');
-                if (win) {
-                    win.document.write(slipHtml);
-                    win.document.close();
-                }
+                executeUniversalReceiptPrint(slipHtml);
             }
 
             function submitShiftModal() {
@@ -15827,10 +15936,10 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                     '  if (__didPrint) return;' +
                     '  __didPrint = true;' +
                     '  try{ window.focus(); window.print(); }catch(e){}' +
-                    '  window.onafterprint = function(){ setTimeout(function(){ try{window.close();}catch(e){} }, 300); };' +
+                    '  window.onafterprint = function(){ setTimeout(function(){ try{ if(window.frameElement) window.frameElement.remove(); else window.close(); }catch(e){} }, 400); };' +
                     '}' +
-                    'if (document.readyState === "complete") { setTimeout(doPrint, 100); }' +
-                    'else { window.addEventListener("load", function(){ setTimeout(doPrint, 100); }); }' +
+                    'if (document.readyState === "complete") { setTimeout(doPrint, 150); }' +
+                    'else { window.addEventListener("load", function(){ setTimeout(doPrint, 150); }); }' +
                     '<\/script>';
             }
 
@@ -15885,12 +15994,7 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                     }
                 } catch (e) {}
 
-                // 2. Fallback to browser popup if native agent is offline
-                const win = window.open('', '_blank', 'width=380,height=650');
-                if (!win) {
-                    toast('Pop-up blocked — allow pop-ups to print the Z-Read receipt', 'warning');
-                    return;
-                }
+                // 2. Fallback to universal browser thermal print if native agent is offline
                 const label = d.variance < 0 ? 'SHORT' : (d.variance > 0 ? 'OVER' : 'EXACT');
                 const varColor = d.variance < 0 ? '#e5484d' : (d.variance > 0 ? '#3ba55c' : '#1A1208');
                 const esc = receiptEsc;
@@ -15934,8 +16038,7 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                     voidAuditRows :
                     '';
 
-                win.document.write(
-                    '<!DOCTYPE html><html><head><style>' +
+                const zReceiptHtml = '<!DOCTYPE html><html><head><style>' +
                     receiptBaseCSS() +
                     '.var-row{font-weight:800;color:' + varColor + ';font-size:13px;}' +
                     '</style></head><body>' +
@@ -15968,9 +16071,8 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                     receiptFooterHTML(['Generated ' + fmtDate(new Date().toISOString()), 'Thank you — session closed.']) +
                     '</div>' +
                     receiptPrintScript() +
-                    '</body></html>'
-                );
-                win.document.close();
+                    '</body></html>';
+                executeUniversalReceiptPrint(zReceiptHtml);
             }
 
             // ── IMAGE HELPERS ──
@@ -17657,11 +17759,75 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
             // full receipt in a dedicated window — see printSaleReceipt() below.
             let lastReceiptData = null;
 
+            // ── PLATFORM & HARDWARE PRINT HELPERS (WINDOWS 11 / PWA AWARE) ──
+            function isWindowsPlatform() {
+                if (navigator.userAgentData?.platform) {
+                    if (/windows/i.test(navigator.userAgentData.platform)) return true;
+                }
+                const ua = navigator.userAgent || '';
+                const plat = navigator.platform || '';
+                return /Windows|Win32|Win64|WOW64/i.test(ua) || /Win/i.test(plat);
+            }
+
+            function isMobilePlatform() {
+                if (navigator.userAgentData?.mobile) return true;
+                const ua = navigator.userAgent || '';
+                return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(ua);
+            }
+
+            // Universal high-reliability thermal receipt printer engine:
+            // Creates a fresh, clean isolated browsing context per print job to prevent Chromium iframe caching/freeze.
+            // Works seamlessly across Windows 11 Chrome, standalone Desktop PWA, and Kiosk silent printing.
+            function executeUniversalReceiptPrint(fullReceiptHtml) {
+                try {
+                    const oldFrame = document.getElementById('receipt-print-frame');
+                    if (oldFrame) {
+                        try { oldFrame.remove(); } catch(e) {}
+                    }
+
+                    const printFrame = document.createElement('iframe');
+                    printFrame.id = 'receipt-print-frame';
+                    // 300px off-screen layout gives Chromium exact thermal receipt proportions (58mm/80mm) without visual flicker
+                    printFrame.style.cssText = 'position:fixed;left:-9999px;top:-9999px;width:300px;height:600px;border:0;opacity:0;pointer-events:none;z-index:-9999;';
+                    document.body.appendChild(printFrame);
+
+                    const frameDoc = printFrame.contentDocument || printFrame.contentWindow?.document;
+                    if (!frameDoc) throw new Error('Cannot access print frame document');
+
+                    frameDoc.open();
+                    frameDoc.write(fullReceiptHtml);
+                    frameDoc.close();
+
+                    // Coordinated safety trigger: ensures printing fires reliably in Windows 11 Chrome and installed desktop PWA
+                    setTimeout(() => {
+                        try {
+                            if (printFrame.contentWindow && !printFrame.contentWindow.__didPrint) {
+                                printFrame.contentWindow.focus();
+                                printFrame.contentWindow.print();
+                            }
+                        } catch (e) {
+                            console.warn('Iframe print direct trigger notice:', e);
+                        }
+                    }, 350);
+                } catch (e) {
+                    // Fallback to popup window if iframe creation was blocked
+                    try {
+                        const win = window.open('', '_blank', 'width=380,height=650');
+                        if (win) {
+                            win.document.write(fullReceiptHtml);
+                            win.document.close();
+                        }
+                    } catch (popErr) {
+                        console.error('All receipt printing mechanisms failed:', popErr);
+                    }
+                }
+            }
+
             // ── NATIVE THERMAL PRINT AGENT & CASH DRAWER HELPERS ──
             async function tryNativePrintAgent(payload) {
                 try {
                     const ctrl = new AbortController();
-                    const timer = setTimeout(() => ctrl.abort(), 1200);
+                    const timer = setTimeout(() => ctrl.abort(), 600);
                     const res = await fetch('http://127.0.0.1:9100/print', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -17680,7 +17846,7 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
             async function tryNativeDrawerKick() {
                 try {
                     const ctrl = new AbortController();
-                    const timer = setTimeout(() => ctrl.abort(), 1000);
+                    const timer = setTimeout(() => ctrl.abort(), 600);
                     const res = await fetch('http://127.0.0.1:9100/drawer', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -17746,24 +17912,34 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                     change: d.change
                 };
 
-                const nativePrinted = await tryNativePrintAgent(agentPayload);
+                let nativePrinted = false;
+                try {
+                    nativePrinted = await tryNativePrintAgent(agentPayload);
+                } catch (e) {
+                    nativePrinted = false;
+                }
+
                 if (nativePrinted) {
                     toast('Receipt printed silently via Native Thermal Print Agent', 'success');
                     return;
                 }
 
-                // If native print agent is unreachable (e.g. mobile phone, tablet, or browser client)
-                // and this was an automatic checkout trigger (isManual === false),
-                // DO NOT trigger the fallback browser window.print() iframe!
-                // On mobile PWA / browsers, calling window.print() via hidden iframe triggers the OS print
-                // spooler/preview, violently flickering the screen, causing webview reflows, and killing the auto-close timer.
-                // The cashier can still tap the "Print" button manually if they want a browser print preview.
-                if (!isManual) {
+                // If native print agent is unreachable (e.g. online HTTPS cloud blocking mixed content,
+                // or agent not started), automatically fall back to browser thermal print on Windows 11 / Windows desktop:
+                // - In Chrome Kiosk mode (--kiosk-printing): prints 100% silently with 0 clicks!
+                // - In standard Windows 11 Chrome / Edge / Desktop PWA: instantly triggers the native print dialog.
+                // Mobile platforms (Android/iOS) skip auto-trigger to avoid mobile viewport reflows, unless tapped manually.
+                const isWindows = isWindowsPlatform();
+                const isMobile = isMobilePlatform();
+                const shouldAutoPrint = isManual || isWindows || !isMobile;
+
+                if (!shouldAutoPrint) {
                     return;
                 }
 
-                // 2. Fallback to browser print preview if native agent is unreachable AND cashier manually clicked Print
-                cancelSuccessModalTimer();
+                if (isManual) {
+                    cancelSuccessModalTimer();
+                }
 
                 const itemRows = d.items.map(it => {
                     const bd = computeUnitBreakdown(it);
@@ -17806,7 +17982,7 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                 }).join('');
 
                 const writeReceiptDoc = (barcodeImgHtml) => {
-                    const fullReceiptHtml = '<!DOCTYPE html><html><head><style>' +
+                    const fullReceiptHtml = '<!DOCTYPE html><html><head><meta charset="utf-8"/><title>Receipt - ' + esc(cleanRef) + '</title><style>' +
                         receiptBaseCSS() +
                         '</style></head><body>' +
                         '<div class="receipt-container">' +
@@ -17837,36 +18013,7 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                         receiptPrintScript() +
                         '</body></html>';
 
-                    // Use hidden iframe to avoid popup blocker blocking automatic print on checkout
-                    let printFrame = document.getElementById('receipt-print-frame');
-                    if (!printFrame) {
-                        printFrame = document.createElement('iframe');
-                        printFrame.id = 'receipt-print-frame';
-                        printFrame.style.position = 'fixed';
-                        printFrame.style.right = '0';
-                        printFrame.style.bottom = '0';
-                        printFrame.style.width = '1px';
-                        printFrame.style.height = '1px';
-                        printFrame.style.opacity = '0.01';
-                        printFrame.style.border = '0';
-                        printFrame.style.pointerEvents = 'none';
-                        document.body.appendChild(printFrame);
-                    }
-
-                    try {
-                        const frameDoc = printFrame.contentWindow.document;
-                        frameDoc.open();
-                        frameDoc.write(fullReceiptHtml);
-                        frameDoc.close();
-                        // Note: receiptPrintScript inside fullReceiptHtml triggers window.print() once cleanly on load
-                    } catch (e) {
-                        // Fallback to popup window if iframe print fails
-                        const win = window.open('', '_blank', 'width=380,height=650');
-                        if (win) {
-                            win.document.write(fullReceiptHtml);
-                            win.document.close();
-                        }
-                    }
+                    executeUniversalReceiptPrint(fullReceiptHtml);
                 };
 
                 if (typeof JsBarcode === 'undefined') {
@@ -18919,12 +19066,7 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                     }
                 } catch (e) {}
 
-                // 2. Fallback to clean browser popup if native agent is offline
-                const win = window.open('', '_blank', 'width=380,height=650');
-                if (!win) {
-                    toast('Pop-up blocked — allow pop-ups to print the void receipt', 'warning');
-                    return;
-                }
+                // 2. Fallback to universal browser thermal print if native agent is offline
                 const dt = new Date();
                 const dateStr = String(dt.getMonth() + 1).padStart(2, '0') + '/' + String(dt.getDate()).padStart(2, '0') + '/' + dt.getFullYear();
                 let hh = dt.getHours();
@@ -18950,8 +19092,7 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                     return html;
                 }).join('');
 
-                win.document.write(
-                    '<!DOCTYPE html><html><head><style>' +
+                const voidReceiptHtml = '<!DOCTYPE html><html><head><style>' +
                     receiptBaseCSS() +
                     '</style></head><body>' +
                     '<div class="receipt-container">' +
@@ -18978,9 +19119,8 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                     receiptFooterHTML(['TRANSACTION VOID AUDIT SLIP', 'Please keep receipt for refund audit.']) +
                     '</div>' +
                     receiptPrintScript() +
-                    '</body></html>'
-                );
-                win.document.close();
+                    '</body></html>';
+                executeUniversalReceiptPrint(voidReceiptHtml);
             }
 
             // ── VOID ORDER WORKFLOW ("Void Order" toolbar button + Sales History "view" modal) ──

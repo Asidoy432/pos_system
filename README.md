@@ -21,8 +21,11 @@ Built with a responsive single-file PHP architecture, instant zero-reload SPA na
   - `H`: Hold order / `E`: Recall held carts
   - `C`: Clear cart / `X`: Exit cart modal
 - **Discounts & Price Overrides**: On-the-spot cart line item markdown modal.
-- **Order Voids & Auditing**: Partial line-item voids and whole-order cancellations protected by a role-based manager/admin password gate with permanent audit logging.
-- **Receipts & Thermal Printing**: Clean receipt preview with direct browser thermal printing (58mm / 80mm ESC/POS compatible) and automated cash drawer kick.
+- **Universal Smart Auto-Print & Thermal Receipts**:
+  - **Zero-Click Windows 11 Silent Printing**: Automatically triggers receipt printing immediately after completing checkout without requiring manual user clicks.
+  - **Smart Dual-Engine Pipeline**: Probes the local ESC/POS Thermal Print Agent (`pos-print-agent.ps1` on port 9100) and seamlessly cascades to the isolated browser thermal print engine (`executeUniversalReceiptPrint`) if unreachable or on HTTPS origins.
+  - **Hardware Drawer Automation**: Triggers the solenoid cash drawer kick pulse automatically via ESC/POS command (`1B 70 00 19 FA`) upon checkout.
+  - **One-Click Desktop Launcher**: Run `CREATE-DESKTOP-SHORTCUT.bat` to place a pre-configured Windows 11 desktop shortcut with `--kiosk-printing` and local agent permissions.
 
 ### 2. 📷 Barcode Scanning & Hardware Integration
 - **Draggable Camera Scanner**: Movable floating camera scanner widget on the dashboard with back/front camera switching and flashlight/torch toggle.
@@ -179,6 +182,24 @@ pos_system/
     ├── products/         # Product catalog photos
     └── shop/             # Store profile logos
 ```
+
+---
+
+## 🖨️ Windows 11 Auto-Print & Kiosk Setup (Online & Local)
+
+To enable 100% silent, zero-click thermal printing for receipts on Windows 11 / Windows 10 (Google Chrome & Microsoft Edge):
+
+### Option A: One-Click Desktop Shortcut (Recommended)
+1. Double-click `CREATE-DESKTOP-SHORTCUT.bat`.
+2. A shortcut named **"ProCast POS - Auto Print"** will be created directly on your Windows Desktop.
+3. Double-click this shortcut anytime to launch the POS. It automatically starts the background ESC/POS print agent and opens the POS with `--kiosk-printing` enabled.
+
+### Option B: Direct Batch Launchers
+- **Cloud / Online POS**: Run `START-POS-ONLINE.bat` to launch the live Render system (`https://pos-system-9f0n.onrender.com/?page=dashboard`).
+- **Local Offline POS**: Run `START-POS-KIOSK.bat` to launch the local XAMPP/Apache system.
+
+### Option C: Installed PWA / Standard Browser Mode
+- Receipts automatically invoke the browser thermal print sequence upon payment completion across all Windows devices without blocking transactions or stalling the cashier.
 
 ---
 
