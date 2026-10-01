@@ -69,7 +69,6 @@ if ($__isHttps) {
 
 // ── DATABASE CONFIG (edit these 4 lines) ──
 define('DATABASE_URL', getenv('DATABASE_URL') ?: '');
-define('SYNC_TOKEN', getenv('SYNC_TOKEN') ?: 'procast_sync_key');
 define('DB_HOST', getenv('DB_HOST') ?: '');
 define('DB_PORT', getenv('DB_PORT') ?: '5432');
 define('DB_NAME', getenv('DB_NAME') ?: '');
@@ -647,24 +646,11 @@ function db(bool $forceReconnect = false): PDO
                 }
             }
         } else {
-            // Local fallback to MySQL POS_System / pangga_store if credentials are empty or localhost
+            // Local fallback to MySQL pangga_store if credentials are empty or localhost
             if (DB_HOST === '' && DB_NAME === '') {
+                $dsn = 'mysql:host=127.0.0.1;port=3306;dbname=pangga_store;charset=utf8mb4';
                 $user = 'root';
                 $pass = '';
-                $dsn = 'mysql:host=127.0.0.1;port=3306;dbname=POS_System;charset=utf8mb4';
-                try {
-                    $testPdo = new PDO($dsn, $user, $pass, [
-                        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-                        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-                        PDO::ATTR_EMULATE_PREPARES => false,
-                        PDO::ATTR_PERSISTENT => false,
-                        PDO::ATTR_TIMEOUT => 2,
-                    ]);
-                    $pdo = $testPdo;
-                    return $pdo;
-                } catch (\Throwable $e) {
-                    $dsn = 'mysql:host=127.0.0.1;port=3306;dbname=pangga_store;charset=utf8mb4';
-                }
             } elseif (DB_PORT == 3306 || str_contains(DB_HOST, '127.0.0.1') || str_contains(DB_HOST, 'localhost')) {
                 $dsn = 'mysql:host=' . DB_HOST . ';port=' . DB_PORT . ';dbname=' . DB_NAME . ';charset=utf8mb4';
                 $user = DB_USER ?: 'root';
@@ -1685,15 +1671,10 @@ function getStoreSettingVal(string $key, string $default = '', ?int $storeId = n
         $stmt->execute([$sid, $sid, $key]);
         $val = $stmt->fetchColumn();
         if ($val !== false && $val !== null) {
-            $strVal = (string)$val;
-            if ($key === 'currency' && ($strVal === '' || str_contains($strVal, '?') || $strVal === 'PHP')) {
-                return '₱';
-            }
-            return $strVal;
+            return (string)$val;
         }
     } catch (\Throwable $e) {
     }
-    if ($key === 'currency') return '₱';
     return $default;
 }
 
@@ -2297,340 +2278,6 @@ function createDeliveryWithBatches(PDO $db, ?string $supplierRef, ?string $event
 //  API HANDLER
 // ═══════════════════════════════════════════════════
 if (isset($_GET['api'])) {
-    $action = $_GET['api'];
-
-    // ── CLOUD SYNC ENDPOINTS (AUTHENTICATED VIA SYNC_TOKEN) ──
-    // Allows local POS systems to sync data bidirectionally with this online deployment
-    // over HTTPS without needing user session cookies or CSRF tokens.
-    if (in_array($action, ['cloud_sync_ping', 'cloud_sync_pull', 'cloud_sync_push', 'cloud_auth_login'], true)) {
-        $headerToken = $_SERVER['HTTP_X_SYNC_TOKEN'] ?? '';
-        $queryToken = $_GET['sync_token'] ?? ($_POST['sync_token'] ?? '');
-        $providedToken = trim((string)($headerToken !== '' ? $headerToken : $queryToken));
-        $expectedToken = defined('SYNC_TOKEN') ? SYNC_TOKEN : 'procast_sync_key';
-
-        if (empty($providedToken) || !hash_equals($expectedToken, $providedToken)) {
-            json(false, null, 'Unauthorized sync request: Invalid or missing sync token.');
-        }
-
-        try {
-            $db = db();
-            $body = json_decode(file_get_contents('php://input'), true) ?? [];
-            $syncStoreId = 1;
-
-            if ($action === 'cloud_sync_ping') {
-                $storeName = 'Online Store';
-                $prodCount = 0;
-                try {
-                    $sn = $db->query("SELECT name FROM stores ORDER BY id ASC LIMIT 1")->fetchColumn();
-                    if ($sn) $storeName = (string)$sn;
-                } catch (\Throwable $e) {}
-                try {
-                    $prodCount = (int)$db->query("SELECT COUNT(*) FROM products")->fetchColumn();
-                } catch (\Throwable $e) {}
-
-                json(true, [
-                    'ok' => true,
-                    'status' => 'online',
-                    'store_name' => $storeName,
-                    'products_count' => $prodCount,
-                    'server_time' => date('Y-m-d H:i:s')
-                ]);
-            }
-
-            if ($action === 'cloud_auth_login') {
-                $username = trim($body['username'] ?? ($_POST['username'] ?? ''));
-                $password = (string)($body['password'] ?? ($_POST['password'] ?? ''));
-                if ($username === '' || $password === '') {
-                    json(false, null, 'Username and password are required.');
-                }
-
-                $uStmt = $db->prepare("SELECT id, username, password, full_name, role, email, store_id FROM users WHERE username = ? LIMIT 1");
-                $uStmt->execute([$username]);
-                $u = $uStmt->fetch();
-
-                if ($u && password_verify($password, $u['password'])) {
-                    $sid = (int)($u['store_id'] ?: 1);
-                    $storeName = 'Store #' . $sid;
-                    $storeCurrency = '₱';
-                    try {
-                        $sStmt = $db->prepare("SELECT name, currency FROM stores WHERE id = ?");
-                        $sStmt->execute([$sid]);
-                        $st = $sStmt->fetch();
-                        if ($st) {
-                            if (!empty($st['name'])) $storeName = $st['name'];
-                            if (!empty($st['currency']) && !str_contains($st['currency'], '?')) $storeCurrency = $st['currency'];
-                        }
-                    } catch (\Throwable $e) {}
-
-                    json(true, [
-                        'user' => [
-                            'id' => (int)$u['id'],
-                            'username' => $u['username'],
-                            'password' => $u['password'],
-                            'full_name' => $u['full_name'],
-                            'role' => $u['role'],
-                            'email' => $u['email'],
-                            'store_id' => $sid
-                        ],
-                        'store' => [
-                            'id' => $sid,
-                            'name' => $storeName,
-                            'currency' => $storeCurrency
-                        ]
-                    ]);
-                } else {
-                    json(false, null, 'Invalid username or password.');
-                }
-            }
-
-            if ($action === 'cloud_sync_pull') {
-                $filterStoreId = isset($_GET['store_id']) ? (int)$_GET['store_id'] : (isset($body['store_id']) ? (int)$body['store_id'] : 0);
-
-                // Categories
-                $categories = [];
-                try {
-                    if ($filterStoreId > 0) {
-                        $catStmt = $db->prepare("SELECT id, name, sort_order, store_id FROM categories WHERE store_id = ? ORDER BY sort_order ASC, name ASC");
-                        $catStmt->execute([$filterStoreId]);
-                    } else {
-                        $catStmt = $db->query("SELECT id, name, sort_order, store_id FROM categories ORDER BY sort_order ASC, name ASC");
-                    }
-                    if ($catStmt) $categories = $catStmt->fetchAll();
-                } catch (\Throwable $e) {}
-
-                // Products
-                $products = [];
-                try {
-                    $prodSql = "
-                        SELECT 
-                            p.id, p.name, p.barcode, p.description, p.price, p.cost_price,
-                            p.promo_price, p.store_quantity, p.quantity,
-                            COALESCE(ws.quantity, 0) AS warehouse_quantity,
-                            p.image_path, p.image_data, p.unit_type, p.unit_size,
-                            p.pack_qty, p.pack_barcode, p.pack_price,
-                            p.case_qty, p.case_barcode, p.case_price,
-                            p.low_stock_threshold, p.expiry_date, p.delivery_date,
-                            p.brand, p.supplier, p.category_id, p.store_id,
-                            c.name AS category_name
-                        FROM products p
-                        LEFT JOIN categories c ON c.id = p.category_id
-                        LEFT JOIN warehouse_stock ws ON ws.product_id = p.id
-                    ";
-                    if ($filterStoreId > 0) {
-                        $prodSql .= " WHERE p.store_id = ? ";
-                    }
-                    $prodSql .= " ORDER BY p.name ASC";
-
-                    if ($filterStoreId > 0) {
-                        $prodStmt = $db->prepare($prodSql);
-                        $prodStmt->execute([$filterStoreId]);
-                    } else {
-                        $prodStmt = $db->query($prodSql);
-                    }
-
-                    if ($prodStmt) {
-                        $rawProds = $prodStmt->fetchAll();
-                        $hostUrl = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http') . '://' . ($_SERVER['HTTP_HOST'] ?? 'localhost');
-                        $scriptDir = dirname($_SERVER['SCRIPT_NAME'] ?? '');
-                        if ($scriptDir === '/' || $scriptDir === '\\') $scriptDir = '';
-                        $baseUrl = rtrim($hostUrl . $scriptDir, '/');
-
-                        foreach ($rawProds as $p) {
-                            $img = null;
-                            if (!empty($p['image_path'])) {
-                                if (preg_match('#^https?://#', $p['image_path'])) {
-                                    $img = $p['image_path'];
-                                } else {
-                                    $img = $baseUrl . '/' . ltrim($p['image_path'], '/');
-                                }
-                            } elseif (!empty($p['image_data'])) {
-                                $img = $p['image_data'];
-                            }
-                            $p['image_url'] = $img;
-                            unset($p['image_data']);
-                            $products[] = $p;
-                        }
-                    }
-                } catch (\Throwable $e) {
-                    try {
-                        $simpleSql = "SELECT p.*, c.name AS category_name FROM products p LEFT JOIN categories c ON c.id = p.category_id";
-                        if ($filterStoreId > 0) {
-                            $simpleSql .= " WHERE p.store_id = ?";
-                            $simpleStmt = $db->prepare($simpleSql);
-                            $simpleStmt->execute([$filterStoreId]);
-                        } else {
-                            $simpleStmt = $db->query($simpleSql);
-                        }
-                        if ($simpleStmt) {
-                            $products = $simpleStmt->fetchAll();
-                        }
-                    } catch (\Throwable $e2) {}
-                }
-
-                // Batches
-                $batches = [];
-                try {
-                    if ($filterStoreId > 0) {
-                        $bStmt = $db->prepare("
-                            SELECT b.* FROM batches b
-                            JOIN products p ON p.id = b.product_id
-                            WHERE p.store_id = ?
-                            ORDER BY b.id ASC
-                        ");
-                        $bStmt->execute([$filterStoreId]);
-                    } else {
-                        $bStmt = $db->query("SELECT * FROM batches ORDER BY id ASC");
-                    }
-                    if ($bStmt) $batches = $bStmt->fetchAll();
-                } catch (\Throwable $e) {}
-
-                // Users (allows offline login for this store)
-                $users = [];
-                try {
-                    if ($filterStoreId > 0) {
-                        $uStmt = $db->prepare("SELECT id, username, password, full_name, role, email, store_id FROM users WHERE store_id = ? ORDER BY id ASC");
-                        $uStmt->execute([$filterStoreId]);
-                    } else {
-                        $uStmt = $db->query("SELECT id, username, password, full_name, role, email, store_id FROM users ORDER BY id ASC");
-                    }
-                    if ($uStmt) $users = $uStmt->fetchAll();
-                } catch (\Throwable $e) {}
-
-                // Store details
-                $storeInfo = null;
-                if ($filterStoreId > 0) {
-                    try {
-                        $stStmt = $db->prepare("SELECT id, name, currency FROM stores WHERE id = ?");
-                        $stStmt->execute([$filterStoreId]);
-                        $storeInfo = $stStmt->fetch();
-                    } catch (\Throwable $e) {}
-                }
-
-                json(true, [
-                    'store_id'   => $filterStoreId,
-                    'store'      => $storeInfo,
-                    'categories' => $categories,
-                    'products'   => $products,
-                    'batches'    => $batches,
-                    'users'      => $users
-                ]);
-            }
-
-            if ($action === 'cloud_sync_push') {
-                $txList = $body['transactions'] ?? [];
-                if (empty($txList)) {
-                    json(true, ['synced_count' => 0, 'synced_local_ids' => []]);
-                }
-
-                $payloadStoreId = (int)($body['store_id'] ?? 0);
-                $syncedLocalIds = [];
-                $hasCostCol = false;
-                try {
-                    $chk = $db->query("SELECT column_name FROM information_schema.columns WHERE table_name='transaction_items' AND column_name='cost_price'");
-                    $hasCostCol = (bool)$chk->fetchColumn();
-                } catch (\Throwable $e) {}
-
-                foreach ($txList as $tx) {
-                    $localId = $tx['local_id'] ?? null;
-                    $txStoreId = !empty($tx['store_id']) ? (int)$tx['store_id'] : ($payloadStoreId > 0 ? $payloadStoreId : 1);
-                    $ref = trim((string)($tx['receipt_no'] ?? ($tx['order_ref'] ?? '')));
-                    if ($ref === '') {
-                        $ref = 'TX-' . ($localId ? 'L' . $localId . '-' : '') . strtoupper(substr(uniqid(), -6));
-                    }
-
-                    // Avoid duplicate inserts
-                    $checkStmt = $db->prepare("SELECT id FROM transactions WHERE order_ref = ? LIMIT 1");
-                    $checkStmt->execute([$ref]);
-                    $existingTxId = $checkStmt->fetchColumn();
-
-                    if ($existingTxId) {
-                        if ($localId !== null) $syncedLocalIds[] = $localId;
-                        continue;
-                    }
-
-                    $subtotal = (float)($tx['subtotal'] ?? ($tx['total'] ?? 0));
-                    $vatRate = (float)($tx['vat_rate'] ?? 0);
-                    $vatAmount = (float)($tx['vat_amount'] ?? ($tx['vat'] ?? 0));
-                    $taxRate = (float)($tx['tax_rate'] ?? 0);
-                    $taxAmount = (float)($tx['tax_amount'] ?? ($tx['tax'] ?? 0));
-                    $total = (float)($tx['total'] ?? 0);
-                    $cash = (float)($tx['cash'] ?? ($tx['cash_tendered'] ?? $total));
-                    $change = (float)($tx['change'] ?? ($tx['change_amount'] ?? 0));
-                    $createdAt = !empty($tx['created_at']) ? $tx['created_at'] : date('Y-m-d H:i:s');
-                    $txTs = strtotime($createdAt) ?: time();
-                    $h = (int)date('G', $txTs);
-                    $dow = (int)date('N', $txTs) - 1;
-
-                    $dbDriver = $db->getAttribute(PDO::ATTR_DRIVER_NAME);
-                    $q = ($dbDriver === 'pgsql') ? '"' : '`';
-
-                    $db->beginTransaction();
-                    try {
-                        $insTx = $db->prepare("
-                            INSERT INTO transactions ({$q}store_id{$q}, {$q}order_ref{$q}, {$q}subtotal{$q}, {$q}vat_rate{$q}, {$q}vat_amount{$q}, {$q}tax_rate{$q}, {$q}tax_amount{$q}, {$q}total{$q}, {$q}cash{$q}, {$q}change{$q}, {$q}user_id{$q}, {$q}created_at{$q})
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
-                        ");
-                        $insTx->execute([$txStoreId, $ref, $subtotal, $vatRate, $vatAmount, $taxRate, $taxAmount, $total, $cash, $change, $createdAt]);
-                        $cloudTxId = lastInsertedId($db);
-
-                        $items = $tx['items'] ?? [];
-                        if (!empty($items)) {
-                            $insItem = $hasCostCol
-                                ? $db->prepare("INSERT INTO transaction_items ({$q}transaction_id{$q}, {$q}product_id{$q}, {$q}product_name{$q}, {$q}category_name{$q}, {$q}price{$q}, {$q}quantity{$q}, {$q}subtotal{$q}, {$q}hour_of_day{$q}, {$q}day_of_week{$q}, {$q}cost_price{$q}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-                                : $db->prepare("INSERT INTO transaction_items ({$q}transaction_id{$q}, {$q}product_id{$q}, {$q}product_name{$q}, {$q}category_name{$q}, {$q}price{$q}, {$q}quantity{$q}, {$q}subtotal{$q}, {$q}hour_of_day{$q}, {$q}day_of_week{$q}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
-
-                            $updStock = $db->prepare("UPDATE products SET quantity = GREATEST(0, quantity - ?), store_quantity = GREATEST(0, store_quantity - ?), total_sold = total_sold + ?, total_revenue = total_revenue + ? WHERE id = ?");
-
-                            foreach ($items as $it) {
-                                $rawPid = !empty($it['product_id']) ? (int)$it['product_id'] : null;
-                                $validPId = null;
-                                if ($rawPid) {
-                                    $pChk = $db->prepare("SELECT id FROM products WHERE id = ?");
-                                    $pChk->execute([$rawPid]);
-                                    if ($pChk->fetchColumn()) {
-                                        $validPId = $rawPid;
-                                    }
-                                }
-                                $pName = trim((string)($it['product_name'] ?? 'Item'));
-                                $pCat = trim((string)($it['category_name'] ?? ''));
-                                $pPrice = (float)($it['price'] ?? ($it['unit_price'] ?? 0));
-                                $pQty = (int)($it['quantity'] ?? ($it['qty'] ?? 1));
-                                $pSub = (float)($it['subtotal'] ?? ($pPrice * $pQty));
-                                $pCost = isset($it['cost_price']) ? (float)$it['cost_price'] : null;
-
-                                if ($hasCostCol) {
-                                    $insItem->execute([$cloudTxId, $validPId, $pName, $pCat, $pPrice, $pQty, $pSub, $h, $dow, $pCost]);
-                                } else {
-                                    $insItem->execute([$cloudTxId, $validPId, $pName, $pCat, $pPrice, $pQty, $pSub, $h, $dow]);
-                                }
-
-                                if ($validPId) {
-                                    try {
-                                        $updStock->execute([$pQty, $pQty, $pQty, $pSub, $validPId]);
-                                    } catch (\Throwable $e) {}
-                                }
-                            }
-                        }
-
-                        $db->commit();
-                        if ($localId !== null) $syncedLocalIds[] = $localId;
-                    } catch (\Throwable $e) {
-                        if ($db->inTransaction()) $db->rollBack();
-                        error_log('cloud_sync_push error: ' . $e->getMessage());
-                    }
-                }
-
-                json(true, [
-                    'synced_count' => count($syncedLocalIds),
-                    'synced_local_ids' => $syncedLocalIds
-                ]);
-            }
-        } catch (\Throwable $e) {
-            json(false, null, 'Cloud sync error: ' . $e->getMessage());
-        }
-        exit;
-    }
-
     // The server-side PHP session can vanish (Render restart/deploy wipes the
     // session files) while the browser still holds a valid remember cookie —
     // rebuild the login from it before declaring the user unauthenticated.
@@ -4091,11 +3738,6 @@ if (isset($_GET['api'])) {
                 $rows = $stmt->fetchAll();
                 $s = [];
                 foreach ($rows as $r) $s[$r['key']] = $r['value'];
-                $cur = $s['currency'] ?? '';
-                if ($cur === '' || str_contains($cur, '?') || $cur === 'PHP') {
-                    $cur = '₱';
-                }
-                $s['currency'] = $cur;
                 // Serve the EFFECTIVE logo to the Settings preview: if the disk copy
                 // was wiped by a deploy/restart, substitute the durable DB backup,
                 // then drop the raw blob key from the payload (it can be hundreds of KB).
@@ -4109,12 +3751,6 @@ if (isset($_GET['api'])) {
 
             case 'save_settings':
                 if ($role !== 'owner') json(false, null, 'Unauthorized — only store owner can update settings');
-                if (isset($body['currency'])) {
-                    $cVal = trim((string)$body['currency']);
-                    if ($cVal === '' || str_contains($cVal, '?')) {
-                        $body['currency'] = '₱';
-                    }
-                }
                 $st = $db->prepare("INSERT INTO settings(store_id,key,value) VALUES(?,?,?) ON CONFLICT (store_id,key) DO UPDATE SET value=EXCLUDED.value");
                 // shop_address/shop_tin/terminal_id are new, purely additive keys for
                 // the redesigned printed receipt header (BIR-style store details) —
@@ -13115,10 +12751,10 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                         </div>
                         <div id="p-barcode-check" style="font-size:.74rem;margin-bottom:8px;min-height:16px;"></div>
                         <label class="form-label" style="font-size:.72rem;margin-bottom:3px;">Selling Price (₱)</label>
-                        <input type="number" class="form-input" id="p-price" placeholder="0.00" min="0" step="any" style="width:100%;" oninput="updatePromoHint()" />
+                        <input type="number" class="form-input" id="p-price" placeholder="0.00" min="0" step="0.5" style="width:100%;" oninput="updatePromoHint()" />
 
                         <label class="form-label" style="font-size:.72rem;margin-bottom:3px;margin-top:8px;">Cost Price (₱) <span style="font-weight:400;color:var(--text3);">— what you paid, per piece</span></label>
-                        <input type="number" class="form-input" id="p-cost" placeholder="0.00" min="0" step="any" style="width:100%;" />
+                        <input type="number" class="form-input" id="p-cost" placeholder="0.00" min="0" step="0.5" style="width:100%;" />
                         <div style="font-size:.72rem;color:var(--text3);margin-top:3px;">Used for Total Stock Value on the Warehouse page — leave blank if unknown.</div>
 
                         <!-- Promo / Discount Price — optional. When enabled, this price is what
@@ -13131,7 +12767,7 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                             </label>
                             <div id="p-promo-wrap" style="display:none;margin-top:8px;">
                                 <label class="form-label" style="font-size:.72rem;margin-bottom:3px;">Promo Price (₱)</label>
-                                <input type="number" class="form-input" id="p-promo-price" placeholder="e.g. 45.00" min="0" step="any" style="width:100%;" oninput="updatePromoHint()" />
+                                <input type="number" class="form-input" id="p-promo-price" placeholder="e.g. 45.00" min="0" step="0.5" style="width:100%;" oninput="updatePromoHint()" />
                                 <div id="p-promo-hint" style="font-size:.74rem;color:var(--text3);margin-top:4px;"></div>
                             </div>
                         </div>
@@ -15348,22 +14984,8 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
             let VAT_RATE = 0;
             let TAX_RATE = 0;
 
-            function setAppCurrency(c) {
-                if (!c || c === 'PHP' || (typeof c === 'string' && c.includes('?'))) {
-                    CUR = '₱';
-                } else {
-                    CUR = c;
-                }
-            }
-
             function fmt(n) {
-                const val = parseFloat(n || 0);
-                return CUR + val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-            }
-
-            function fmtQty(n) {
-                const val = parseFloat(n || 0);
-                return Number.isInteger(val) ? val.toLocaleString('en-US') : val.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+                return CUR + parseFloat(n || 0).toFixed(2);
             }
 
             // A product photo's DB record can outlive the actual file on disk (e.g. an
@@ -15815,7 +15437,11 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                     receiptPrintScript() +
                     '</body></html>';
 
-                executeUniversalReceiptPrint(slipHtml);
+                const win = window.open('', '_blank', 'width=380,height=550');
+                if (win) {
+                    win.document.write(slipHtml);
+                    win.document.close();
+                }
             }
 
             function submitShiftModal() {
@@ -15936,10 +15562,10 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                     '  if (__didPrint) return;' +
                     '  __didPrint = true;' +
                     '  try{ window.focus(); window.print(); }catch(e){}' +
-                    '  window.onafterprint = function(){ setTimeout(function(){ try{ if(window.frameElement) window.frameElement.remove(); else window.close(); }catch(e){} }, 400); };' +
+                    '  window.onafterprint = function(){ setTimeout(function(){ try{window.close();}catch(e){} }, 300); };' +
                     '}' +
-                    'if (document.readyState === "complete") { setTimeout(doPrint, 150); }' +
-                    'else { window.addEventListener("load", function(){ setTimeout(doPrint, 150); }); }' +
+                    'if (document.readyState === "complete") { setTimeout(doPrint, 100); }' +
+                    'else { window.addEventListener("load", function(){ setTimeout(doPrint, 100); }); }' +
                     '<\/script>';
             }
 
@@ -15994,7 +15620,12 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                     }
                 } catch (e) {}
 
-                // 2. Fallback to universal browser thermal print if native agent is offline
+                // 2. Fallback to browser popup if native agent is offline
+                const win = window.open('', '_blank', 'width=380,height=650');
+                if (!win) {
+                    toast('Pop-up blocked — allow pop-ups to print the Z-Read receipt', 'warning');
+                    return;
+                }
                 const label = d.variance < 0 ? 'SHORT' : (d.variance > 0 ? 'OVER' : 'EXACT');
                 const varColor = d.variance < 0 ? '#e5484d' : (d.variance > 0 ? '#3ba55c' : '#1A1208');
                 const esc = receiptEsc;
@@ -16038,7 +15669,8 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                     voidAuditRows :
                     '';
 
-                const zReceiptHtml = '<!DOCTYPE html><html><head><style>' +
+                win.document.write(
+                    '<!DOCTYPE html><html><head><style>' +
                     receiptBaseCSS() +
                     '.var-row{font-weight:800;color:' + varColor + ';font-size:13px;}' +
                     '</style></head><body>' +
@@ -16071,8 +15703,9 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                     receiptFooterHTML(['Generated ' + fmtDate(new Date().toISOString()), 'Thank you — session closed.']) +
                     '</div>' +
                     receiptPrintScript() +
-                    '</body></html>';
-                executeUniversalReceiptPrint(zReceiptHtml);
+                    '</body></html>'
+                );
+                win.document.close();
             }
 
             // ── IMAGE HELPERS ──
@@ -16378,15 +16011,13 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                 const h = new Date().getHours();
                 document.getElementById('greet').textContent = h < 12 ? 'Morning' : h < 17 ? 'Afternoon' : 'Evening';
                 apiGet('get_settings').then(s => {
-                    setAppCurrency(s?.data?.currency);
+                    CUR = s?.data?.currency || '₱';
                     VAT_RATE = Math.max(0, parseFloat(s?.data?.vat_rate || 0));
                     TAX_RATE = Math.max(0, parseFloat(s?.data?.tax_rate || 0));
                     const rawName = s?.data?.shop_name;
                     const finalShopName = rawName && rawName !== 'PANGGA STORE' && rawName !== 'PANGGA POS' && rawName !== 'POS SYSTEM' ? rawName : 'ProCast';
                     document.getElementById('shop-name').textContent = finalShopName;
                     updateCartUI();
-                    if (dashStatsData) renderPeriodStats();
-                    if (typeof allProds !== 'undefined' && Array.isArray(allProds) && allProds.length) renderGrid();
                 });
                 loadStats();
                 loadAllProds();
@@ -16473,7 +16104,7 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                 const txKey = { today: 'today_sales', week: 'week_sales', month: 'month_sales', all: 'total_tx' }[dashPeriod];
                 const label = { today: "today's", week: '7-day', month: '30-day', all: 'all-time' }[dashPeriod];
                 document.getElementById('s-week').textContent = fmt(d[revKey]);
-                document.getElementById('s-week-label').textContent = label + ' revenue · ' + fmtQty(d[txKey] || 0) + ' orders';
+                document.getElementById('s-week-label').textContent = label + ' revenue · ' + (d[txKey] || 0) + ' orders';
                 document.getElementById('s-profit').textContent = fmt(d[profitKey]);
                 document.getElementById('s-profit-label').textContent = label + ' profit';
             }
@@ -16491,9 +16122,9 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                     const d = r.data;
                     dashStatsData = d;
                     document.getElementById('s-today-rev').textContent = fmt(d.today_revenue);
-                    document.getElementById('s-today-cnt').textContent = fmtQty(d.today_sales) + ' transactions';
-                    document.getElementById('s-prods').textContent = fmtQty(d.product_count);
-                    document.getElementById('s-lowstock').textContent = fmtQty(d.low_stock) + ' low stock';
+                    document.getElementById('s-today-cnt').textContent = d.today_sales + ' transactions';
+                    document.getElementById('s-prods').textContent = d.product_count;
+                    document.getElementById('s-lowstock').textContent = d.low_stock + ' low stock';
                     renderDashPeriodButtons();
                     renderPeriodStats();
                 });
@@ -17759,75 +17390,11 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
             // full receipt in a dedicated window — see printSaleReceipt() below.
             let lastReceiptData = null;
 
-            // ── PLATFORM & HARDWARE PRINT HELPERS (WINDOWS 11 / PWA AWARE) ──
-            function isWindowsPlatform() {
-                if (navigator.userAgentData?.platform) {
-                    if (/windows/i.test(navigator.userAgentData.platform)) return true;
-                }
-                const ua = navigator.userAgent || '';
-                const plat = navigator.platform || '';
-                return /Windows|Win32|Win64|WOW64/i.test(ua) || /Win/i.test(plat);
-            }
-
-            function isMobilePlatform() {
-                if (navigator.userAgentData?.mobile) return true;
-                const ua = navigator.userAgent || '';
-                return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(ua);
-            }
-
-            // Universal high-reliability thermal receipt printer engine:
-            // Creates a fresh, clean isolated browsing context per print job to prevent Chromium iframe caching/freeze.
-            // Works seamlessly across Windows 11 Chrome, standalone Desktop PWA, and Kiosk silent printing.
-            function executeUniversalReceiptPrint(fullReceiptHtml) {
-                try {
-                    const oldFrame = document.getElementById('receipt-print-frame');
-                    if (oldFrame) {
-                        try { oldFrame.remove(); } catch(e) {}
-                    }
-
-                    const printFrame = document.createElement('iframe');
-                    printFrame.id = 'receipt-print-frame';
-                    // 300px off-screen layout gives Chromium exact thermal receipt proportions (58mm/80mm) without visual flicker
-                    printFrame.style.cssText = 'position:fixed;left:-9999px;top:-9999px;width:300px;height:600px;border:0;opacity:0;pointer-events:none;z-index:-9999;';
-                    document.body.appendChild(printFrame);
-
-                    const frameDoc = printFrame.contentDocument || printFrame.contentWindow?.document;
-                    if (!frameDoc) throw new Error('Cannot access print frame document');
-
-                    frameDoc.open();
-                    frameDoc.write(fullReceiptHtml);
-                    frameDoc.close();
-
-                    // Coordinated safety trigger: ensures printing fires reliably in Windows 11 Chrome and installed desktop PWA
-                    setTimeout(() => {
-                        try {
-                            if (printFrame.contentWindow && !printFrame.contentWindow.__didPrint) {
-                                printFrame.contentWindow.focus();
-                                printFrame.contentWindow.print();
-                            }
-                        } catch (e) {
-                            console.warn('Iframe print direct trigger notice:', e);
-                        }
-                    }, 350);
-                } catch (e) {
-                    // Fallback to popup window if iframe creation was blocked
-                    try {
-                        const win = window.open('', '_blank', 'width=380,height=650');
-                        if (win) {
-                            win.document.write(fullReceiptHtml);
-                            win.document.close();
-                        }
-                    } catch (popErr) {
-                        console.error('All receipt printing mechanisms failed:', popErr);
-                    }
-                }
-            }
-
             // ── NATIVE THERMAL PRINT AGENT & CASH DRAWER HELPERS ──
             async function tryNativePrintAgent(payload) {
                 try {
                     const ctrl = new AbortController();
-                    const timer = setTimeout(() => ctrl.abort(), 600);
+                    const timer = setTimeout(() => ctrl.abort(), 1200);
                     const res = await fetch('http://127.0.0.1:9100/print', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -17846,7 +17413,7 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
             async function tryNativeDrawerKick() {
                 try {
                     const ctrl = new AbortController();
-                    const timer = setTimeout(() => ctrl.abort(), 600);
+                    const timer = setTimeout(() => ctrl.abort(), 1000);
                     const res = await fetch('http://127.0.0.1:9100/drawer', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -17912,34 +17479,24 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                     change: d.change
                 };
 
-                let nativePrinted = false;
-                try {
-                    nativePrinted = await tryNativePrintAgent(agentPayload);
-                } catch (e) {
-                    nativePrinted = false;
-                }
-
+                const nativePrinted = await tryNativePrintAgent(agentPayload);
                 if (nativePrinted) {
                     toast('Receipt printed silently via Native Thermal Print Agent', 'success');
                     return;
                 }
 
-                // If native print agent is unreachable (e.g. online HTTPS cloud blocking mixed content,
-                // or agent not started), automatically fall back to browser thermal print on Windows 11 / Windows desktop:
-                // - In Chrome Kiosk mode (--kiosk-printing): prints 100% silently with 0 clicks!
-                // - In standard Windows 11 Chrome / Edge / Desktop PWA: instantly triggers the native print dialog.
-                // Mobile platforms (Android/iOS) skip auto-trigger to avoid mobile viewport reflows, unless tapped manually.
-                const isWindows = isWindowsPlatform();
-                const isMobile = isMobilePlatform();
-                const shouldAutoPrint = isManual || isWindows || !isMobile;
-
-                if (!shouldAutoPrint) {
+                // If native print agent is unreachable (e.g. mobile phone, tablet, or browser client)
+                // and this was an automatic checkout trigger (isManual === false),
+                // DO NOT trigger the fallback browser window.print() iframe!
+                // On mobile PWA / browsers, calling window.print() via hidden iframe triggers the OS print
+                // spooler/preview, violently flickering the screen, causing webview reflows, and killing the auto-close timer.
+                // The cashier can still tap the "Print" button manually if they want a browser print preview.
+                if (!isManual) {
                     return;
                 }
 
-                if (isManual) {
-                    cancelSuccessModalTimer();
-                }
+                // 2. Fallback to browser print preview if native agent is unreachable AND cashier manually clicked Print
+                cancelSuccessModalTimer();
 
                 const itemRows = d.items.map(it => {
                     const bd = computeUnitBreakdown(it);
@@ -17982,7 +17539,7 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                 }).join('');
 
                 const writeReceiptDoc = (barcodeImgHtml) => {
-                    const fullReceiptHtml = '<!DOCTYPE html><html><head><meta charset="utf-8"/><title>Receipt - ' + esc(cleanRef) + '</title><style>' +
+                    const fullReceiptHtml = '<!DOCTYPE html><html><head><style>' +
                         receiptBaseCSS() +
                         '</style></head><body>' +
                         '<div class="receipt-container">' +
@@ -18013,7 +17570,36 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                         receiptPrintScript() +
                         '</body></html>';
 
-                    executeUniversalReceiptPrint(fullReceiptHtml);
+                    // Use hidden iframe to avoid popup blocker blocking automatic print on checkout
+                    let printFrame = document.getElementById('receipt-print-frame');
+                    if (!printFrame) {
+                        printFrame = document.createElement('iframe');
+                        printFrame.id = 'receipt-print-frame';
+                        printFrame.style.position = 'fixed';
+                        printFrame.style.right = '0';
+                        printFrame.style.bottom = '0';
+                        printFrame.style.width = '1px';
+                        printFrame.style.height = '1px';
+                        printFrame.style.opacity = '0.01';
+                        printFrame.style.border = '0';
+                        printFrame.style.pointerEvents = 'none';
+                        document.body.appendChild(printFrame);
+                    }
+
+                    try {
+                        const frameDoc = printFrame.contentWindow.document;
+                        frameDoc.open();
+                        frameDoc.write(fullReceiptHtml);
+                        frameDoc.close();
+                        // Note: receiptPrintScript inside fullReceiptHtml triggers window.print() once cleanly on load
+                    } catch (e) {
+                        // Fallback to popup window if iframe print fails
+                        const win = window.open('', '_blank', 'width=380,height=650');
+                        if (win) {
+                            win.document.write(fullReceiptHtml);
+                            win.document.close();
+                        }
+                    }
                 };
 
                 if (typeof JsBarcode === 'undefined') {
@@ -18053,8 +17639,7 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
             function prodsInit() {
                 if (cur_page !== 'products') return;
                 apiGet('get_settings').then(s => {
-                    setAppCurrency(s?.data?.currency);
-                    if (invProds && invProds.length) renderProds();
+                    CUR = s?.data?.currency || '₱';
                 });
                 loadInvProds();
                 loadInvCats();
@@ -18140,7 +17725,7 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                     a.name.localeCompare(b.name)
                 );
                 const countEl = document.getElementById('prod-count');
-                if (countEl) countEl.textContent = fmtQty(list.length) + ' products';
+                if (countEl) countEl.textContent = list.length + ' products';
                 const grid = document.getElementById('prod-grid');
                 if (!grid) return;
                 if (!list.length) {
@@ -18153,8 +17738,8 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                     const img = p.has_image == 1 ? '<img src="' + prodImgUrl(p.id, p.updated_at) + '" class="product-card-img" loading="lazy" data-fallback="div" onerror="imgFallback(this)"/>' : '<div class="product-card-ph"><img src="' + DEFAULT_PRODUCT_IMG + '" class="default-prod-img" alt=""></div>';
                     const promoInfo = getPromoInfo(p);
                     const priceHTML = promoInfo.active ?
-                        '<span class="promo-strike">' + fmt(promoInfo.price) + '</span><span class="promo-now">' + fmt(promoInfo.promo) + '</span>' :
-                        fmt(p.price);
+                        '<span class="promo-strike">' + CUR + promoInfo.price.toFixed(2) + '</span><span class="promo-now">' + CUR + promoInfo.promo.toFixed(2) + '</span>' :
+                        CUR + parseFloat(p.price).toFixed(2);
                     return '<div class="product-card" onclick="openEditModal(' + p.id + ')">' +
                         img +
                         (promoInfo.active ? '<span class="sale-badge">SALE</span>' : '') +
@@ -18742,7 +18327,7 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                 if (cur_page !== 'sales') return;
                 // Fetch settings in parallel without blocking chart & transaction loading
                 apiGet('get_settings').then(s => {
-                    setAppCurrency(s?.data?.currency);
+                    if (s?.data?.currency) CUR = s.data.currency;
                 });
                 loadTx();
                 loadSalesCharts();
@@ -19066,7 +18651,12 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                     }
                 } catch (e) {}
 
-                // 2. Fallback to universal browser thermal print if native agent is offline
+                // 2. Fallback to clean browser popup if native agent is offline
+                const win = window.open('', '_blank', 'width=380,height=650');
+                if (!win) {
+                    toast('Pop-up blocked — allow pop-ups to print the void receipt', 'warning');
+                    return;
+                }
                 const dt = new Date();
                 const dateStr = String(dt.getMonth() + 1).padStart(2, '0') + '/' + String(dt.getDate()).padStart(2, '0') + '/' + dt.getFullYear();
                 let hh = dt.getHours();
@@ -19092,7 +18682,8 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                     return html;
                 }).join('');
 
-                const voidReceiptHtml = '<!DOCTYPE html><html><head><style>' +
+                win.document.write(
+                    '<!DOCTYPE html><html><head><style>' +
                     receiptBaseCSS() +
                     '</style></head><body>' +
                     '<div class="receipt-container">' +
@@ -19119,8 +18710,9 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                     receiptFooterHTML(['TRANSACTION VOID AUDIT SLIP', 'Please keep receipt for refund audit.']) +
                     '</div>' +
                     receiptPrintScript() +
-                    '</body></html>';
-                executeUniversalReceiptPrint(voidReceiptHtml);
+                    '</body></html>'
+                );
+                win.document.close();
             }
 
             // ── VOID ORDER WORKFLOW ("Void Order" toolbar button + Sales History "view" modal) ──
@@ -20088,7 +19680,7 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
             function analyticsInit() {
                 if (cur_page !== 'analytics') return;
                 apiGet('get_settings').then(s => {
-                    setAppCurrency(s?.data?.currency);
+                    CUR = s?.data?.currency || '₱';
                 });
                 Promise.all([
                     apiGet('get_stats'),
@@ -20098,9 +19690,9 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                 ]).then(([stats, top]) => {
                     if (stats?.success) {
                         const d = stats.data;
-                        document.getElementById('a-rev').textContent = fmt(d.total_revenue);
-                        document.getElementById('a-orders').textContent = fmtQty(d.total_tx);
-                        document.getElementById('a-avg').textContent = d.total_tx ? fmt(d.total_revenue / d.total_tx) : fmt(0);
+                        document.getElementById('a-rev').textContent = CUR + parseFloat(d.total_revenue).toFixed(2);
+                        document.getElementById('a-orders').textContent = d.total_tx;
+                        document.getElementById('a-avg').textContent = d.total_tx ? CUR + (d.total_revenue / d.total_tx).toFixed(2) : CUR + '0.00';
                     }
                     if (top?.success && top.data.length) document.getElementById('a-best').textContent = top.data[0].name;
 
@@ -22859,7 +22451,7 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
             function warehouseInit() {
                 if (cur_page !== 'warehouse') return;
                 apiGet('get_settings').then(s => {
-                    setAppCurrency(s?.data?.currency);
+                    CUR = s?.data?.currency || '₱';
                 });
                 loadWhProducts();
                 loadWhLog();
@@ -22936,12 +22528,12 @@ $seoImage = (!empty($storeSettings['shop_logo']) && strpos($storeSettings['shop_
                     const expStr = String(eff).slice(0, 10);
                     return expStr >= todayStr && expStr <= in30Str;
                 }).length;
-                document.getElementById('wh-total').textContent = fmtQty(total);
-                document.getElementById('wh-low').textContent = fmtQty(low);
-                document.getElementById('wh-value').textContent = fmt(value) + (missingCost ? ' *' : '');
+                document.getElementById('wh-total').textContent = total;
+                document.getElementById('wh-low').textContent = low;
+                document.getElementById('wh-value').textContent = CUR + value.toFixed(2) + (missingCost ? ' *' : '');
                 const valSub = document.getElementById('wh-value-sub');
                 if (valSub) valSub.textContent = missingCost ? ('at cost · * ' + missingCost + ' product(s) missing a Cost Price') : 'at cost price';
-                document.getElementById('wh-expiring').textContent = fmtQty(expiring);
+                document.getElementById('wh-expiring').textContent = expiring;
                 const expSub = document.getElementById('wh-expiring-sub');
                 if (expSub) expSub.textContent = 'within 30 days';
             }

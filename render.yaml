@@ -18,5 +18,3 @@ services:
         sync: false
       - key: BREVO_SENDER_NAME
         value: Pos_System
-      - key: SYNC_TOKEN
-        value: procast_sync_key
